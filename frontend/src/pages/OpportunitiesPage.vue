@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
+import { BOARDS, isBoard } from '../boards.ts';
 import { DATA_DATE, STOCKS, STRATEGIES, selectionReason } from '../mock/fixtures.ts';
 import { listStocks } from '../mock/service.ts';
 import { useReview } from '../stores.ts';
@@ -11,7 +12,7 @@ import type { Stock, StockQuery, Strategy } from '../types.ts';
 const route = useRoute();
 const router = useRouter();
 const review = useReview();
-const query = reactive<StockQuery>({ strategy: 'short', search: '', industry: '', concept: '', exchange: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true });
+const query = reactive<StockQuery>({ strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true });
 const rows = ref<Stock[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -37,7 +38,8 @@ function restore(): void {
     query.search = read('search');
     query.industry = read('industry');
     query.concept = read('concept');
-    query.exchange = read('exchange');
+    const board = read('board');
+    query.board = isBoard(board) ? board : '';
     query.minTurnover = numeric('min');
     query.maxTurnover = numeric('max');
     query.sort = ['change', 'turnover', 'amount'].includes(read('sort')) ? read('sort') as StockQuery['sort'] : 'default';
@@ -46,7 +48,7 @@ function restore(): void {
 }
 function syncUrl(): void {
     const values: Record<string, string> = { strategy: query.strategy };
-    for (const key of ['search', 'industry', 'concept', 'exchange'] as const)
+    for (const key of ['search', 'industry', 'concept', 'board'] as const)
         if (query[key])
             values[key] = query[key];
     if (query.minTurnover !== undefined)
@@ -85,7 +87,7 @@ async function load(): Promise<void> {
             loading.value = false;
     }
 }
-function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', exchange: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
+function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
 function sortBy(key: StockQuery['sort']): void { query.descending = query.sort === key ? !query.descending : true; query.sort = key; }
 function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.code}`, query: { strategy: query.strategy, back: route.fullPath } }); }
 function metric(stock: Stock): string { return query.strategy === 'short' ? `${stock.volumeRatio.toFixed(2)}×` : query.strategy === 'swing' ? `${(stock.pullbackRatio * 100).toFixed(0)}%` : `+${stock.ma60Distance.toFixed(1)}%`; }
@@ -203,9 +205,9 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
         </el-select>
       </label>
       <label>
-        交易所
-        <el-select v-model="query.exchange" placeholder="全部交易所" clearable>
-          <el-option v-for="exchange in ['上海', '深圳', '北京']" :key="exchange" :label="exchange" :value="exchange" />
+        上市板块
+        <el-select v-model="query.board" placeholder="全部板块" clearable>
+          <el-option v-for="(board, id) in BOARDS" :key="id" :label="board.name" :value="id" />
         </el-select>
       </label>
       <label class="turnover-filter">
@@ -284,7 +286,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
                 <button class="stock-name" @click="openStock(stock)">{{ stock.name }}</button>
                 <div class="stock-meta">
                   <span>{{ stock.code }}</span>
-                  <span class="exchange-tag">{{ stock.exchange }}</span>
+                  <span class="board-tag">{{ BOARDS[stock.board].name }}</span>
                   <span>{{ stock.industry }}</span>
                 </div>
               </td>

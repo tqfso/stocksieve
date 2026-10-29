@@ -4,6 +4,7 @@ export type Role = 'admin' | 'user';
 export type Period = 'day' | 'week' | 'year';
 export type AnalysisKind = 'fundamental' | 'chips' | 'trade';
 export type Scenario = 'normal' | 'empty' | 'error';
+export type Board = 'SSE_MAIN' | 'SZSE_MAIN' | 'CHINEXT' | 'STAR' | 'BSE';
 export interface User {
     id: string;
     username: string;
@@ -15,6 +16,7 @@ export interface Stock {
     code: string;
     name: string;
     exchange: '上海' | '深圳' | '北京';
+    board: Board;
     industry: string;
     concepts: string[];
     strategies: Strategy[];
@@ -33,7 +35,7 @@ export interface StockQuery {
     search: string;
     industry: string;
     concept: string;
-    exchange: string;
+    board: Board | '';
     minTurnover: number | undefined;
     maxTurnover: number | undefined;
     sort: 'default' | 'change' | 'turnover' | 'amount';

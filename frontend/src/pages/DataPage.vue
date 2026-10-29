@@ -85,7 +85,7 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
         </span>
         <div>
           <h3>初始化基础数据</h3>
-          <p>模拟获取股票代码、名称、交易所和行业等基础信息。</p>
+          <p>模拟获取股票代码、名称、交易所、上市板块和行业等基础信息。</p>
           <el-button :disabled="!!sync.running" @click="start('initialize')">
             {{ sync.initialized ? '重新初始化' : '开始初始化' }}
             <AppIcon name="arrow" :size="16" />

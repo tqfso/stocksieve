@@ -8,7 +8,7 @@ export function filterStocks(stocks: Stock[], query: StockQuery): Stock[] {
         (!needle || `${stock.code}${stock.name}`.toLowerCase().includes(needle)) &&
         (!query.industry || stock.industry === query.industry) &&
         (!query.concept || stock.concepts.includes(query.concept)) &&
-        (!query.exchange || stock.exchange === query.exchange) &&
+        (!query.board || stock.board === query.board) &&
         (query.minTurnover === undefined || stock.turnover >= query.minTurnover) &&
         (query.maxTurnover === undefined || stock.turnover <= query.maxTurnover)).sort((a, b) => {
         if (query.sort !== 'default')

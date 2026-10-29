@@ -15,6 +15,8 @@
 
 基础信息和分类同样取自所选快照。股票不在该快照覆盖范围时返回 `404 STOCK_NOT_FOUND`；覆盖范围内仅当日行情不可用时，返回 `quote: null`。
 
+`stock.board` 用于上市板块标签和筛选，`stock.exchange` 保留所属交易所信息；枚举见通用约定。
+
 `signals` 的每项包含[机会列表](opportunities.md)中的 `id`、`strategy`、`reason`、`metrics`，并补充：
 
 ```json

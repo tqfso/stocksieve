@@ -130,7 +130,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .stock-name { font-size: 13px; font-weight: 600; color: #344e37; background: transparent; border: 0; padding: 0; }
 .stock-name:hover { color: #418c5b; text-decoration: underline; }
 .stock-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 9px; color: #95a38f; }
-.exchange-tag { font-size: 8px; padding: 1px 3px; background: #edf1e7; border-radius: 2px; color: #7e9272; }
+.board-tag { font-size: 8px; padding: 1px 3px; background: #edf1e7; border-radius: 2px; color: #7e9272; }
 .metric-pill { background: #eff4e9; color: #65874e; border-radius: 4px; padding: 4px 7px; font-size: 11px; }
 .reason-cell { white-space: normal; min-width: 210px; max-width: 300px; font-size: 10px; line-height: 1.8; color: #829376; }
 .concept-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }

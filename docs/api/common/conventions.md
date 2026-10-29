@@ -44,6 +44,7 @@
 | --- | --- |
 | role | `admin` 管理员、`user` 普通用户 |
 | exchange | `SSE` 上海、`SZSE` 深圳、`BSE` 北京 |
+| board | `SSE_MAIN` 沪市主板、`SZSE_MAIN` 深市主板、`CHINEXT` 创业板、`STAR` 科创板、`BSE` 北交所 |
 | strategy | `short` 短线、`swing` 波段、`long` 长线 |
 | period | `day` 日线、`week` 周线、`year` 年线 |
 | kind（分析） | `fundamental` 基本面、`chips` 筹码、`trade` 买卖条件 |

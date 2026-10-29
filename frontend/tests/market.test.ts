@@ -4,12 +4,21 @@ import assert from 'node:assert/strict';
 import { DATA_DATE, STOCKS } from '../src/mock/fixtures.ts';
 import { aggregateCandles, filterStocks, generateCandles } from '../src/mock/market.ts';
 import type { Candle, StockQuery } from '../src/types.ts';
-const base: StockQuery = { strategy: 'short', search: '', industry: '', concept: '', exchange: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true };
-test('复合条件只返回匹配策略、行业、概念、交易所与换手率的股票', () => {
-    const results = filterStocks(STOCKS, { ...base, industry: '电子', concept: '半导体', exchange: '上海', minTurnover: 6, maxTurnover: 10 });
+const base: StockQuery = { strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true };
+test('复合条件只返回匹配策略、行业、概念、上市板块与换手率的股票', () => {
+    const results = filterStocks(STOCKS, { ...base, industry: '电子', concept: '半导体', board: 'STAR', minTurnover: 6, maxTurnover: 10 });
     assert.deepEqual(results.map((stock) => stock.code), ['688256']);
     assert.equal(filterStocks(STOCKS, { ...base, search: '不存在' }).length, 0);
     assert.equal(filterStocks(STOCKS, { ...base, search: ' 300750 ' })[0]?.name, '宁德时代');
+});
+test('板块筛选区分同一交易所下的主板与创业板或科创板', () => {
+    const codes = (board: StockQuery['board']): string[] => filterStocks(STOCKS, { ...base, board }).map((stock) => stock.code);
+    assert.deepEqual(codes('SSE_MAIN'), ['601127', '601899']);
+    assert.deepEqual(codes('SZSE_MAIN'), ['002594']);
+    assert.deepEqual(codes('CHINEXT'), ['300750']);
+    assert.deepEqual(codes('STAR'), ['688256', '688981', '688111']);
+    assert.deepEqual(codes('BSE'), ['430047']);
+    assert.equal(codes('').length, 8);
 });
 test('三类策略使用各自排序口径，用户排序支持两个方向', () => {
     for (const strategy of ['short', 'swing', 'long'] as const) {

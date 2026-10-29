@@ -10,7 +10,7 @@
 | snapshotId | 否 | 默认最新已发布快照 |
 | search | 否 | 名称或代码包含匹配，去两侧空白，最长 50 字 |
 | industryId、conceptId | 否 | 对应筛选选项 ID，各最多一个 |
-| exchange | 否 | 交易所枚举 |
+| board | 否 | 上市板块枚举，单选；省略时包含全部板块 |
 | minTurnover、maxTurnover | 否 | `0～100`，最小值不得大于最大值 |
 | sort | 否 | `default`、`change`、`turnover`、`amount`，默认 `default` |
 | order | 否 | 自定义排序时可选 `asc`、`desc`，默认 `desc`；`sort=default` 时不接受此参数 |
@@ -24,7 +24,7 @@
   "items": [
     {
       "stock": {
-        "stockId": "SZSE.300750", "code": "300750", "name": "示例股票", "exchange": "SZSE",
+        "stockId": "SZSE.300750", "code": "300750", "name": "示例股票", "exchange": "SZSE", "board": "CHINEXT",
         "industry": { "id": "industry_power", "name": "电力设备" },
         "concepts": [{ "id": "concept_storage", "name": "储能" }]
       },

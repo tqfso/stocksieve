@@ -25,7 +25,7 @@
 | POST | `/auth/logout` | [退出当前会话](auth/README.md) | 登录用户 |
 | PUT | `/auth/password` | [修改自身密码](auth/README.md) | 管理员 |
 | GET | `/market/status` | [数据日期、覆盖范围、可用渠道](market/status.md) | 登录用户 |
-| GET | `/catalog/filters` | [行业、概念及交易所选项](market/filters.md) | 登录用户 |
+| GET | `/catalog/filters` | [行业、概念及上市板块选项](market/filters.md) | 登录用户 |
 | GET | `/strategies` | [策略说明](market/strategies.md) | 登录用户 |
 | GET | `/opportunities` | [机会筛选与汇总](market/opportunities.md) | 登录用户 |
 | GET | `/stocks/{stockId}` | [个股、行情与策略信号](market/stocks.md) | 登录用户 |

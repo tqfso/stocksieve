@@ -6,6 +6,7 @@ import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
 import StockChart from '../components/StockChart.vue';
 import AnalysisPanel from '../components/AnalysisPanel.vue';
+import { BOARDS } from '../boards.ts';
 import { DATA_DATE, STRATEGIES, selectionReason } from '../mock/fixtures.ts';
 import { getStock } from '../mock/service.ts';
 import type { Stock, Strategy } from '../types.ts';
@@ -57,7 +58,7 @@ void load();
       <div>
         <div class="stock-title-row">
           <h1>{{ stock.name }}</h1>
-          <span class="tag">{{ stock.exchange }} {{ stock.code }}</span>
+          <span class="tag">{{ BOARDS[stock.board].name }} {{ stock.code }}</span>
           <span class="tag">{{ stock.industry }}</span>
         </div>
         <div class="concept-tags">
