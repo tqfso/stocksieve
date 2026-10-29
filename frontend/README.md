@@ -2,6 +2,10 @@
 
 Vue 3 + TypeScript + Vite + Element Plus + Pinia + Vue Router。当前全部使用浏览器内的模拟数据，不调用后端、行情或 AI 服务。
 
+## 视觉样式
+
+采用蓝白主色、深灰正文与红涨绿跌的金融资讯风格，正文以 15px 为基准，表格以 14px 为基准，辅助文字以 13px 为基准。字体优先使用 Arial 及设备上的苹方、微软雅黑等中文系统字体，无需下载外部字体。字体、颜色和组件主题集中在 [theme.css](src/theme.css)，页面布局样式在 [style.css](src/style.css)。
+
 ## VS Code 编辑器
 
 安装工作区推荐的 **Vue - Official** 扩展（`Vue.volar`），用于 Vue 组件、模板和 TypeScript 的检查与补全。如果通过 Remote SSH 或容器开发，将扩展安装在对应远程环境中。同一工作区启用 Vetur 时，请将其禁用，以免两套 Vue 语言服务同时检查。

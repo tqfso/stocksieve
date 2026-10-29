@@ -1,0 +1,66 @@
+/* 本文件集中定义蓝白金融资讯风格的字体、颜色和组件主题变量。 */
+:root {
+  --font-family: Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-size-body: 15px;
+  --font-size-table: 14px;
+  --font-size-small: 13px;
+  --ink: #333333;
+  --text-secondary: #555555;
+  --muted: #666666;
+  --line: #e5e5e5;
+  --background: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #f7f8fa;
+  --accent: #0066cc;
+  --accent-hover: #0055aa;
+  --accent-soft: #edf5ff;
+  --accent-faint: #f7faff;
+  --accent-border: #d9e8fa;
+  --focus-ring: #91c3f3;
+  --rise: #d33b30;
+  --fall: #008d4c;
+  --warning: #8a651c;
+  --warning-soft: #fff8e8;
+  --warning-border: #f0dfb7;
+  --success-soft: #eaf6ee;
+  --danger-soft: #fff0ee;
+  --ma20: #a47b00;
+  --ma60: #4779c4;
+  --ma120: #9a60a4;
+
+  font-family: var(--font-family);
+  color: var(--ink);
+  background: var(--background);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  --el-font-family: var(--font-family);
+  --el-font-size-base: var(--font-size-body);
+  --el-font-size-small: var(--font-size-table);
+  --el-font-size-extra-small: var(--font-size-small);
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: #4d94db;
+  --el-color-primary-light-5: #80b3e6;
+  --el-color-primary-light-7: #b3d1f0;
+  --el-color-primary-light-8: #cce0f5;
+  --el-color-primary-light-9: #e6f0fa;
+  --el-color-primary-dark-2: #0052a3;
+  --el-color-success: var(--fall);
+  --el-color-warning: #b88222;
+  --el-color-danger: var(--rise);
+  --el-color-error: var(--rise);
+  --el-color-info: var(--muted);
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--muted);
+  --el-text-color-placeholder: #909399;
+  --el-border-color: #dcdfe6;
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: #eeeeee;
+  --el-fill-color-light: var(--surface-muted);
+  --el-fill-color-blank: var(--surface);
+  --el-bg-color-page: var(--background);
+  --el-border-radius-base: 4px;
+  --el-border-radius-small: 3px;
+}

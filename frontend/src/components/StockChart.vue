@@ -27,7 +27,7 @@ const lower = computed(() => Math.min(...visible.value.map((candle) => candle.lo
 const maxVolume = computed(() => Math.max(...visible.value.map((candle) => candle.volume), 1));
 const priceTicks = computed(() => Array.from({ length: 5 }, (_, index) => upper.value - (upper.value - lower.value) * index / 4));
 const tickIndexes = computed(() => [...new Set([0, Math.floor(visible.value.length / 3), Math.floor(visible.value.length * 2 / 3), visible.value.length - 1])]);
-const averageColors: Record<number, string> = { 20: '#b7954b', 60: '#6a85b5', 120: '#9679a7' };
+const averageColors: Record<number, string> = { 20: 'var(--ma20)', 60: 'var(--ma60)', 120: 'var(--ma120)' };
 const averageSeries = computed(() => Object.fromEntries([20, 60, 120].map((size) => {
     let sum = 0;
     const values = all.value.map((candle, index) => {
@@ -40,7 +40,7 @@ const averageSeries = computed(() => Object.fromEntries([20, 60, 120].map((size)
 })) as Record<number, (number | null)[]>);
 function x(index: number): number { return 12 + step.value * (index + 0.5); }
 function y(price: number): number { return 15 + (upper.value - price) / Math.max(0.01, upper.value - lower.value) * 225; }
-function color(open: number, close: number): string { return close >= open ? '#d85b5b' : '#24917b'; }
+function color(open: number, close: number): string { return close >= open ? 'var(--rise)' : 'var(--fall)'; }
 function line(size: number): string {
     let drawing = false;
     return averageSeries.value[size]!.slice(start.value, end.value).map((value, index) => {
@@ -139,7 +139,7 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
         </clipPath>
       </defs>
       <g v-for="price in priceTicks" :key="price">
-        <line x1="10" x2="928" :y1="y(price)" :y2="y(price)" stroke="#e9eeec" stroke-dasharray="3 4" />
+        <line x1="10" x2="928" :y1="y(price)" :y2="y(price)" stroke="var(--line)" stroke-dasharray="3 4" />
         <text x="945" :y="y(price) + 4" class="chart-axis">{{ price.toFixed(2) }}</text>
       </g>
       <g clip-path="url(#price-clip)">
@@ -166,7 +166,7 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
           stroke-width="1.4"
         />
       </g>
-      <line x1="10" x2="928" y1="260" y2="260" stroke="#e6ebe8" />
+      <line x1="10" x2="928" y1="260" y2="260" stroke="var(--line)" />
       <text x="12" y="277" class="chart-axis">成交量</text>
       <rect
         v-for="(candle, index) in visible"
@@ -187,10 +187,10 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
         class="chart-axis"
       >{{ period === 'year' ? visible[index]?.time.slice(0, 4) : visible[index]?.time.slice(0, 10) }}</text>
       <g v-if="hovered !== null && active">
-        <line :x1="x(hovered)" :x2="x(hovered)" y1="8" y2="322" stroke="#8b9c96" stroke-dasharray="4 3" />
-        <line x1="10" x2="928" :y1="y(active.close)" :y2="y(active.close)" stroke="#8b9c96" stroke-dasharray="4 3" />
-        <rect x="932" :y="y(active.close) - 10" width="68" height="20" rx="3" fill="#214f43" />
-        <text x="966" :y="y(active.close) + 4" text-anchor="middle" fill="white" font-size="11">{{ active.close.toFixed(2) }}</text>
+        <line :x1="x(hovered)" :x2="x(hovered)" y1="8" y2="322" stroke="var(--muted)" stroke-dasharray="4 3" />
+        <line x1="10" x2="928" :y1="y(active.close)" :y2="y(active.close)" stroke="var(--muted)" stroke-dasharray="4 3" />
+        <rect x="932" :y="y(active.close) - 10" width="68" height="20" rx="3" fill="var(--accent)" />
+        <text x="966" :y="y(active.close) + 4" text-anchor="middle" fill="white" class="chart-price-label">{{ active.close.toFixed(2) }}</text>
       </g>
     </svg>
     <div class="chart-footnote">
