@@ -208,6 +208,11 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Frontend dependencies and local tooling
+node_modules/
+*.tsbuildinfo
+.vite/
+
 # PyPI configuration file
 .pypirc
 
