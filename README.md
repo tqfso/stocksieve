@@ -13,4 +13,5 @@
 
 - [项目需求说明书（V1）](docs/requirements.md)
 - [选股策略设计](docs/strategies/README.md)
+- [后端 API 接口文档（V1 设计稿）](docs/api/README.md)
 - [前端启动与评审指南](frontend/README.md)
