@@ -5,6 +5,8 @@ import { useRoute, useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
 import { BOARDS, isBoard } from '../boards.ts';
+import { MARKET_CAP_RANGES, TURNOVER_RANGES, withSavedRange } from '../filter-ranges.ts';
+import type { RangeOption } from '../filter-ranges.ts';
 import { DATA_DATE, STOCKS, STRATEGIES, selectionReason } from '../mock/fixtures.ts';
 import { listStocks } from '../mock/service.ts';
 import { useReview } from '../stores.ts';
@@ -12,7 +14,7 @@ import type { Stock, StockQuery, Strategy } from '../types.ts';
 const route = useRoute();
 const router = useRouter();
 const review = useReview();
-const query = reactive<StockQuery>({ strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true });
+const query = reactive<StockQuery>({ strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true });
 const rows = ref<Stock[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -27,9 +29,26 @@ const concepts = [...new Set(STOCKS.flatMap((stock) => stock.concepts))];
 const strategy = computed(() => STRATEGIES[query.strategy]);
 const visibleRows = computed(() => rows.value.slice((page.value - 1) * pageSize, page.value * pageSize));
 const industryCount = computed(() => new Set(rows.value.map((stock) => stock.industry)).size);
-const invalidRange = computed(() => query.minTurnover !== undefined && query.maxTurnover !== undefined && query.minTurnover > query.maxTurnover);
+const invalidTurnoverRange = computed(() => query.minTurnover !== undefined && query.maxTurnover !== undefined && query.minTurnover > query.maxTurnover);
+const invalidMarketCapRange = computed(() => query.minMarketCap !== undefined && query.maxMarketCap !== undefined && query.minMarketCap > query.maxMarketCap);
+const invalidRange = computed(() => invalidTurnoverRange.value || invalidMarketCapRange.value);
 const metricName = computed(() => query.strategy === 'short' ? '成交额放大' : query.strategy === 'swing' ? '回调成交额比' : '距 MA60');
 const metricHint = computed(() => query.strategy === 'short' ? '倍数从高到低' : query.strategy === 'swing' ? '距 MA20 从小到大' : '距 MA60 从小到大');
+/** 将下拉选项与现有的范围参数双向关联，清空时恢复为不限。 */
+function useRangeSelection(presets: readonly RangeOption[], minField: 'minTurnover' | 'minMarketCap', maxField: 'maxTurnover' | 'maxMarketCap', unit: string) {
+    const options = computed(() => withSavedRange(presets, query[minField], query[maxField], unit));
+    const selection = computed({
+        get: () => options.value.find((option) => option.min === query[minField] && option.max === query[maxField])!.value,
+        set: (value: string) => {
+            const option = options.value.find((item) => item.value === value);
+            query[minField] = option?.min;
+            query[maxField] = option?.max;
+        },
+    });
+    return { options, selection };
+}
+const { options: turnoverOptions, selection: turnoverRange } = useRangeSelection(TURNOVER_RANGES, 'minTurnover', 'maxTurnover', '%');
+const { options: marketCapOptions, selection: marketCapRange } = useRangeSelection(MARKET_CAP_RANGES, 'minMarketCap', 'maxMarketCap', '亿元');
 /** 从 URL 恢复筛选，支持详情返回、浏览器前进后退与刷新。 */
 function restore(): void {
     const read = (key: string): string => typeof route.query[key] === 'string' ? route.query[key] as string : '';
@@ -42,7 +61,9 @@ function restore(): void {
     query.board = isBoard(board) ? board : '';
     query.minTurnover = numeric('min');
     query.maxTurnover = numeric('max');
-    query.sort = ['change', 'turnover', 'amount'].includes(read('sort')) ? read('sort') as StockQuery['sort'] : 'default';
+    query.minMarketCap = numeric('minMarketCap');
+    query.maxMarketCap = numeric('maxMarketCap');
+    query.sort = ['change', 'turnover', 'amount', 'totalMarketCap'].includes(read('sort')) ? read('sort') as StockQuery['sort'] : 'default';
     query.descending = read('order') !== 'asc';
     page.value = Math.max(1, Number.parseInt(read('page'), 10) || 1);
 }
@@ -55,6 +76,10 @@ function syncUrl(): void {
         values.min = String(query.minTurnover);
     if (query.maxTurnover !== undefined)
         values.max = String(query.maxTurnover);
+    if (query.minMarketCap !== undefined)
+        values.minMarketCap = String(query.minMarketCap);
+    if (query.maxMarketCap !== undefined)
+        values.maxMarketCap = String(query.maxMarketCap);
     if (query.sort !== 'default') {
         values.sort = query.sort;
         values.order = query.descending ? 'desc' : 'asc';
@@ -87,7 +112,7 @@ async function load(): Promise<void> {
             loading.value = false;
     }
 }
-function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
+function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
 function sortBy(key: StockQuery['sort']): void { query.descending = query.sort === key ? !query.descending : true; query.sort = key; }
 function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.code}`, query: { strategy: query.strategy, back: route.fullPath } }); }
 function metric(stock: Stock): string { return query.strategy === 'short' ? `${stock.volumeRatio.toFixed(2)}×` : query.strategy === 'swing' ? `${(stock.pullbackRatio * 100).toFixed(0)}%` : `+${stock.ma60Distance.toFixed(1)}%`; }
@@ -171,7 +196,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     </div>
     <div class="summary-card">
       <span>当前排序</span>
-      <strong class="summary-text">{{ query.sort === 'default' ? metricHint : ({ change: '涨跌幅', turnover: '换手率', amount: '成交额' }[query.sort] + (query.descending ? '从高到低' : '从低到高')) }}</strong>
+      <strong class="summary-text">{{ query.sort === 'default' ? metricHint : ({ change: '涨跌幅', turnover: '换手率', amount: '成交额', totalMarketCap: '总市值' }[query.sort] + (query.descending ? '从高到低' : '从低到高')) }}</strong>
       <p>{{ query.sort === 'default' ? '使用策略默认排序' : '点击表头可切换排序方向' }}</p>
     </div>
   </div>
@@ -210,30 +235,21 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
           <el-option v-for="(board, id) in BOARDS" :key="id" :label="board.name" :value="id" />
         </el-select>
       </label>
-      <label class="turnover-filter">
-        换手率区间（%）
-        <span>
-          <el-input-number
-            v-model="query.minTurnover"
-            :min="0"
-            :max="100"
-            :controls="false"
-            placeholder="最低"
-            aria-label="最低换手率"
-          />
-          <i>—</i>
-          <el-input-number
-            v-model="query.maxTurnover"
-            :min="0"
-            :max="100"
-            :controls="false"
-            placeholder="最高"
-            aria-label="最高换手率"
-          />
-        </span>
+      <label>
+        换手率
+        <el-select v-model="turnoverRange" placeholder="不限" clearable aria-label="换手率区间">
+          <el-option v-for="option in turnoverOptions" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
+      </label>
+      <label>
+        总市值
+        <el-select v-model="marketCapRange" placeholder="不限" clearable aria-label="总市值区间">
+          <el-option v-for="option in marketCapOptions" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
       </label>
     </div>
-    <p v-if="invalidRange" class="field-error">最低换手率不能大于最高换手率。</p>
+    <p v-if="invalidTurnoverRange" class="field-error">最低换手率不能大于最高换手率。</p>
+    <p v-if="invalidMarketCapRange" class="field-error">最低总市值不能大于最高总市值。</p>
   </section>
   <section class="panel results-panel">
     <div class="section-caption results-caption">
@@ -255,7 +271,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <StatePanel
       v-else-if="!rows.length"
       title="暂时没有符合条件的股票"
-      :description="invalidRange ? '请先调整换手率范围。' : '试试调整行业、概念或换手率范围。'"
+      :description="invalidRange ? '请先调整总市值或换手率范围。' : '试试调整板块、行业、概念或数值范围。'"
       action="重置筛选"
       @action="resetFilters"
     />
@@ -274,6 +290,9 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
               </th>
               <th>
                 <button @click="sortBy('amount')">成交额 {{ query.sort === 'amount' ? (query.descending ? '↓' : '↑') : '↕' }}</button>
+              </th>
+              <th>
+                <button @click="sortBy('totalMarketCap')">总市值（亿元） {{ query.sort === 'totalMarketCap' ? (query.descending ? '↓' : '↑') : '↕' }}</button>
               </th>
               <th>{{ metricName }}</th>
               <th>入选理由</th>
@@ -297,6 +316,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
                 {{ stock.amount.toFixed(1) }}
                 <small>亿</small>
               </td>
+              <td class="numeric">{{ stock.totalMarketCap === null ? '—' : stock.totalMarketCap.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }}</td>
               <td>
                 <span class="metric-pill">{{ metric(stock) }}</span>
               </td>

@@ -89,6 +89,13 @@ void load();
         </strong>
       </div>
       <div>
+        <span>总市值</span>
+        <strong>
+          {{ stock.totalMarketCap === null ? '—' : stock.totalMarketCap.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }}
+          <small v-if="stock.totalMarketCap !== null">亿元</small>
+        </strong>
+      </div>
+      <div>
         <span>所属策略</span>
         <strong class="quote-strategies">{{ strategyNames }}</strong>
       </div>

@@ -10,9 +10,16 @@ export function filterStocks(stocks: Stock[], query: StockQuery): Stock[] {
         (!query.concept || stock.concepts.includes(query.concept)) &&
         (!query.board || stock.board === query.board) &&
         (query.minTurnover === undefined || stock.turnover >= query.minTurnover) &&
-        (query.maxTurnover === undefined || stock.turnover <= query.maxTurnover)).sort((a, b) => {
-        if (query.sort !== 'default')
-            return (a[query.sort] - b[query.sort]) * (query.descending ? -1 : 1);
+        (query.maxTurnover === undefined || stock.turnover <= query.maxTurnover) &&
+        (query.minMarketCap === undefined || (stock.totalMarketCap !== null && stock.totalMarketCap >= query.minMarketCap)) &&
+        (query.maxMarketCap === undefined || (stock.totalMarketCap !== null && stock.totalMarketCap <= query.maxMarketCap))).sort((a, b) => {
+        if (query.sort !== 'default') {
+            const first = a[query.sort], second = b[query.sort];
+            // 缺失市值不当作零，升序和降序都排在已知值后面。
+            if (first === null) return second === null ? 0 : 1;
+            if (second === null) return -1;
+            return (first - second) * (query.descending ? -1 : 1);
+        }
         if (query.strategy === 'short')
             return b.volumeRatio - a.volumeRatio;
         return query.strategy === 'swing' ? a.ma20Distance - b.ma20Distance : a.ma60Distance - b.ma60Distance;

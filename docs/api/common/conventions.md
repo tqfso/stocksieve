@@ -52,6 +52,7 @@
 | source | `sina`、`baostock`；当前实际可用渠道以[数据状态接口](../market/status.md)为准 |
 | status（任务） | `queued` 排队、`running` 进行中、`succeeded` 成功、`failed` 失败 |
 | 价格 / 成交额 amount | 人民币元；例如 `amount: 8640000000` 表示 86.4 亿元 |
+| totalMarketCap、minMarketCap、maxMarketCap | 总市值及区间边界，人民币元；例如 `10000000000` 表示 100 亿元 |
 | 成交量 volume | 股，不是手 |
 | change、turnover、均线偏离及变化幅度 | 百分数，例如 `4.35` 表示 `4.35%` |
 | amountMultiple、pullbackAmountRatio | 倍数 / 比值，例如 `1.8` 表示 1.8 倍，`0.65` 表示 65% |

@@ -12,7 +12,8 @@
 | industryId、conceptId | 否 | 对应筛选选项 ID，各最多一个 |
 | board | 否 | 上市板块枚举，单选；省略时包含全部板块 |
 | minTurnover、maxTurnover | 否 | `0～100`，最小值不得大于最大值 |
-| sort | 否 | `default`、`change`、`turnover`、`amount`，默认 `default` |
+| minMarketCap、maxMarketCap | 否 | 总市值区间，单位元，均不得小于 `0`；最小值不得大于最大值，可仅传一侧，包含边界 |
+| sort | 否 | `default`、`change`、`turnover`、`amount`、`totalMarketCap`，默认 `default` |
 | order | 否 | 自定义排序时可选 `asc`、`desc`，默认 `desc`；`sort=default` 时不接受此参数 |
 | page、pageSize | 否 | 标准分页 |
 
@@ -28,7 +29,7 @@
         "industry": { "id": "industry_power", "name": "电力设备" },
         "concepts": [{ "id": "concept_storage", "name": "储能" }]
       },
-      "quote": { "price": 268.32, "change": 4.35, "turnover": 2.86, "amount": 8640000000 },
+      "quote": { "price": 268.32, "change": 4.35, "turnover": 2.86, "amount": 8640000000, "totalMarketCap": 1180000000000 },
       "strategies": ["short", "long"],
       "signal": {
         "id": "signal_example", "strategy": "short",
@@ -50,3 +51,5 @@
 - `sort` 响应返回实际生效的字段及方向。有效快照下无匹配结果返回 `items: []`，不是 `DATA_NOT_READY`。
 
 `quote.price` 为快照日收盘价，`change` 为同一复权口径下较前一交易日收盘价的涨跌幅，`amount` 为当日原始成交额。`turnover` 采用当日流通 A 股数量为分母的换手率，无法取得或确认该口径时为 `null`。
+
+`quote.totalMarketCap` 为快照日总市值，采用未复权价格口径，不是流通市值，也不由图表前复权价格直接推算。未知时返回 `null`；设置任一市值边界时，排除市值未知的股票，不将其按零值匹配。请求 `minMarketCap=10000000000&maxMarketCap=50000000000` 表示筛选 100～500 亿元。

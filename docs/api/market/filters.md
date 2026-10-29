@@ -18,7 +18,7 @@
   ],
   "industries": [{ "id": "industry_power", "name": "电力设备" }],
   "concepts": [{ "id": "concept_storage", "name": "储能" }],
-  "coverage": { "board": "complete", "industry": "complete", "concepts": "partial", "turnover": "complete" }
+  "coverage": { "board": "complete", "industry": "complete", "concepts": "partial", "turnover": "complete", "totalMarketCap": "complete" }
 }
 ```
 

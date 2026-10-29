@@ -24,6 +24,8 @@ export interface Stock {
     change: number;
     turnover: number;
     amount: number;
+    /** 模拟展示模型的总市值，单位亿元；缺失时不按零值处理。 */
+    totalMarketCap: number | null;
     volumeRatio: number;
     ma20Distance: number;
     ma60Distance: number;
@@ -38,7 +40,10 @@ export interface StockQuery {
     board: Board | '';
     minTurnover: number | undefined;
     maxTurnover: number | undefined;
-    sort: 'default' | 'change' | 'turnover' | 'amount';
+    /** 总市值筛选区间，单位亿元，与页面选项保持一致。 */
+    minMarketCap: number | undefined;
+    maxMarketCap: number | undefined;
+    sort: 'default' | 'change' | 'turnover' | 'amount' | 'totalMarketCap';
     descending: boolean;
 }
 export interface Candle {

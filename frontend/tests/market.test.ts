@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { DATA_DATE, STOCKS } from '../src/mock/fixtures.ts';
 import { aggregateCandles, filterStocks, generateCandles } from '../src/mock/market.ts';
 import type { Candle, StockQuery } from '../src/types.ts';
-const base: StockQuery = { strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, sort: 'default', descending: true };
+const base: StockQuery = { strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true };
 test('复合条件只返回匹配策略、行业、概念、上市板块与换手率的股票', () => {
     const results = filterStocks(STOCKS, { ...base, industry: '电子', concept: '半导体', board: 'STAR', minTurnover: 6, maxTurnover: 10 });
     assert.deepEqual(results.map((stock) => stock.code), ['688256']);
@@ -19,6 +19,26 @@ test('板块筛选区分同一交易所下的主板与创业板或科创板', ()
     assert.deepEqual(codes('STAR'), ['688256', '688981', '688111']);
     assert.deepEqual(codes('BSE'), ['430047']);
     assert.equal(codes('').length, 8);
+});
+test('总市值支持单侧、完整区间及包含边界的组合筛选', () => {
+    const codes = (filters: Partial<StockQuery>): string[] => filterStocks(STOCKS, { ...base, ...filters }).map((stock) => stock.code);
+    assert.deepEqual(codes({ maxMarketCap: 100 }), ['430047']);
+    assert.deepEqual(codes({ minMarketCap: 10000 }), ['300750']);
+    assert.deepEqual(codes({ minMarketCap: 1850, maxMarketCap: 2400 }), ['688256', '601127']);
+    assert.deepEqual(codes({ minMarketCap: 1500, maxMarketCap: 1500 }), ['688111']);
+    assert.deepEqual(codes({ board: 'STAR', minMarketCap: 1000, maxMarketCap: 3000 }), ['688256', '688111']);
+    assert.deepEqual(codes({ minMarketCap: 20000 }), []);
+});
+test('缺失总市值不会当作零，排序时始终位于已知值之后', () => {
+    const stocks = [
+        STOCKS[3]!,
+        { ...STOCKS[10]!, totalMarketCap: null },
+        { ...STOCKS[11]!, totalMarketCap: 0 },
+    ];
+    assert.deepEqual(filterStocks(stocks, { ...base, maxMarketCap: 0 }).map((stock) => stock.code), ['430047']);
+    assert.deepEqual(filterStocks(stocks, { ...base, minMarketCap: 0 }).map((stock) => stock.code), ['430047', '002594']);
+    assert.deepEqual(filterStocks(stocks, { ...base, sort: 'totalMarketCap', descending: false }).map((stock) => stock.code), ['430047', '002594', '688256']);
+    assert.deepEqual(filterStocks(stocks, { ...base, sort: 'totalMarketCap', descending: true }).map((stock) => stock.code), ['002594', '430047', '688256']);
 });
 test('三类策略使用各自排序口径，用户排序支持两个方向', () => {
     for (const strategy of ['short', 'swing', 'long'] as const) {

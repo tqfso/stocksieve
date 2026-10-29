@@ -111,16 +111,13 @@ h1 { margin: 10px 0; font-size: 27px; font-weight: 600; letter-spacing: -.7px; }
 .section-caption > div { display: flex; gap: 14px; align-items: center; }
 .section-caption .muted { font-size: 11px; }
 .filter-panel .section-caption { padding-bottom: 2px; border: 0; min-height: 48px; }
-.filter-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1.4fr; gap: 15px; padding: 12px 22px 23px; }
+.filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; padding: 12px 22px 23px; }
 .filter-grid label, .data-source label { display: flex; flex-direction: column; gap: 9px; font-size: 11px; color: #7e8f81; min-width: 0; }
-.turnover-filter > span { display: flex; align-items: center; gap: 8px; }
-.turnover-filter .el-input-number { width: 50%; }
-.turnover-filter i { font-style: normal; color: #b4bfb3; }
 .field-error { color: #c75858; font-size: 12px; padding: 0 22px 10px; margin-top: -9px; }
 .tiny-label { font-size: 10px; color: #98a393; }
 .table-scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; text-align: left; white-space: nowrap; }
-.stock-table { min-width: 1000px; }
+.stock-table { min-width: 1120px; }
 th { background: #fafbf8; color: #8c9a88; font-size: 10px; font-weight: 500; padding: 13px 15px; border-bottom: 1px solid #edf1e9; }
 th:first-child, td:first-child { padding-left: 22px; }
 th button { border: 0; padding: 0; background: transparent; color: inherit; font-size: inherit; }
@@ -302,7 +299,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .workspace { padding: 28px 24px 15px; }
   .topbar { padding: 0 24px; }
   .demo-strip { padding-left: 24px; padding-right: 24px; }
-  .filter-grid { grid-template-columns: repeat(3, 1fr); }
+  .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .period-inline { display: block; margin-left: 0; }
   .signal-layout { gap: 20px; padding: 22px; }
   .signal-metrics { gap: 25px; }
@@ -356,7 +353,6 @@ tbody tr:last-child td { border-bottom: 0; }
   .section-caption > div { gap: 8px; }
   .section-caption .muted { font-size: 10px; }
   .filter-grid { grid-template-columns: 1fr 1fr; padding: 12px 15px 20px; gap: 16px 12px; }
-  .turnover-filter { grid-column: span 2; }
   .filter-grid label { font-size: 10px; }
   .table-footer { padding: 12px 15px; flex-wrap: wrap; }
   .stock-heading { align-items: start; flex-wrap: wrap; gap: 15px; }
