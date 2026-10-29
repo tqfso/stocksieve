@@ -54,18 +54,26 @@ export interface Candle {
     low: number;
     volume: number;
 }
-export interface Report {
-    id: string;
-    userId: string;
-    code: string;
-    kind: AnalysisKind;
-    createdAt: string;
+/** 完整模拟报告的内容结构，预览与保存后的报告共用。 */
+export interface ReportContent {
+    sampleVersion: 2;
+    title: string;
+    dataDate: string;
+    strategy: Strategy;
+    metrics: { label: string; value: string; detail: string }[];
     summary: string;
     sections: {
         title: string;
         text: string;
     }[];
     sources: string[];
+}
+export interface Report extends ReportContent {
+    id: string;
+    userId: string;
+    code: string;
+    kind: AnalysisKind;
+    createdAt: string;
 }
 export interface SyncJob {
     id: string;

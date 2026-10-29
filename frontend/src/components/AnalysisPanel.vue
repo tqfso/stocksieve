@@ -5,10 +5,13 @@ import { ElMessage } from 'element-plus';
 import AppIcon from './AppIcon.vue';
 import StatePanel from './StatePanel.vue';
 import { analyze, reportsFor } from '../mock/service.ts';
+import { createReportContent } from '../mock/reports.ts';
+import { STRATEGIES } from '../mock/fixtures.ts';
 import { useReview } from '../stores.ts';
-import type { AnalysisKind, Report, Stock } from '../types.ts';
+import type { AnalysisKind, Report, Stock, Strategy } from '../types.ts';
 const props = defineProps<{
     stock: Stock;
+    strategy: Strategy;
 }>();
 const review = useReview();
 const kind = ref<AnalysisKind>('fundamental');
@@ -16,7 +19,8 @@ const loading = ref(false);
 const error = ref('');
 const reports = ref<Report[]>([]);
 const selected = ref('');
-const report = computed(() => reports.value.find((item) => item.id === selected.value));
+const savedReport = computed(() => reports.value.find((item) => item.id === selected.value));
+const report = computed(() => savedReport.value ?? createReportContent(props.stock, kind.value, props.strategy));
 const kinds: {
     key: AnalysisKind;
     name: string;
@@ -26,7 +30,7 @@ const kinds: {
     { key: 'chips', name: '筹码', description: '成交活跃度与成本分布' },
     { key: 'trade', name: '买卖条件', description: '观察条件与信号失效' },
 ];
-function refresh(): void { reports.value = reportsFor(props.stock.code, kind.value); selected.value = reports.value[0]?.id ?? ''; error.value = ''; }
+function refresh(): void { reports.value = reportsFor(props.stock.code, kind.value, props.strategy); selected.value = reports.value[0]?.id ?? ''; error.value = ''; }
 async function generate(retry = false): Promise<void> {
     if (loading.value)
         return;
@@ -35,7 +39,7 @@ async function generate(retry = false): Promise<void> {
     error.value = '';
     loading.value = true;
     try {
-        await analyze(props.stock, kind.value, review.aiFail);
+        await analyze(props.stock, kind.value, review.aiFail, props.strategy);
         refresh();
     }
     catch (cause) {
@@ -46,18 +50,16 @@ async function generate(retry = false): Promise<void> {
     }
 }
 async function copy(): Promise<void> {
-    if (!report.value)
-        return;
     try {
-        await navigator.clipboard.writeText(`[模拟报告] ${props.stock.name}\n${report.value.summary}\n${report.value.sections.map((item) => `${item.title}\n${item.text}`).join('\n\n')}\n生成时间：${report.value.createdAt}`);
+        const metrics = report.value.metrics.map((item) => `${item.label}：${item.value}`).join('\n');
+        await navigator.clipboard.writeText(`[模拟报告] ${report.value.title}\n财务、估值及筹码数据为虚构样例，非真实研究结论。\n数据日期：${report.value.dataDate}\n${metrics}\n\n${report.value.summary}\n\n${report.value.sections.map((item) => `${item.title}\n${item.text}`).join('\n\n')}\n生成时间：${savedReport.value?.createdAt ?? '样例预览，尚未保存'}`);
         ElMessage.success('模拟报告已复制。');
     }
     catch {
         ElMessage.info('当前浏览器无法自动复制，可以直接选择报告文字复制。');
     }
 }
-watch(kind, refresh);
-watch(() => props.stock.code, refresh);
+watch([kind, () => props.stock.code, () => props.strategy], refresh);
 refresh();
 </script>
 <template>
@@ -70,7 +72,7 @@ refresh();
         </strong>
         <span class="muted">按需发起 · 与规则筛选分别展示</span>
       </div>
-      <span class="tag tag-amber">模拟生成</span>
+      <span class="tag tag-amber">模拟数据</span>
     </div>
     <div class="analysis-types">
       <button
@@ -88,27 +90,12 @@ refresh();
       <template #title>{{ error }}</template>
       <el-button size="small" type="danger" plain @click="generate(true)">重试生成</el-button>
     </el-alert>
-    <StatePanel v-if="loading" kind="loading" title="正在生成模拟报告" description="演示资料整理与分析过程，不会调用真实 AI 服务。" />
-    <div v-else-if="!report" class="analysis-empty">
-      <span class="analysis-empty-icon">
-        <AppIcon name="spark" :size="30" />
-      </span>
-      <h3>为这只股票补充研究视角</h3>
-      <p>
-        选择分析类型后发起生成，报告将保存在当前浏览器，
-        <br />
-        仅当前演示账号可查看自己的报告记录。
-      </p>
-      <el-button type="primary" @click="generate()">
-        <AppIcon name="spark" :size="16" />
-        生成模拟报告
-      </el-button>
-    </div>
+    <StatePanel v-if="loading" kind="loading" title="正在生成分析报告" />
     <div v-else class="report-content">
       <div class="report-toolbar">
-        <span class="muted">生成于 {{ report.createdAt }}（北京时间）</span>
+        <span class="muted">{{ savedReport ? `生成于 ${savedReport.createdAt}（北京时间）` : '完整样例预览 · 尚未保存' }}</span>
         <div>
-          <el-select v-model="selected" aria-label="报告历史" style="width: 180px">
+          <el-select v-if="reports.length" v-model="selected" aria-label="报告历史" style="width: 180px">
             <el-option
               v-for="(item, index) in reports"
               :key="item.id"
@@ -117,10 +104,32 @@ refresh();
             />
           </el-select>
           <el-button @click="copy">复制</el-button>
-          <el-button type="primary" plain @click="generate()">重新生成</el-button>
+          <el-button type="primary" @click="generate()">{{ savedReport ? '重新生成' : '生成报告' }}</el-button>
         </div>
       </div>
-      <div class="report-summary">{{ report.summary }}</div>
+      <div class="report-heading">
+        <h2>{{ report.title }}</h2>
+        <div class="report-context">
+          <span>{{ stock.code }} · {{ stock.industry }}</span>
+          <span>数据截至 {{ report.dataDate }}</span>
+          <span v-if="kind === 'trade'">{{ STRATEGIES[report.strategy].name }}策略</span>
+        </div>
+      </div>
+      <p class="report-sample-note">
+        <AppIcon name="info" :size="15" />
+        财务、估值与筹码数值为虚构样例，仅用于产品评审。
+      </p>
+      <div class="report-metrics">
+        <div v-for="metric in report.metrics" :key="metric.label">
+          <span>{{ metric.label }}</span>
+          <strong>{{ metric.value }}</strong>
+          <small>{{ metric.detail }}</small>
+        </div>
+      </div>
+      <div class="report-summary">
+        <strong>核心判断</strong>
+        <p>{{ report.summary }}</p>
+      </div>
       <div class="report-sections">
         <article v-for="(section, index) in report.sections" :key="section.title">
           <span class="report-number">0{{ index + 1 }}</span>
@@ -131,9 +140,8 @@ refresh();
         </article>
       </div>
       <div class="report-sources">
-        <strong>资料来源（模拟）</strong>
+        <strong>参考依据 · 模拟样例</strong>
         <span v-for="source in report.sources" :key="source">{{ source }}</span>
-        <p>当前没有获取真实网络资料；正式对接后将在此展示来源链接、资料日期及缺失信息。</p>
       </div>
     </div>
   </section>

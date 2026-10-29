@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as api from '../src/mock/service.ts';
 import { STOCKS } from '../src/mock/fixtures.ts';
+import { createReportContent } from '../src/mock/reports.ts';
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', { value: {
         getItem: (key: string) => storage.get(key) ?? null,
@@ -38,7 +39,11 @@ test('模拟业务流程', async (t) => {
         const stock = STOCKS[0]!;
         await assert.rejects(api.analyze(stock, 'fundamental', true), /超时/);
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 0);
-        await api.analyze(stock, 'fundamental', false);
+        const preview = createReportContent(stock, 'fundamental');
+        assert.equal(api.reportsFor(stock.code, 'fundamental').length, 0);
+        const generated = await api.analyze(stock, 'fundamental', false);
+        assert.equal(generated.summary, preview.summary);
+        assert.deepEqual(generated.metrics, preview.metrics);
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 1);
         api.logout();
         await api.login('viewer', 'demo1234');
@@ -48,6 +53,16 @@ test('模拟业务流程', async (t) => {
         api.logout();
         await api.login('admin', 'demo1234');
         assert.equal(api.reportsFor(stock.code, 'chips').length, 0);
+    });
+    await t.test('同一股票的买卖条件历史按策略分别读取', async () => {
+        await api.login('admin', 'demo1234');
+        const stock = STOCKS.find((item) => item.code === '300750')!;
+        await api.analyze(stock, 'trade', false, 'short');
+        await api.analyze(stock, 'trade', false, 'long');
+        assert.equal(api.reportsFor(stock.code, 'trade', 'short').length, 1);
+        assert.equal(api.reportsFor(stock.code, 'trade', 'long').length, 1);
+        assert.equal(api.reportsFor(stock.code, 'trade', 'short')[0]?.strategy, 'short');
+        assert.equal(api.reportsFor(stock.code, 'trade', 'long')[0]?.strategy, 'long');
     });
     await t.test('初始化前置、重复任务阻止、失败重试与成功结果', async () => {
         await api.login('admin', 'demo1234');

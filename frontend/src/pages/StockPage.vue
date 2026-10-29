@@ -170,7 +170,7 @@ void load();
         </div>
       </div>
     </section>
-    <AnalysisPanel v-else :stock="stock" />
+    <AnalysisPanel v-else :stock="stock" :strategy="activeStrategy" />
     <p class="page-footnote">
       <AppIcon name="info" :size="14" />
       示例价格、走势、信号和报告仅用于交互评审。

@@ -1,7 +1,8 @@
 // 本文件集中提供异步模拟业务和浏览器持久化；页面不直接访问存储或网络。
-import type { AnalysisKind, Report, Role, Scenario, Stock, StockQuery, SyncJob, User } from '../types.ts';
+import type { AnalysisKind, Report, Role, Scenario, Stock, StockQuery, Strategy, SyncJob, User } from '../types.ts';
 import { STOCKS } from './fixtures.ts';
 import { filterStocks } from './market.ts';
+import { createReportContent, REPORT_SAMPLE_VERSION } from './reports.ts';
 interface Account extends User {
     password: string;
 }
@@ -155,38 +156,21 @@ export async function changePassword(oldPassword: string, newPassword: string): 
     logout();
 }
 /** AI 报告是固定结构的示例文本，不访问模型、财报或筹码数据。 */
-export async function analyze(stock: Stock, kind: AnalysisKind, fail: boolean): Promise<Report> {
+export async function analyze(stock: Stock, kind: AnalysisKind, fail: boolean, strategy: Strategy = stock.strategies[0]!): Promise<Report> {
     const user = requireUser();
     await delay(1500);
     if (fail)
         throw new Error('模拟分析服务超时。本次未生成报告，可以重试。');
-    const content: Record<AnalysisKind, Pick<Report, 'summary' | 'sections' | 'sources'>> = {
-        fundamental: {
-            summary: `${stock.name}的基本面报告示例：从行业位置、盈利质量与现金流三个角度组织资料。`,
-            sections: [{ title: '行业与业务', text: `示例股票属于${stock.industry}行业，涉及${stock.concepts.join('、')}。正式报告将在发起分析时获取资料并标注出处。` }, { title: '盈利与现金流', text: '此处展示营收、利润及经营现金流的分析结构。当前未获取任何真实财务数值，不对盈利质量作判断。' }, { title: '待核实事项', text: '需进一步核对最新财务报告、业务集中度和行业需求变化，资料不足时应明确标注。' }],
-            sources: ['模拟资料：公司业务概览', '模拟资料：财务报告摘要'],
-        },
-        chips: {
-            summary: `${stock.name}的筹码报告示例：展示成本分布、成交活跃度与分析局限。`,
-            sections: [{ title: '成交活跃度', text: `示例换手率为 ${stock.turnover.toFixed(2)}%，成交额为 ${stock.amount.toFixed(1)} 亿元，均为虚构数据。` }, { title: '成本分布', text: '成本分布需要依据明确的数据与估算口径。当前仅展示报告结构，不提供筹码集中度或资金流向结论。' }, { title: '观察要点', text: '可以结合量价变化复核趋势；换手率或成交额单一指标不能直接等同于资金意图。' }],
-            sources: ['模拟资料：日线成交数据', '模拟资料：成本分布说明'],
-        },
-        trade: {
-            summary: `${stock.name}的买卖条件报告示例：围绕已有规则组织观察条件和失效情形。`,
-            sections: [{ title: '观察条件', text: '对照当前策略的全部入选条件，复查价格与均线关系、成交额变化，以及数据是否完整。' }, { title: '失效情形', text: '短线关注跌回突破参考价，波段关注跌破入选时的回调低点，长线关注持续跌破 MA60 或均线关系改变。' }, { title: '使用边界', text: '本报告为交互演示，不包含真实交易建议、预测价格或收益承诺。规则信号与 AI 分析分别展示。' }],
-            sources: ['模拟资料：策略信号快照', '模拟资料：日线示例'],
-        },
-    };
-    const report: Report = { id: crypto.randomUUID(), userId: user.id, code: stock.code, kind, createdAt: timeLabel(), ...content[kind] };
+    const report: Report = { id: crypto.randomUUID(), userId: user.id, code: stock.code, kind, createdAt: timeLabel(), ...createReportContent(stock, kind, strategy) };
     db().reports.unshift(report);
     db().reports = db().reports.slice(0, 100);
     save();
     return report;
 }
 /** 按当前用户隔离报告历史，避免切换演示账号后混用报告。 */
-export function reportsFor(code: string, kind: AnalysisKind): Report[] {
+export function reportsFor(code: string, kind: AnalysisKind, strategy?: Strategy): Report[] {
     const user = requireUser();
-    return db().reports.filter((item) => item.userId === user.id && item.code === code && item.kind === kind);
+    return db().reports.filter((item) => item.sampleVersion === REPORT_SAMPLE_VERSION && item.userId === user.id && item.code === code && item.kind === kind && (kind !== 'trade' || !strategy || item.strategy === strategy));
 }
 export function syncSnapshot(): {
     initialized: boolean;
