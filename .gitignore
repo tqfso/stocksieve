@@ -212,6 +212,7 @@ tempCodeRunnerFile.py
 node_modules/
 *.tsbuildinfo
 .vite/
+/backend/deploy/postgres/backups/
 
 # PyPI configuration file
 .pypirc

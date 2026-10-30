@@ -1,0 +1,30 @@
+# 本文件使用本机 postgres:15-alpine 镜像部署单机 PostgreSQL，数据保存在命名卷。
+name: stocksieve-postgres
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    pull_policy: never
+    container_name: stocksieve-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${STOCKSIEVE_POSTGRES_USER:-stocksieve_admin}
+      POSTGRES_DB: ${STOCKSIEVE_POSTGRES_DB:-stocksieve}
+      POSTGRES_PASSWORD: ${STOCKSIEVE_POSTGRES_PASSWORD:?请先生成或配置本目录的.env}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --encoding=UTF8
+    command: [postgres, -c, timezone=Asia/Shanghai, -c, log_timezone=Asia/Shanghai]
+    ports:
+      - "0.0.0.0:${STOCKSIEVE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 60s
+
+volumes:
+  postgres_data:
+    name: stocksieve-postgres-data
