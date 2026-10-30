@@ -178,10 +178,10 @@ CREATE TABLE public.tasks (
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     CONSTRAINT tasks_category_kind_check CHECK (
-        (category = 'sync' AND kind IN ('initialize', 'daily')
+        (category = 'sync' AND kind IN ('initialize', 'catalog', 'daily')
             AND data_source IS NOT NULL AND btrim(data_source) <> ''
             AND stock_id IS NULL AND input_snapshot_id IS NULL AND strategy_code IS NULL
-            AND ((kind = 'initialize' AND target_date IS NULL) OR (kind = 'daily' AND target_date IS NOT NULL)))
+            AND ((kind IN ('initialize', 'catalog') AND target_date IS NULL) OR (kind = 'daily' AND target_date IS NOT NULL)))
         OR (category = 'analysis' AND kind IN ('fundamental', 'chips', 'trade')
             AND stock_id IS NOT NULL AND input_snapshot_id IS NOT NULL AND target_date IS NOT NULL
             AND data_source IS NULL AND result_snapshot_id IS NULL AND result_json IS NULL
@@ -224,11 +224,11 @@ CREATE TABLE public.tasks (
 COMMENT ON TABLE public.tasks IS '后台任务';
 COMMENT ON COLUMN public.tasks.id IS '同步任务或分析任务 ID';
 COMMENT ON COLUMN public.tasks.category IS 'sync / analysis';
-COMMENT ON COLUMN public.tasks.kind IS '同步为 initialize / daily；分析为 fundamental / chips / trade';
+COMMENT ON COLUMN public.tasks.kind IS '同步为 initialize（股票基础信息）/ catalog（行业题材）/ daily（收盘行情）；分析为 fundamental / chips / trade';
 COMMENT ON COLUMN public.tasks.created_by IS '手动创建者；系统定时同步为 NULL';
 COMMENT ON COLUMN public.tasks.trigger IS 'manual / scheduled';
 COMMENT ON COLUMN public.tasks.data_source IS '同步来源，映射 API 的 source';
-COMMENT ON COLUMN public.tasks.target_date IS '固定目标日期；初始化为 NULL';
+COMMENT ON COLUMN public.tasks.target_date IS '固定目标日期；股票基础信息、行业题材任务为 NULL';
 COMMENT ON COLUMN public.tasks.stock_id IS '分析股票';
 COMMENT ON COLUMN public.tasks.input_snapshot_id IS '分析输入快照';
 COMMENT ON COLUMN public.tasks.strategy_code IS '买卖条件分析使用的策略';

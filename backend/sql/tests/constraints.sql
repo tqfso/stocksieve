@@ -112,6 +112,17 @@ BEGIN
     WHERE id = '00000000-0000-4000-8000-000000000040';
 
     -- 6. 定时计划使用北京时间18:00；幂等响应只保存data。
+    -- 分类采用独立的手动任务，无目标行情日期；这里不发布快照。
+    INSERT INTO public.tasks (id, category, kind, created_by, data_source, dedupe_key)
+    VALUES ('00000000-0000-4000-8000-000000000090', 'sync', 'catalog', '00000000-0000-4000-8000-000000000001', 'catalog_test', 'schema:catalog');
+    PERFORM pg_temp.expect_sqlstate($sql$
+        UPDATE public.tasks SET target_date = DATE '2026-10-30'
+        WHERE id = '00000000-0000-4000-8000-000000000090'
+    $sql$, '23514');
+    PERFORM pg_temp.expect_sqlstate($sql$
+        UPDATE public.tasks SET trigger = 'scheduled', created_by = NULL, scheduled_for = TIMESTAMPTZ '2026-10-30 18:00:00+08'
+        WHERE id = '00000000-0000-4000-8000-000000000090'
+    $sql$, '23514');
     PERFORM pg_temp.expect_sqlstate($sql$
         INSERT INTO public.sync_triggers (scheduled_date, scheduled_for)
         VALUES (DATE '2026-10-30', TIMESTAMPTZ '2026-10-30 17:00:00+08')

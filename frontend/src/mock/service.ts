@@ -11,6 +11,9 @@ interface Database {
     reports: Report[];
     jobs: SyncJob[];
     initialized: boolean;
+    /** 两类基础数据分别保留最近成功时间，不随任务历史淘汰或失败而清空。 */
+    stockUpdatedAt: string | null;
+    catalogUpdatedAt: string | null;
 }
 const DB_KEY = 'stocksieve.mock.v1';
 const SESSION_KEY = 'stocksieve.session.v1';
@@ -57,8 +60,11 @@ function db(): Database {
         accounts: [
             { id: 'admin', username: 'admin', name: '演示管理员', role: 'admin', password: 'demo1234', createdAt: '2026-10-28 09:00' },
             { id: 'viewer', username: 'viewer', name: '演示用户', role: 'user', password: 'demo1234', createdAt: '2026-10-28 09:00' },
-        ], reports: [], jobs: [], initialized: false,
+        ], reports: [], jobs: [], initialized: false, stockUpdatedAt: null, catalogUpdatedAt: null,
     };
+    // 兼容拆分前的本地缓存，保留账号、报告及股票初始化状态；分类由独立任务同步。
+    database.stockUpdatedAt ??= null;
+    database.catalogUpdatedAt ??= null;
     // 刷新会中断前端计时器，将未完成任务转为可重试状态。
     for (const job of database.jobs)
         if (job.status === 'running') {
@@ -174,22 +180,31 @@ export function reportsFor(code: string, kind: AnalysisKind, strategy?: Strategy
 }
 export function syncSnapshot(): {
     initialized: boolean;
+    stockUpdatedAt: string | null;
+    catalogUpdatedAt: string | null;
     jobs: SyncJob[];
 } {
     requireUser('admin');
-    return structuredClone({ initialized: db().initialized, jobs: db().jobs });
+    const data = db();
+    return structuredClone({ initialized: data.initialized, stockUpdatedAt: data.stockUpdatedAt, catalogUpdatedAt: data.catalogUpdatedAt, jobs: data.jobs });
 }
 /** 检查初始化前置条件并创建任务，同时禁止重复启动。 */
-export function startSync(kind: SyncJob['kind'], source: SyncJob['source'] = 'Sina'): SyncJob {
+export function startSync(kind: SyncJob['kind'], source?: SyncJob['source']): SyncJob {
     requireUser('admin');
     if (db().jobs.some((job) => job.status === 'running'))
         throw new Error('已有任务正在运行，请等待完成。');
-    if (kind === 'daily' && !db().initialized)
+    if (kind !== 'initialize' && !db().initialized)
         throw new Error('请先初始化股票基础数据。');
-    const job: SyncJob = { id: crypto.randomUUID(), source, kind, status: 'running', progress: 0, createdAt: timeLabel(), count: 0, logs: [`模拟任务已创建，选择 ${source} 作为示例数据源。`] };
-    job.logs.push(kind === 'initialize'
-        ? '任务范围：模拟同步股票基础信息、行业、题材及股票归属；行业和题材使用独立配置的分类来源。'
-        : '任务范围：模拟同步收盘行情与策略结果，复用已有分类关系，不请求行业、题材数据源。');
+    const selectedSource = source ?? (kind === 'catalog' ? '分类样例' : 'Sina');
+    if ((kind === 'catalog') !== (selectedSource === '分类样例'))
+        throw new Error('行业与题材任务请使用分类样例源，股票基础信息和行情任务请选择 Sina 或 Baostock。');
+    // 固定各类任务的更新范围，分类与股票基础信息分别维护。
+    const scopes: Record<SyncJob['kind'], string> = {
+        initialize: '任务范围：仅同步股票代码、名称、交易所、上市板块等基础信息，保留已有行业和题材归属。',
+        catalog: '任务范围：仅同步行业、题材字典及股票归属，不刷新股票基础信息或收盘行情。',
+        daily: '任务范围：模拟同步收盘行情与策略结果，复用已有分类关系，不请求行业、题材数据源。',
+    };
+    const job: SyncJob = { id: crypto.randomUUID(), source: selectedSource, kind, status: 'running', progress: 0, createdAt: timeLabel(), count: 0, logs: [`模拟任务已创建，选择 ${selectedSource} 作为示例数据源。`, scopes[kind]] };
     db().jobs.unshift(job);
     db().jobs = db().jobs.slice(0, 20);
     save();
@@ -203,24 +218,31 @@ export function advanceSync(id: string, fail: boolean): void {
     job.progress = Math.min(100, job.progress + 20);
     if (fail && job.progress === 60) {
         job.status = 'failed';
-        job.logs.push(job.kind === 'initialize'
-            ? '模拟基础数据源响应超时，保留已有基础数据和分类状态，请重试。'
-            : '模拟行情数据源响应超时，保留已有行情与分类数据，请重试。');
+        job.logs.push('模拟数据源响应超时，保留各类数据最近成功的状态与更新时间，请重试。');
     }
     else if (job.progress === 100) {
         job.status = 'success';
         job.count = 5348;
-        if (job.kind === 'initialize')
+        if (job.kind === 'initialize') {
             db().initialized = true;
-        job.logs.push(job.kind === 'initialize'
-            ? '模拟基础信息与分类关系校验完成，初始化／手动刷新成功。机会列表继续使用固定样例。'
-            : '模拟行情校验与策略计算完成，行业和题材关系沿用已有数据。机会列表继续使用固定样例。');
+            db().stockUpdatedAt = timeLabel();
+        }
+        if (job.kind === 'catalog') db().catalogUpdatedAt = timeLabel();
+        const results: Record<SyncJob['kind'], string> = {
+            initialize: '模拟股票基础信息同步成功，行业和题材归属保持原样。',
+            catalog: '模拟行业、题材及股票归属同步成功，股票基础信息和行情保持原样。',
+            daily: '模拟行情校验与策略计算完成，复用已有分类；未同步的分类标记为未知。',
+        };
+        job.logs.push(`${results[job.kind]}机会列表继续使用固定样例。`);
     }
     else {
-        // 两类任务分别展示基础分类刷新和行情更新的处理阶段。
-        const stage = job.kind === 'initialize'
-            ? job.progress < 60 ? '读取股票基础信息、行业和题材样例' : '校验分类字典与股票归属'
-            : job.progress < 60 ? '读取收盘行情样例，沿用已保存分类' : '校验行情并计算策略样例';
+        // 三类任务分别展示股票基础信息、分类关系和行情策略的处理阶段。
+        const stages: Record<SyncJob['kind'], [string, string]> = {
+            initialize: ['读取股票代码、名称、交易所与上市板块样例', '校验股票基础信息'],
+            catalog: ['读取行业、题材字典及成份股样例', '匹配股票代码并校验分类归属'],
+            daily: ['读取收盘行情样例，沿用已保存分类', '校验行情并计算策略样例'],
+        };
+        const stage = stages[job.kind][job.progress < 60 ? 0 : 1];
         job.logs.push(`模拟处理进度 ${job.progress}%：${stage}。`);
     }
     save();

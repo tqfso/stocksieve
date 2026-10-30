@@ -102,8 +102,8 @@ export interface Report extends ReportContent {
 }
 export interface SyncJob {
     id: string;
-    source: 'Sina' | 'Baostock';
-    kind: 'initialize' | 'daily';
+    source: 'Sina' | 'Baostock' | '分类样例';
+    kind: 'initialize' | 'catalog' | 'daily';
     status: 'running' | 'success' | 'failed';
     progress: number;
     createdAt: string;

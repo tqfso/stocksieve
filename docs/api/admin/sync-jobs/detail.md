@@ -40,7 +40,8 @@
 
 | outcome | 结果 | publishedSnapshotId |
 | --- | --- | --- |
-| initialized | 初始化完成 | null |
+| initialized | 股票基础信息初始化／更新完成 | null |
+| catalog_updated | 行业、题材及股票归属更新完成 | null |
 | updated | 数据与策略结果已发布 | 新快照 ID |
 | market_closed | 定时检查确认休市，跳过 | null |
 | already_synced | 当天已完整同步，跳过 | 已有快照 ID |

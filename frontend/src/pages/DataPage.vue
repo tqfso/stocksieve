@@ -1,6 +1,6 @@
-<!-- 本文件展示管理员的模拟基础数据初始化与手动刷新、收盘同步、任务进度及失败重试。 -->
+<!-- 本文件独立展示股票基础信息、行业题材、收盘行情三类模拟任务及其状态、进度和重试。 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
@@ -9,21 +9,24 @@ import { useReview, useSync } from '../stores.ts';
 import type { SyncJob } from '../types.ts';
 const sync = useSync();
 const review = useReview();
-const source = ref<SyncJob['source']>('Sina');
+/** 不同任务分别保留来源选择，重试时恢复原任务的来源。 */
+const sources = reactive<Record<SyncJob['kind'], SyncJob['source']>>({ initialize: 'Sina', catalog: '分类样例', daily: 'Sina' });
 const selected = ref('');
 const logsOpen = ref(false);
 const selectedJob = computed(() => sync.jobs.find((job) => job.id === selected.value));
 const latestDaily = computed(() => sync.jobs.find((job) => job.kind === 'daily' && job.status === 'success'));
 const statusLabels = { running: '进行中', success: '已完成', failed: '失败' };
-const kindLabels = { initialize: '基础数据同步（含行业／题材）', daily: '收盘数据同步' };
+const kindLabels = { initialize: '股票基础信息同步', catalog: '行业与题材同步', daily: '收盘行情与策略同步' };
 sync.refresh();
 async function start(kind: SyncJob['kind'], retry = false): Promise<void> {
     try {
-        if (kind === 'initialize' && sync.initialized && !retry)
-            await ElMessageBox.confirm('将模拟刷新行业、题材及股票归属，同时更新股票基础信息。失败保留已有基础数据；固定机会样例和已生成的报告不受影响。', '刷新行业、题材数据', { confirmButtonText: '开始刷新', cancelButtonText: '取消' });
+        if (!retry && kind === 'initialize' && sync.initialized)
+            await ElMessageBox.confirm('仅模拟更新股票代码、名称、交易所、上市板块等基础信息，保留已有行业、题材关系及快照和报告。', '更新股票基础信息', { confirmButtonText: '开始更新', cancelButtonText: '取消' });
+        if (!retry && kind === 'catalog' && sync.catalogUpdatedAt)
+            await ElMessageBox.confirm('仅模拟刷新行业、题材及股票归属，保留股票基础信息和已有快照、报告。失败保留上次成功的分类状态。', '刷新行业、题材数据', { confirmButtonText: '开始刷新', cancelButtonText: '取消' });
         if (retry)
             review.syncFail = false;
-        sync.start(kind, review.syncFail, source.value);
+        sync.start(kind, review.syncFail, sources[kind]);
         ElMessage.success('模拟任务已启动，切换页面后仍会继续。');
     }
     catch (cause) {
@@ -32,30 +35,28 @@ async function start(kind: SyncJob['kind'], retry = false): Promise<void> {
     }
 }
 function showLogs(job: SyncJob): void { selected.value = job.id; logsOpen.value = true; }
-function retryJob(job: SyncJob): void { source.value = job.source; void start(job.kind, true); }
+function retryJob(job: SyncJob): void { sources[job.kind] = job.source; void start(job.kind, true); }
 </script>
 <template>
   <div class="page-heading">
     <div>
       <span class="eyebrow">DATA OPERATIONS</span>
       <h1>让研究从完整数据开始</h1>
-      <p>按需刷新股票基础信息、行业及题材，单独同步每日收盘行情。</p>
+      <p>股票基础信息、行业题材分别按需更新，收盘行情与策略每日同步。</p>
     </div>
     <span class="tag">仅管理员可用</span>
   </div>
   <div class="summary-grid">
     <div class="summary-card">
-      <span>基础数据状态</span>
+      <span>股票基础信息</span>
       <strong class="summary-text">{{ sync.initialized ? '已初始化' : '等待初始化' }}</strong>
-      <p>{{ sync.initialized ? '股票基础信息、行业及题材已准备（模拟）' : '先完成初始化，再体验收盘同步' }}</p>
+      <p>{{ sync.stockUpdatedAt ? `最近成功 ${sync.stockUpdatedAt}` : sync.initialized ? '已初始化，暂未记录更新时间' : '先同步股票清单，再同步分类和行情' }}</p>
+      <p>沪 / 深 / 北 · 5,348只（模拟）</p>
     </div>
     <div class="summary-card">
-      <span>示例市场覆盖</span>
-      <strong>
-        5,348
-        <small>只股票</small>
-      </strong>
-      <p>沪 / 深 / 北 · 数量为虚构示例</p>
+      <span>行业与题材</span>
+      <strong class="summary-text">{{ sync.catalogUpdatedAt ? '已同步' : '等待同步' }}</strong>
+      <p>{{ sync.catalogUpdatedAt ? `最近成功 ${sync.catalogUpdatedAt}` : '独立手动同步，不随股票基础信息自动更新' }}</p>
     </div>
     <div class="summary-card">
       <span>最近收盘同步</span>
@@ -68,36 +69,44 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
       <strong>数据任务</strong>
       <span class="tag tag-amber">本地模拟，不连接数据源</span>
     </div>
-    <div class="data-source">
-      <label>
-        示例数据源
-        <el-select v-model="source" :disabled="!!sync.running" style="width: 170px">
-          <el-option label="Sina" value="Sina" />
-          <el-option label="Baostock" value="Baostock" />
-        </el-select>
-      </label>
-      <span>演示股票基础信息和行情渠道选择；行业、题材来源独立配置。</span>
-    </div>
     <div class="data-action-grid">
       <article>
         <span class="action-icon">
           <AppIcon name="database" :size="25" />
         </span>
         <div>
-          <h3>股票基础信息、行业与题材</h3>
-          <p>首次初始化同步股票基础信息、行业、题材及归属关系。之后按需手动刷新，分类数据不按日自动更新。</p>
-          <div class="data-action-buttons">
-            <el-button v-if="!sync.initialized" :disabled="!!sync.running" @click="start('initialize')">
-              开始初始化
-              <AppIcon name="arrow" :size="16" />
-            </el-button>
-            <el-button :disabled="!sync.initialized || !!sync.running" @click="start('initialize')">
-              <AppIcon name="refresh" :size="16" />
-              刷新行业、题材数据
-            </el-button>
-          </div>
-          <small v-if="!sync.initialized">先完成基础数据初始化，再手动刷新行业和题材。</small>
-          <small v-else>刷新时同时更新股票基础信息，已有快照和报告保留。</small>
+          <h3>股票基础信息</h3>
+          <p>同步股票清单、代码、名称、交易所和上市板块，保留已有行业、题材关系。</p>
+          <label class="task-source">
+            股票数据源
+            <el-select v-model="sources.initialize" :disabled="!!sync.running" aria-label="股票基础信息数据源">
+              <el-option label="Sina" value="Sina" />
+              <el-option label="Baostock" value="Baostock" />
+            </el-select>
+          </label>
+          <el-button :disabled="!!sync.running" @click="start('initialize')">
+            {{ sync.initialized ? '更新股票基础信息' : '初始化股票基础信息' }}
+            <AppIcon name="arrow" :size="16" />
+          </el-button>
+          <small>首次先执行此任务，之后可单独更新股票清单。</small>
+        </div>
+      </article>
+      <article>
+        <span class="action-icon">
+          <AppIcon name="layers" :size="25" />
+        </span>
+        <div>
+          <h3>行业与题材</h3>
+          <p>同步行业、题材字典与股票归属，仅按需手动执行，保留股票基础信息。</p>
+          <label class="task-source">
+            分类数据源
+            <span class="tag">分类样例 · 本地模拟</span>
+          </label>
+          <el-button :disabled="!sync.initialized || !!sync.running" @click="start('catalog')">
+            <AppIcon name="refresh" :size="16" />
+            刷新行业、题材数据
+          </el-button>
+          <small>{{ sync.initialized ? '首次同步或后续刷新均使用此入口，失败保留上次成功数据。' : '请先初始化股票清单，再关联行业和题材。' }}</small>
         </div>
       </article>
       <article>
@@ -105,13 +114,21 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
           <AppIcon name="refresh" :size="25" />
         </span>
         <div>
-          <h3>同步收盘数据</h3>
+          <h3>收盘行情与策略</h3>
           <p>模拟处理 {{ DATA_DATE }} 的收盘行情与策略结果，复用已有行业、题材关系，不重新获取分类数据。</p>
+          <label class="task-source">
+            行情数据源
+            <el-select v-model="sources.daily" :disabled="!!sync.running" aria-label="收盘行情数据源">
+              <el-option label="Sina" value="Sina" />
+              <el-option label="Baostock" value="Baostock" />
+            </el-select>
+          </label>
           <el-button type="primary" :disabled="!sync.initialized || !!sync.running" @click="start('daily')">
             同步示例收盘数据
             <AppIcon name="arrow" :size="16" />
           </el-button>
           <small v-if="!sync.initialized">请先完成基础数据初始化</small>
+          <small v-else-if="!sync.catalogUpdatedAt">分类尚未同步时标记未知，不影响行情任务运行。</small>
         </div>
       </article>
     </div>

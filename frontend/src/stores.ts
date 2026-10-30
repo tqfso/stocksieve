@@ -18,6 +18,8 @@ export const useReview = defineStore('review', () => {
 });
 export const useSync = defineStore('sync', () => {
     const initialized = ref(false);
+    const stockUpdatedAt = ref<string | null>(null);
+    const catalogUpdatedAt = ref<string | null>(null);
     const jobs = ref<SyncJob[]>([]);
     const running = computed(() => jobs.value.find((job) => job.status === 'running'));
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -30,9 +32,11 @@ export const useSync = defineStore('sync', () => {
         }
         const snapshot = api.syncSnapshot();
         initialized.value = snapshot.initialized;
+        stockUpdatedAt.value = snapshot.stockUpdatedAt;
+        catalogUpdatedAt.value = snapshot.catalogUpdatedAt;
         jobs.value = snapshot.jobs;
     }
-    function start(kind: SyncJob['kind'], fail: boolean, source: SyncJob['source'] = 'Sina'): void {
+    function start(kind: SyncJob['kind'], fail: boolean, source?: SyncJob['source']): void {
         const job = api.startSync(kind, source);
         refresh();
         if (timer)
@@ -46,5 +50,5 @@ export const useSync = defineStore('sync', () => {
             }
         }, 650);
     }
-    return { initialized, jobs, running, refresh, start };
+    return { initialized, stockUpdatedAt, catalogUpdatedAt, jobs, running, refresh, start };
 });
