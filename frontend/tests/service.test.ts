@@ -83,6 +83,20 @@ test('模拟业务流程', async (t) => {
             api.advanceSync(daily.id, false);
         assert.equal(api.syncSnapshot().jobs[0]?.status, 'success');
     });
+    await t.test('手动刷新基础数据失败时保留已成功的初始化状态，允许继续同步行情', async () => {
+        await api.login('admin', 'demo1234');
+        const initial = api.startSync('initialize');
+        for (let i = 0; i < 5; i++) api.advanceSync(initial.id, false);
+        const refresh = api.startSync('initialize');
+        for (let i = 0; i < 3; i++) api.advanceSync(refresh.id, true);
+        const snapshot = api.syncSnapshot();
+        assert.equal(snapshot.initialized, true);
+        assert.equal(snapshot.jobs.find((job) => job.id === refresh.id)?.status, 'failed');
+        assert.equal(snapshot.jobs.find((job) => job.id === initial.id)?.status, 'success');
+        const daily = api.startSync('daily');
+        for (let i = 0; i < 5; i++) api.advanceSync(daily.id, false);
+        assert.equal(api.syncSnapshot().jobs.find((job) => job.id === daily.id)?.status, 'success');
+    });
     await t.test('趋势埋伏报告独立保存，不混入同一股票的波段历史', async () => {
         await api.login('admin', 'demo1234');
         const stock = STOCKS.find((item) => item.code === '600036')!;

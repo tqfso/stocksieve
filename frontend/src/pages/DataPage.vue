@@ -1,4 +1,4 @@
-<!-- 本文件展示管理员的模拟初始化、收盘同步、任务进度与失败重试。 -->
+<!-- 本文件展示管理员的模拟基础数据初始化与手动刷新、收盘同步、任务进度及失败重试。 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -15,12 +15,12 @@ const logsOpen = ref(false);
 const selectedJob = computed(() => sync.jobs.find((job) => job.id === selected.value));
 const latestDaily = computed(() => sync.jobs.find((job) => job.kind === 'daily' && job.status === 'success'));
 const statusLabels = { running: '进行中', success: '已完成', failed: '失败' };
-const kindLabels = { initialize: '初始化基础数据', daily: '收盘数据同步' };
+const kindLabels = { initialize: '基础数据同步（含行业／题材）', daily: '收盘数据同步' };
 sync.refresh();
 async function start(kind: SyncJob['kind'], retry = false): Promise<void> {
     try {
         if (kind === 'initialize' && sync.initialized && !retry)
-            await ElMessageBox.confirm('将重新演示基础数据初始化。固定机会样例和已生成的报告不受影响。', '重新初始化', { confirmButtonText: '开始', cancelButtonText: '取消' });
+            await ElMessageBox.confirm('将模拟刷新行业、题材及股票归属，同时更新股票基础信息。失败保留已有基础数据；固定机会样例和已生成的报告不受影响。', '刷新行业、题材数据', { confirmButtonText: '开始刷新', cancelButtonText: '取消' });
         if (retry)
             review.syncFail = false;
         sync.start(kind, review.syncFail, source.value);
@@ -39,7 +39,7 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
     <div>
       <span class="eyebrow">DATA OPERATIONS</span>
       <h1>让研究从完整数据开始</h1>
-      <p>管理股票基础数据与收盘同步，查看每次任务的处理结果。</p>
+      <p>按需刷新股票基础信息、行业及题材，单独同步每日收盘行情。</p>
     </div>
     <span class="tag">仅管理员可用</span>
   </div>
@@ -47,7 +47,7 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
     <div class="summary-card">
       <span>基础数据状态</span>
       <strong class="summary-text">{{ sync.initialized ? '已初始化' : '等待初始化' }}</strong>
-      <p>{{ sync.initialized ? '已完成模拟基础数据准备' : '先完成初始化，再体验收盘同步' }}</p>
+      <p>{{ sync.initialized ? '股票基础信息、行业及题材已准备（模拟）' : '先完成初始化，再体验收盘同步' }}</p>
     </div>
     <div class="summary-card">
       <span>示例市场覆盖</span>
@@ -76,7 +76,7 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
           <el-option label="Baostock" value="Baostock" />
         </el-select>
       </label>
-      <span>用于演示选择数据渠道的交互</span>
+      <span>演示股票基础信息和行情渠道选择；行业、题材来源独立配置。</span>
     </div>
     <div class="data-action-grid">
       <article>
@@ -84,12 +84,20 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
           <AppIcon name="database" :size="25" />
         </span>
         <div>
-          <h3>初始化基础数据</h3>
-          <p>模拟获取股票代码、名称、交易所、上市板块和行业等基础信息。</p>
-          <el-button :disabled="!!sync.running" @click="start('initialize')">
-            {{ sync.initialized ? '重新初始化' : '开始初始化' }}
-            <AppIcon name="arrow" :size="16" />
-          </el-button>
+          <h3>股票基础信息、行业与题材</h3>
+          <p>首次初始化同步股票基础信息、行业、题材及归属关系。之后按需手动刷新，分类数据不按日自动更新。</p>
+          <div class="data-action-buttons">
+            <el-button v-if="!sync.initialized" :disabled="!!sync.running" @click="start('initialize')">
+              开始初始化
+              <AppIcon name="arrow" :size="16" />
+            </el-button>
+            <el-button :disabled="!sync.initialized || !!sync.running" @click="start('initialize')">
+              <AppIcon name="refresh" :size="16" />
+              刷新行业、题材数据
+            </el-button>
+          </div>
+          <small v-if="!sync.initialized">先完成基础数据初始化，再手动刷新行业和题材。</small>
+          <small v-else>刷新时同时更新股票基础信息，已有快照和报告保留。</small>
         </div>
       </article>
       <article>
@@ -98,7 +106,7 @@ function retryJob(job: SyncJob): void { source.value = job.source; void start(jo
         </span>
         <div>
           <h3>同步收盘数据</h3>
-          <p>模拟处理 {{ DATA_DATE }} 的收盘数据并展示处理进度。</p>
+          <p>模拟处理 {{ DATA_DATE }} 的收盘行情与策略结果，复用已有行业、题材关系，不重新获取分类数据。</p>
           <el-button type="primary" :disabled="!sync.initialized || !!sync.running" @click="start('daily')">
             同步示例收盘数据
             <AppIcon name="arrow" :size="16" />

@@ -231,6 +231,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .data-action-grid h3 { font-size: 15px; font-weight: 600; margin: 2px 0 10px; }
 .data-action-grid p { font-size: var(--font-size-table); color: var(--muted); line-height: 1.9; margin: 0 0 17px; }
 .data-action-grid small { display: block; color: var(--muted); font-size: var(--font-size-small); margin-top: 8px; }
+.data-action-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.data-action-buttons .el-button + .el-button { margin-left: 0; }
 .running-panel { padding: 20px 24px 10px; }
 .running-panel > div:first-child { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .running-panel strong { font-size: var(--font-size-table); font-weight: 600; }

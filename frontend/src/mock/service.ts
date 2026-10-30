@@ -187,6 +187,9 @@ export function startSync(kind: SyncJob['kind'], source: SyncJob['source'] = 'Si
     if (kind === 'daily' && !db().initialized)
         throw new Error('请先初始化股票基础数据。');
     const job: SyncJob = { id: crypto.randomUUID(), source, kind, status: 'running', progress: 0, createdAt: timeLabel(), count: 0, logs: [`模拟任务已创建，选择 ${source} 作为示例数据源。`] };
+    job.logs.push(kind === 'initialize'
+        ? '任务范围：模拟同步股票基础信息、行业、题材及股票归属；行业和题材使用独立配置的分类来源。'
+        : '任务范围：模拟同步收盘行情与策略结果，复用已有分类关系，不请求行业、题材数据源。');
     db().jobs.unshift(job);
     db().jobs = db().jobs.slice(0, 20);
     save();
@@ -200,17 +203,26 @@ export function advanceSync(id: string, fail: boolean): void {
     job.progress = Math.min(100, job.progress + 20);
     if (fail && job.progress === 60) {
         job.status = 'failed';
-        job.logs.push('模拟数据源响应超时，未写入任何真实行情。请重试。');
+        job.logs.push(job.kind === 'initialize'
+            ? '模拟基础数据源响应超时，保留已有基础数据和分类状态，请重试。'
+            : '模拟行情数据源响应超时，保留已有行情与分类数据，请重试。');
     }
     else if (job.progress === 100) {
         job.status = 'success';
         job.count = 5348;
         if (job.kind === 'initialize')
             db().initialized = true;
-        job.logs.push('模拟校验完成，示例任务成功。机会列表继续使用固定样例。');
+        job.logs.push(job.kind === 'initialize'
+            ? '模拟基础信息与分类关系校验完成，初始化／手动刷新成功。机会列表继续使用固定样例。'
+            : '模拟行情校验与策略计算完成，行业和题材关系沿用已有数据。机会列表继续使用固定样例。');
     }
-    else
-        job.logs.push(`模拟处理进度 ${job.progress}%：${job.progress < 60 ? '读取样例数据' : '校验样例记录'}。`);
+    else {
+        // 两类任务分别展示基础分类刷新和行情更新的处理阶段。
+        const stage = job.kind === 'initialize'
+            ? job.progress < 60 ? '读取股票基础信息、行业和题材样例' : '校验分类字典与股票归属'
+            : job.progress < 60 ? '读取收盘行情样例，沿用已保存分类' : '校验行情并计算策略样例';
+        job.logs.push(`模拟处理进度 ${job.progress}%：${stage}。`);
+    }
     save();
 }
 /** 仅清理本应用的演示数据与会话，不影响其他站点存储。 */
