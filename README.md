@@ -12,6 +12,8 @@
 ## 项目文档
 
 - [项目需求说明书（V1）](docs/requirements.md)
+- [后端概要设计](docs/design/backend.md)
+- [免费数据源验证](docs/research/data-sources.md)
 - [选股策略设计](docs/strategies/README.md)
 - [后端 API 接口文档（V1 设计稿）](docs/api/README.md)
 - [数据库初始化 SQL](backend/sql/init.sql)

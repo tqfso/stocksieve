@@ -213,6 +213,7 @@ node_modules/
 *.tsbuildinfo
 .vite/
 /backend/deploy/postgres/backups/
+/backend/.source-probe/
 
 # PyPI configuration file
 .pypirc
