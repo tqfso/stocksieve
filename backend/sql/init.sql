@@ -185,7 +185,7 @@ CREATE TABLE public.tasks (
         OR (category = 'analysis' AND kind IN ('fundamental', 'chips', 'trade')
             AND stock_id IS NOT NULL AND input_snapshot_id IS NOT NULL AND target_date IS NOT NULL
             AND data_source IS NULL AND result_snapshot_id IS NULL AND result_json IS NULL
-            AND ((kind = 'trade' AND strategy_code IS NOT NULL AND strategy_code IN ('short', 'swing', 'long'))
+            AND ((kind = 'trade' AND strategy_code IS NOT NULL AND strategy_code IN ('short', 'swing', 'long', 'trend_wait', 'base_wait'))
                 OR (kind <> 'trade' AND strategy_code IS NULL)))
     ),
     CONSTRAINT tasks_trigger_check CHECK (
@@ -455,7 +455,7 @@ CREATE TABLE public.strategy_signals (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (snapshot_id, stock_id) REFERENCES public.snapshot_stocks(snapshot_id, stock_id) ON DELETE RESTRICT,
     CONSTRAINT strategy_signals_scope_uq UNIQUE (snapshot_id, stock_id, strategy_code),
-    CONSTRAINT strategy_signals_code_check CHECK (strategy_code IN ('short', 'swing', 'long')),
+    CONSTRAINT strategy_signals_code_check CHECK (strategy_code IN ('short', 'swing', 'long', 'trend_wait', 'base_wait')),
     CONSTRAINT strategy_signals_sort_value_check CHECK (sort_value <> 'NaN'::NUMERIC),
     CONSTRAINT strategy_signals_reason_check CHECK (btrim(reason) <> ''),
     CONSTRAINT strategy_signals_metrics_check CHECK (jsonb_typeof(metrics_json) = 'object'),
@@ -466,7 +466,7 @@ COMMENT ON TABLE public.strategy_signals IS '策略入选信号';
 COMMENT ON COLUMN public.strategy_signals.id IS 'API 的 signal.id';
 COMMENT ON COLUMN public.strategy_signals.snapshot_id IS '数据快照';
 COMMENT ON COLUMN public.strategy_signals.stock_id IS '入选股票';
-COMMENT ON COLUMN public.strategy_signals.strategy_code IS 'short / swing / long';
+COMMENT ON COLUMN public.strategy_signals.strategy_code IS 'short / swing / long / trend_wait（趋势埋伏）/ base_wait（低位筑底）';
 COMMENT ON COLUMN public.strategy_signals.reason IS '入选理由';
 COMMENT ON COLUMN public.strategy_signals.metrics_json IS '该策略的具体指标';
 COMMENT ON COLUMN public.strategy_signals.condition_results_json IS '条件 ID 及判断结果';

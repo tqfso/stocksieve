@@ -46,7 +46,7 @@
 }
 ```
 
-信号是入选日快照，`conditionResults` 对应该版本策略的完整条件；失效描述用于后续复查，不表示已经计算了入选后的状态。短线和波段 `referencePrice` 分别为 B、P，长线为 `null`。
+信号是入选日快照，`conditionResults` 对应该版本策略的完整条件；失效描述用于后续复查，不表示已经计算了入选后的状态。短线的 `referencePrice` 为 B，波段及两类等待策略为 P，长线为 `null`。等待策略的入选信号表示当日仍在区间内等待，后续突破时需重新检查短线全部条件。
 
 各策略 `metrics` 字段如下：价格单位为元；偏离和变化幅度为百分数；`amountMultiple` 为倍数，`pullbackAmountRatio` 为比值（`0.65` 表示65%）。
 
@@ -55,5 +55,9 @@
 | short | `breakoutReference`、`amountMultiple`、`ma20`、`ma20Distance` |
 | swing | `ma20`、`ma60`、`ma60Change5`、`ma20Distance`、`pullbackAmountRatio`、`pullbackLow` |
 | long | `ma20`、`ma60`、`ma120`、`ma60Change20`、`ma120Change20`、`ma60Distance` |
+| trend_wait | `rangeLower`、`rangeUpper`、`rangeWidth`、`distanceToUpper`、`amountRatio`、`ma20`、`ma60`、`ma60Change5` |
+| base_wait | `rangeLower`、`rangeUpper`、`rangeWidth`、`position120`、`amountRatio`、`ma20`、`ma60`、`low5`、`previousLow15` |
 
 `ma60Change5` 表示 MA60 较 5 个交易日前的百分比变化；`ma60Change20`、`ma120Change20` 同理。参考价及均线均为所选快照的前复权价格。真实入选条件所需指标必须完整，不返回以缺失值凑成的入选信号。
+
+`rangeWidth = (rangeUpper / rangeLower - 1) × 100`，`distanceToUpper = (rangeUpper - quote.price) / rangeUpper × 100`；`position120` 为此前120日高低区间位置的百分数（0～100），`amountRatio` 为近5日／近20日均额比值（0.65表示65%）。`low5` 为最近5日（含当日）最低价，`previousLow15` 为此前15日最低价。两类等待策略的区间上下沿均取入选日前20日，不含入选当日。

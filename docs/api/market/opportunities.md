@@ -6,7 +6,7 @@
 
 | 查询参数 | 必填 | 说明 |
 | --- | --- | --- |
-| strategy | 是 | `short`、`swing`、`long` |
+| strategy | 是 | `short`、`swing`、`long`、`trend_wait`（趋势埋伏）、`base_wait`（低位筑底） |
 | snapshotId | 否 | 默认最新已发布快照 |
 | search | 否 | 名称或代码包含匹配，去两侧空白，最长 50 字 |
 | industryId、conceptId | 否 | 对应筛选选项 ID，各最多一个 |
@@ -40,7 +40,7 @@
       }
     ],
     "page": 1, "pageSize": 20, "total": 1,
-    "summary": { "industryCount": 1, "strategyCounts": { "short": 1, "swing": 0, "long": 1 } },
+    "summary": { "industryCount": 1, "strategyCounts": { "short": 1, "swing": 0, "long": 1, "trend_wait": 0, "base_wait": 0 } },
     "sort": { "field": "amountMultiple", "order": "desc" }
   },
   "requestId": "req_example"
@@ -49,7 +49,7 @@
 
 - 每行只对应一个股票与所选策略；`strategies` 是该股票在同一快照下符合的全部策略。
 - `total`、`industryCount` 基于全部筛选结果，不受分页影响；无已知行业的股票不计入行业数量。
-- `strategyCounts` 应用其他筛选条件，但忽略 `strategy`，用于三个标签的数量展示；同一股票可分别计入多个策略。
+- `strategyCounts` 应用其他筛选条件，但忽略 `strategy`，返回五类策略的计数；同一股票可分别计入多个策略，不相加作为去重股票总数。
 - 默认排序按策略说明执行；其他排序的缺失值始终排最后，值相同时按 `stockId` 升序，保证分页稳定。
 - `sort` 响应返回实际生效的字段及方向。有效快照下无匹配结果返回 `items: []`，不是 `DATA_NOT_READY`。
 

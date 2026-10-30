@@ -31,7 +31,7 @@
 }
 ```
 
-实际返回三类策略，规则内容以[策略文档](../../strategies/README.md)为准。V1 快照均使用 `v1` 规则；波段默认按 `ma20Distance` 升序，长线按 `ma60Distance` 升序。
+实际返回五类策略：`short`、`swing`、`long`、`trend_wait`（趋势埋伏）、`base_wait`（低位筑底），规则内容以[策略文档](../../strategies/README.md)为准。V1 快照均使用 `v1` 规则；波段默认按 `ma20Distance` 升序，长线按 `ma60Distance` 升序，趋势埋伏按 `distanceToUpper` 升序，低位筑底按 `position120` 升序。
 
 条件 ID 固定如下，与[个股详情](stocks.md)中的 `conditionResults.conditionId` 一一对应：
 
@@ -40,3 +40,5 @@
 | short | `price_breakout`、`amount_expansion`、`ma20_distance` |
 | swing | `uptrend`、`pullback_near_ma20`、`pullback_amount`、`stabilization` |
 | long | `ma_alignment`、`ma60_rising`、`ma120_rising`、`ma60_distance` |
+| trend_wait | `trend_holding`、`range_contraction`、`amount_contraction`、`near_range_upper` |
+| base_wait | `trend_unrepaired`、`low_position`、`range_contraction`、`no_new_low`、`amount_contraction`、`inside_range` |

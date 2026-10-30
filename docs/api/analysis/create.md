@@ -10,7 +10,7 @@
 { "kind": "fundamental", "snapshotId": "snapshot_example" }
 ```
 
-`kind` 取 `fundamental`、`chips`、`trade`，必填；`snapshotId` 可选，受理时解析为确定快照并固定到任务。买卖条件分析（`kind=trade`）还需传 `strategy`，取 `short`、`swing` 或 `long`，对应详情中选中的策略；该策略未在所选快照入选时返回 `409 ANALYSIS_DATA_UNAVAILABLE`。其他类型无需传策略。
+`kind` 取 `fundamental`、`chips`、`trade`，必填；`snapshotId` 可选，受理时解析为确定快照并固定到任务。买卖条件分析（`kind=trade`）还需传 `strategy`，取 `short`、`swing`、`long`、`trend_wait` 或 `base_wait`，对应详情中选中的策略；该策略未在所选快照入选时返回 `409 ANALYSIS_DATA_UNAVAILABLE`。其他类型无需传策略。
 
 成功 `202`：
 

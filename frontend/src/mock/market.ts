@@ -1,6 +1,6 @@
 // 本文件实现可测试的模拟筛选与确定性 OHLC 数据生成，不读取网络行情。
 import type { Candle, Period, Stock, StockQuery } from '../types.ts';
-import { DATA_DATE } from './fixtures.ts';
+import { DATA_DATE, distanceToUpper } from './fixtures.ts';
 /** 同一套筛选口径服务于页面与模拟异步接口。 */
 export function filterStocks(stocks: Stock[], query: StockQuery): Stock[] {
     const needle = query.search.trim().toLowerCase();
@@ -22,6 +22,10 @@ export function filterStocks(stocks: Stock[], query: StockQuery): Stock[] {
         }
         if (query.strategy === 'short')
             return b.volumeRatio - a.volumeRatio;
+        if (query.strategy === 'trend_wait')
+            return distanceToUpper(a) - distanceToUpper(b) || a.code.localeCompare(b.code);
+        if (query.strategy === 'base_wait')
+            return (a.waiting?.position120 ?? Infinity) - (b.waiting?.position120 ?? Infinity) || a.code.localeCompare(b.code);
         return query.strategy === 'swing' ? a.ma20Distance - b.ma20Distance : a.ma60Distance - b.ma60Distance;
     });
 }
@@ -48,6 +52,25 @@ export function generateCandles(stock: Stock): Candle[] {
     // 统一缩放所有 OHLC，确保确定性走势与详情报价一致。
     const ratio = stock.price / candles[candles.length - 1]!.close;
     const scaled = candles.map((item) => ({ ...item, open: +(item.open * ratio).toFixed(2), close: +(item.close * ratio).toFixed(2), high: +(item.high * ratio).toFixed(2), low: +(item.low * ratio).toFixed(2) }));
+    // 等待样例的近期 K 线整理于同一固定区间，便于评审上下沿与现价的关系。
+    if (stock.waiting) {
+        const { lower, upper } = stock.waiting;
+        const width = upper - lower;
+        for (let offset = 0; offset <= 20; offset++) {
+            const candle = scaled[scaled.length - 21 + offset]!;
+            candle.close = +(lower + width * (0.52 + Math.sin(offset * 1.1) * 0.22)).toFixed(2);
+            candle.open = +(lower + width * (0.50 + Math.sin((offset - 1) * 1.1) * 0.22)).toFixed(2);
+            candle.high = +Math.min(upper, Math.max(candle.open, candle.close) + width * 0.08).toFixed(2);
+            candle.low = +Math.max(lower, Math.min(candle.open, candle.close) - width * 0.08).toFixed(2);
+            candle.volume = Math.round((2000000 + random() * 800000) * (1 - offset * 0.02));
+        }
+        scaled[scaled.length - 19]!.high = upper;
+        scaled[scaled.length - 18]!.low = lower;
+        const latest = scaled.at(-1)!;
+        latest.close = stock.price;
+        latest.high = Math.max(latest.high, stock.price);
+        latest.low = Math.min(latest.low, stock.price);
+    }
     // 对齐最后两日的收盘价，使概览涨跌幅与图中最后一日保持同一口径。
     const previousDay = scaled[scaled.length - 2]!;
     previousDay.close = +(stock.price / (1 + stock.change / 100)).toFixed(2);

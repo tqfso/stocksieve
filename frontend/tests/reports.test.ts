@@ -77,3 +77,18 @@ test('买卖条件与所选策略的参考价、失效条件一致', () => {
         assert.ok(report.summary.includes(stock.price.toFixed(2)) || report.sections[0]!.text.includes(stock.price.toFixed(2)));
     }
 });
+
+test('两类等待报告复用详情区间，区分趋势整理与低位修复', () => {
+    for (const strategy of ['trend_wait', 'base_wait'] as const) {
+        const stock = STOCKS.find((item) => item.strategies.includes(strategy))!;
+        const report = createReportContent(stock, 'trade', strategy);
+        assert.equal(report.strategy, strategy);
+        assert.equal(report.metrics[0]?.value, `${stock.waiting!.lower.toFixed(2)}元`);
+        assert.equal(report.metrics[1]?.value, `${stock.waiting!.upper.toFixed(2)}元`);
+        assert.equal(report.metrics[2]?.value, `${(stock.waiting!.amountRatio * 100).toFixed(0)}%`);
+        assert.match(report.summary, /等待阶段/);
+        assert.ok(report.sections.some((item) => item.text.includes(STRATEGIES[strategy].invalid)));
+        assert.match(report.sections[1]!.text, /重新满足短线全部条件/);
+        assert.ok(report.sections[0]!.text.includes(strategy === 'trend_wait' ? 'MA60是否保持平稳或上行' : 'MA20仍低于MA60'));
+    }
+});

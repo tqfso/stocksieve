@@ -78,7 +78,7 @@ if (!storageAvailable)
           <br />
           都有迹可循。
         </p>
-        <span>全 A 股 · 三类策略</span>
+        <span>全 A 股 · 五类策略</span>
       </div>
       <button class="sidebar-user" @click="signOut">
         <span class="avatar">{{ session.isAdmin ? '管' : '用' }}</span>

@@ -7,7 +7,7 @@ import StatePanel from '../components/StatePanel.vue';
 import StockChart from '../components/StockChart.vue';
 import AnalysisPanel from '../components/AnalysisPanel.vue';
 import { BOARDS } from '../boards.ts';
-import { DATA_DATE, STRATEGIES, selectionReason } from '../mock/fixtures.ts';
+import { DATA_DATE, STRATEGIES, distanceToUpper, isWaitingStrategy, selectionReason, strategyMetric } from '../mock/fixtures.ts';
 import { getStock } from '../mock/service.ts';
 import type { Stock, Strategy } from '../types.ts';
 const route = useRoute();
@@ -17,6 +17,12 @@ const loading = ref(true);
 const error = ref('');
 const activeStrategy = ref<Strategy>('short');
 const strategy = computed(() => STRATEGIES[activeStrategy.value]);
+/** 将现价映射到固定整理区间，轨道仅展示价格位置。 */
+const rangePosition = computed(() => {
+    const value = stock.value;
+    if (!value?.waiting) return 0;
+    return Math.max(0, Math.min(100, (value.price - value.waiting.lower) / (value.waiting.upper - value.waiting.lower) * 100));
+});
 /** 在脚本中计算策略名称，保留模板表达式的准确类型。 */
 const strategyNames = computed(() => stock.value?.strategies.map((key) => STRATEGIES[key].name).join(' / ') ?? '');
 const tab = ref<'rules' | 'ai'>('rules');
@@ -132,6 +138,22 @@ void load();
           <span class="eyebrow">{{ strategy.name }} · {{ strategy.subtitle }}</span>
           <h2>为什么进入候选列表？</h2>
           <p class="signal-reason">{{ selectionReason(stock, activeStrategy) }}</p>
+          <div v-if="isWaitingStrategy(activeStrategy) && stock.waiting" class="waiting-range">
+            <div class="waiting-range-heading">
+              <strong>整理区间与现价</strong>
+              <span class="tag tag-amber">等待中</span>
+            </div>
+            <div class="waiting-range-labels">
+              <span>下沿 P <b>{{ stock.waiting.lower.toFixed(2) }}</b></span>
+              <span>上沿 B <b>{{ stock.waiting.upper.toFixed(2) }}</b></span>
+            </div>
+            <div class="waiting-range-track" role="img" :aria-label="`区间${stock.waiting.lower.toFixed(2)}至${stock.waiting.upper.toFixed(2)}元，现价${stock.price.toFixed(2)}元`">
+              <span :style="{ width: `${rangePosition}%` }" />
+              <i :style="{ left: `${rangePosition}%` }" />
+            </div>
+            <p>现价 {{ stock.price.toFixed(2) }} 元 · 距上沿 {{ distanceToUpper(stock).toFixed(1) }}% · 区间宽度 {{ ((stock.waiting.upper / stock.waiting.lower - 1) * 100).toFixed(1) }}%</p>
+            <p>突破观察：收盘超过 {{ stock.waiting.upper.toFixed(2) }} 元后，再检查短线全部条件。</p>
+          </div>
           <div class="signal-metrics">
             <div v-if="activeStrategy === 'short'">
               <span>突破参考价 B</span>
@@ -142,8 +164,12 @@ void load();
               <strong>{{ stock.reference.toFixed(2) }}</strong>
             </div>
             <div>
-              <span>{{ activeStrategy === 'short' ? '成交额放大' : activeStrategy === 'swing' ? '回调成交额比' : '距 MA60' }}</span>
-              <strong>{{ activeStrategy === 'short' ? stock.volumeRatio.toFixed(2) + '×' : activeStrategy === 'swing' ? (stock.pullbackRatio * 100).toFixed(0) + '%' : '+' + stock.ma60Distance.toFixed(1) + '%' }}</strong>
+              <span>{{ strategy.metricName }}</span>
+              <strong>{{ strategyMetric(stock, activeStrategy) }}</strong>
+            </div>
+            <div v-if="isWaitingStrategy(activeStrategy) && stock.waiting">
+              <span>近5日／近20日均额</span>
+              <strong>{{ (stock.waiting.amountRatio * 100).toFixed(0) }}%</strong>
             </div>
             <div>
               <span>观察周期</span>

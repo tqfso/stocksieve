@@ -1,4 +1,4 @@
-<!-- 本文件展示三类策略机会，支持筛选、排序、分页和完整请求状态。 -->
+<!-- 本文件展示五类策略机会，支持筛选、排序、分页和完整请求状态。 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -7,7 +7,7 @@ import StatePanel from '../components/StatePanel.vue';
 import { BOARDS, isBoard } from '../boards.ts';
 import { MARKET_CAP_RANGES, TURNOVER_RANGES, withSavedRange } from '../filter-ranges.ts';
 import type { RangeOption } from '../filter-ranges.ts';
-import { DATA_DATE, STOCKS, STRATEGIES, selectionReason } from '../mock/fixtures.ts';
+import { DATA_DATE, STOCKS, STRATEGIES, STRATEGY_ORDER, isWaitingStrategy, selectionReason, strategyMetric } from '../mock/fixtures.ts';
 import { listStocks } from '../mock/service.ts';
 import { useReview } from '../stores.ts';
 import type { Stock, StockQuery, Strategy } from '../types.ts';
@@ -23,7 +23,7 @@ const pageSize = 6;
 const strategyOpen = ref(false);
 let requestId = 0;
 let debounce: ReturnType<typeof setTimeout> | undefined;
-const strategies: Strategy[] = ['short', 'swing', 'long'];
+const strategies = STRATEGY_ORDER;
 const industries = [...new Set(STOCKS.map((stock) => stock.industry))];
 const concepts = [...new Set(STOCKS.flatMap((stock) => stock.concepts))];
 const strategy = computed(() => STRATEGIES[query.strategy]);
@@ -32,8 +32,8 @@ const industryCount = computed(() => new Set(rows.value.map((stock) => stock.ind
 const invalidTurnoverRange = computed(() => query.minTurnover !== undefined && query.maxTurnover !== undefined && query.minTurnover > query.maxTurnover);
 const invalidMarketCapRange = computed(() => query.minMarketCap !== undefined && query.maxMarketCap !== undefined && query.minMarketCap > query.maxMarketCap);
 const invalidRange = computed(() => invalidTurnoverRange.value || invalidMarketCapRange.value);
-const metricName = computed(() => query.strategy === 'short' ? '成交额放大' : query.strategy === 'swing' ? '回调成交额比' : '距 MA60');
-const metricHint = computed(() => query.strategy === 'short' ? '倍数从高到低' : query.strategy === 'swing' ? '距 MA20 从小到大' : '距 MA60 从小到大');
+const metricName = computed(() => strategy.value.metricName);
+const metricHint = computed(() => strategy.value.metricHint);
 /** 将下拉选项与现有的范围参数双向关联，清空时恢复为不限。 */
 function useRangeSelection(presets: readonly RangeOption[], minField: 'minTurnover' | 'minMarketCap', maxField: 'maxTurnover' | 'maxMarketCap', unit: string) {
     const options = computed(() => withSavedRange(presets, query[minField], query[maxField], unit));
@@ -115,7 +115,6 @@ async function load(): Promise<void> {
 function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
 function sortBy(key: StockQuery['sort']): void { query.descending = query.sort === key ? !query.descending : true; query.sort = key; }
 function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.code}`, query: { strategy: query.strategy, back: route.fullPath } }); }
-function metric(stock: Stock): string { return query.strategy === 'short' ? `${stock.volumeRatio.toFixed(2)}×` : query.strategy === 'swing' ? `${(stock.pullbackRatio * 100).toFixed(0)}%` : `+${stock.ma60Distance.toFixed(1)}%`; }
 restore();
 void load();
 watch(query, () => { page.value = 1; syncUrl(); clearTimeout(debounce); ++requestId; loading.value = true; debounce = setTimeout(() => { void load(); }, 220); });
@@ -163,7 +162,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
   </div>
   <section class="strategy-banner">
     <span class="banner-icon">
-      <AppIcon :name="query.strategy === 'short' ? 'chart' : query.strategy === 'swing' ? 'refresh' : 'spark'" :size="25" />
+      <AppIcon :name="strategy.icon" :size="25" />
     </span>
     <div>
       <strong>{{ strategy.subtitle }}</strong>
@@ -172,6 +171,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
         <span class="period-inline">观察周期 {{ strategy.period }}</span>
       </p>
     </div>
+    <span v-if="isWaitingStrategy(query.strategy)" class="tag tag-amber">等待中</span>
     <el-button text @click="strategyOpen = true">
       查看策略规则
       <AppIcon name="arrow" :size="16" />
@@ -308,6 +308,9 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
                   <span class="board-tag">{{ BOARDS[stock.board].name }}</span>
                   <span>{{ stock.industry }}</span>
                 </div>
+                <div class="strategy-tags" aria-label="所属策略">
+                  <span v-for="key in stock.strategies" :key="key" :class="{ selected: key === query.strategy }">{{ STRATEGIES[key].name }}</span>
+                </div>
               </td>
               <td class="numeric">{{ stock.price.toFixed(2) }}</td>
               <td class="numeric" :class="stock.change >= 0 ? 'rise' : 'fall'">{{ stock.change >= 0 ? '+' : '' }}{{ stock.change.toFixed(2) }}%</td>
@@ -318,7 +321,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
               </td>
               <td class="numeric">{{ stock.totalMarketCap === null ? '—' : stock.totalMarketCap.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }}</td>
               <td>
-                <span class="metric-pill">{{ metric(stock) }}</span>
+                <span class="metric-pill">{{ strategyMetric(stock, query.strategy) }}</span>
               </td>
               <td class="reason-cell">
                 <span>{{ selectionReason(stock, query.strategy) }}</span>
@@ -356,6 +359,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <ol class="condition-list">
       <li v-for="condition in strategy.conditions" :key="condition">{{ condition }}</li>
     </ol>
+    <p v-if="isWaitingStrategy(query.strategy)" class="muted">后续收盘超过本次区间上沿 B 时结束区间内等待，再检查短线全部条件。等待策略与短线同日互斥；趋势埋伏可与波段、长线同时入选。</p>
     <div class="warning-note">
       <strong>失效条件</strong>
       <p>{{ strategy.invalid }}</p>

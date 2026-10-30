@@ -1,6 +1,6 @@
 // 本文件生成接近成品阅读效果的 AI 报告样例；财务、估值和筹码数据均为虚构。
 import type { AnalysisKind, ReportContent, Stock, Strategy } from '../types.ts';
-import { DATA_DATE, STRATEGIES, selectionReason } from './fixtures.ts';
+import { DATA_DATE, STRATEGIES, distanceToUpper, isWaitingStrategy, selectionReason, strategyMetric } from './fixtures.ts';
 import { createChipDistribution } from './chips.ts';
 
 export const REPORT_SAMPLE_VERSION = 3;
@@ -24,6 +24,7 @@ const INDUSTRY_CONTEXT: Record<string, { business: string; driver: string; risk:
     医药生物: { business: '医药产品及研发服务', driver: '产品放量带动收入增长，研发投入影响利润释放节奏', risk: '产品销售进度、研发结果及商业化投入' },
     美容护理: { business: '护理产品及相关服务', driver: '产品结构升级与渠道拓展拉动收入', risk: '产品集中度、推广费用和渠道可持续性' },
     非银金融: { business: '金融服务及相关产品', driver: '业务规模与市场活跃度共同影响收入', risk: '市场成交变化、业务费率和收入波动' },
+    机械设备: { business: '工程机械、轨交设备及配套服务', driver: '设备交付与服务需求共同影响收入确认', risk: '订单执行、下游投资节奏和应收账款回收' },
 };
 
 /** 将同一股票的样例指标固定下来，预览、生成及历史正文保持一致。 */
@@ -101,6 +102,28 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
     const ma20 = stock.price / (1 + stock.ma20Distance / 100);
     const ma60 = stock.price / (1 + stock.ma60Distance / 100);
     const definition = STRATEGIES[strategy];
+    // 等待类报告使用同一整理区间，分别说明趋势延续与低位修复的观察条件。
+    if (isWaitingStrategy(strategy) && stock.waiting) {
+        const { lower, upper, amountRatio, position120 } = stock.waiting;
+        const trend = strategy === 'trend_wait';
+        return {
+            ...base,
+            summary: `${stock.name}当前处于${definition.name}的等待阶段，收盘价${stock.price.toFixed(2)}元，仍在${lower.toFixed(2)}～${upper.toFixed(2)}元区间内。${trend ? `MA20约${ma20.toFixed(2)}元，高于MA60约${ma60.toFixed(2)}元，距区间上沿${distanceToUpper(stock).toFixed(1)}%。` : `MA20约${ma20.toFixed(2)}元，低于MA60约${ma60.toFixed(2)}元，当前位于120日区间的${position120.toFixed(0)}%位置。`}后续需要观察区间突破与成交变化。`,
+            metrics: [
+                { label: '区间下沿P', value: `${lower.toFixed(2)}元`, detail: '入选时固定的失效参考价' },
+                { label: '区间上沿B', value: `${upper.toFixed(2)}元`, detail: '入选时固定的突破观察价' },
+                { label: '近5日／近20日均额', value: `${(amountRatio * 100).toFixed(0)}%`, detail: '近期成交额比例' },
+                { label: definition.metricName, value: strategyMetric(stock, strategy), detail: trend ? '距离上沿的幅度' : '0%为120日低点，100%为高点' },
+            ],
+            sections: [
+                { title: '当前等待形态', text: `${selectionReason(stock, strategy)}区间宽度约${((upper / lower - 1) * 100).toFixed(1)}%，当前收盘仍在上下沿之间。${trend ? '均线关系符合趋势中整理的观察方向，整理期间仍需持续检查MA60是否保持平稳或上行。' : '近期停止创新低，但MA20仍低于MA60，尚不能据此判断中期上升趋势已经建立。'}` },
+                { title: '突破与后续观察', text: `本次固定突破观察价为${upper.toFixed(2)}元。后续收盘超过该价位时，结束当前区间内等待，再检查此前20日高点、当日成交额是否达到此前5日均值的1.5倍，以及价格相对MA20的偏离。只有重新满足短线全部条件，才形成短线入选信号。` },
+                { title: '失效与名单变化', text: `${definition.invalid}本次区间下沿P固定为${lower.toFixed(2)}元，后续收盘跌破该价位需要重新评估。${trend ? '趋势条件转弱时移出当日趋势埋伏名单；仍符合其他策略的信号单独保留。' : 'MA20升至MA60及以上时，重新检查趋势埋伏条件；不自动认定趋势修复成功。'}复查参考价时应保持相同复权口径。` },
+                { title: '主要风险与复查重点', text: `${trend ? '窄幅整理可能向上突破，也可能向下破位，当前的缩量不能单独证明后续方向。' : '历史低位可能持续较长时间，也可能再次下跌，停止创新低只是当前窗口内的观察结果。'}近5日均额为近20日的${(amountRatio * 100).toFixed(0)}%，需要结合后续收盘、成交和经营资料复查。当前样例用于${definition.period}的观察情景演示。` },
+            ],
+            sources: [`${definition.name}策略信号快照 · ${DATA_DATE}（模拟）`, '固定区间上下沿、均线及成交额比例（虚构）', `策略规则：${definition.subtitle}`],
+        };
+    }
     const reference = strategy === 'long' ? ma60 : stock.reference;
     const observation = strategy === 'short'
         ? `突破参考价为${reference.toFixed(2)}元。后续若回踩${reference.toFixed(2)}～${(reference * 1.015).toFixed(2)}元附近、成交缩减且收盘守住参考价，可继续观察突破的有效性；若直接上行，则需要结合量能验证，避免仅依据单日突破作判断。`

@@ -21,6 +21,8 @@ const paths: Record<string, string> = {
     close: 'm6 6 12 12M6 18 18 6',
     sliders: 'M4 6h16M4 18h16M8 3v6m8 6v6',
     menu: 'M3 6h18M3 12h18M3 18h18',
+    clock: 'M12 7v5l3 2M22 12A10 10 0 1 1 2 12a10 10 0 0 1 20 0Z',
+    layers: 'm3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4',
 };
 </script>
 <template>

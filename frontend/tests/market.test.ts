@@ -1,7 +1,7 @@
 // 本文件验证复合筛选、策略排序以及模拟 K 线的确定性和 OHLC 聚合口径。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DATA_DATE, STOCKS } from '../src/mock/fixtures.ts';
+import { DATA_DATE, STOCKS, STRATEGY_ORDER } from '../src/mock/fixtures.ts';
 import { aggregateCandles, filterStocks, generateCandles } from '../src/mock/market.ts';
 import type { Candle, StockQuery } from '../src/types.ts';
 const base: StockQuery = { strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true };
@@ -61,6 +61,42 @@ test('行情生成可重现，末日收盘价一致，OHLC 合法且覆盖多年
     assert.ok(Math.abs((stock.price / candles.at(-2)!.close - 1) * 100 - stock.change) < 0.01);
     assert.ok(aggregateCandles(candles, 'year').length >= 9);
     assert.ok(candles.every((item, index) => item.low > 0 && item.low <= Math.min(item.open, item.close) && item.high >= Math.max(item.open, item.close) && item.volume > 0 && (index === 0 || candles[index - 1]!.time < item.time)));
+});
+test('等待策略支持独立筛选、默认排序，并遵守与其他策略的边界', () => {
+    assert.equal(STRATEGY_ORDER.length, 5);
+    const trend = filterStocks(STOCKS, { ...base, strategy: 'trend_wait' });
+    const bottom = filterStocks(STOCKS, { ...base, strategy: 'base_wait' });
+    assert.equal(trend[0]?.code, '600900');
+    assert.equal(bottom[0]?.code, '688009');
+    assert.ok(trend.some((stock) => stock.strategies.includes('long') && stock.strategies.includes('swing')));
+    assert.deepEqual(filterStocks(STOCKS, { ...base, strategy: 'base_wait', board: 'CHINEXT' }).map((stock) => stock.code), ['300124']);
+    for (const stock of [...trend, ...bottom]) {
+        const waiting = stock.waiting!;
+        assert.ok(waiting.lower <= stock.price && stock.price <= waiting.upper);
+        assert.ok(waiting.upper / waiting.lower - 1 <= 0.12);
+        assert.ok(waiting.amountRatio <= 0.8);
+        assert.equal(stock.strategies.includes('short'), false);
+        const ma20 = stock.price / (1 + stock.ma20Distance / 100);
+        const ma60 = stock.price / (1 + stock.ma60Distance / 100);
+        if (stock.strategies.includes('trend_wait')) {
+            assert.ok(ma20 >= ma60);
+            assert.ok((waiting.upper - stock.price) / waiting.upper <= 0.03);
+        } else {
+            assert.ok(ma20 < ma60 && waiting.position120 <= 35);
+            assert.deepEqual(stock.strategies, ['base_wait']);
+        }
+    }
+});
+test('等待样例的近期K线与固定区间、现价保持一致', () => {
+    for (const stock of STOCKS.filter((item) => item.waiting)) {
+        const candles = generateCandles(stock);
+        const previous20 = candles.slice(-21, -1);
+        assert.equal(Math.max(...previous20.map((item) => item.high)), stock.waiting!.upper);
+        assert.equal(Math.min(...previous20.map((item) => item.low)), stock.waiting!.lower);
+        assert.equal(candles.at(-1)!.close, stock.price);
+        assert.ok(candles.slice(-21).every((item) => item.low <= Math.min(item.open, item.close) && item.high >= Math.max(item.open, item.close)));
+        assert.ok(Math.abs((stock.price / candles.at(-2)!.close - 1) * 100 - stock.change) < 0.1);
+    }
 });
 test('周线按周一分组，年线跨年分组，并保持 OHLC 与成交量口径', () => {
     const candles: Candle[] = [

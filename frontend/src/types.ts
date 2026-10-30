@@ -1,5 +1,5 @@
 // 本文件定义页面与模拟数据层共同使用的业务类型。
-export type Strategy = 'short' | 'swing' | 'long';
+export type Strategy = 'short' | 'swing' | 'long' | 'trend_wait' | 'base_wait';
 export type Role = 'admin' | 'user';
 export type Period = 'day' | 'week' | 'year';
 export type AnalysisKind = 'fundamental' | 'chips' | 'trade';
@@ -31,6 +31,13 @@ export interface Stock {
     ma60Distance: number;
     pullbackRatio: number;
     reference: number;
+    /** 等待策略的固定区间及量价样例，供列表、详情与报告复用。 */
+    waiting?: {
+        lower: number;
+        upper: number;
+        amountRatio: number;
+        position120: number;
+    };
 }
 export interface StockQuery {
     strategy: Strategy;

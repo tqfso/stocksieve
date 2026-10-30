@@ -83,4 +83,12 @@ test('模拟业务流程', async (t) => {
             api.advanceSync(daily.id, false);
         assert.equal(api.syncSnapshot().jobs[0]?.status, 'success');
     });
+    await t.test('趋势埋伏报告独立保存，不混入同一股票的波段历史', async () => {
+        await api.login('admin', 'demo1234');
+        const stock = STOCKS.find((item) => item.code === '600036')!;
+        await api.analyze(stock, 'trade', false, 'trend_wait');
+        assert.equal(api.reportsFor(stock.code, 'trade', 'trend_wait').length, 1);
+        assert.equal(api.reportsFor(stock.code, 'trade', 'swing').length, 0);
+        assert.equal(api.reportsFor(stock.code, 'trade', 'long').length, 0);
+    });
 });
