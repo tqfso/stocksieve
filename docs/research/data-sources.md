@@ -34,7 +34,7 @@
 | 财报及 TTM 输入 | 新浪 / Baostock；交易所或公告资料核对 | 累计/单季、合并/母公司、币种和单位、归母净利润、披露时间、修订版本及北交所 |
 | 筹码 | 历史成交与换手率用于本地估算 | 免费接口不视为真实股东成本分布；待后续确定估算方法，当前不调用模型填造 |
 
-选择原则：优先验证 Baostock 承担历史/日历、批量行情渠道承担当日行情、分类渠道手动更新的组合。该组合只是验证方向；证据不足时不宣称任一单源覆盖全 A 股，也不静默跳过北交所。若采用组合来源，后续显式配置、记录实际来源并同步修订接口设计，不沿用示例中的 `available: true` 作为真实配置。
+选择原则：逐渠道验证其可独立承担的任务，股票初始化、分类和收盘更新分别提供可选渠道，每次任务单选一个。收盘渠道须验证该任务所需的行情、历史补齐和复权能力；缺少开市板块必需数据时不发布，不拼接其他渠道冒充单源覆盖。跨源比较仅用于验证口径。可用渠道的适配与注册遵循[概要设计](../design/backend.md#4-数据渠道与频控)，不沿用接口示例中的 `available: true` 作为真实配置。
 
 ## 3. 低频探测工具
 
@@ -52,17 +52,17 @@
 
 预算是本项目的保守探测策略，不是供应商官方额度，也无法保证不会被封禁。不要删除状态文件或启动其他采集器叠加请求。此工具不等于正式同步的频控实现。
 
-以下命令均在项目根目录执行。先预览（不联网、不创建运行状态）：
+以下命令均在项目根目录执行。当前探测工具独立运行，使用 `uv run --no-project`；后续基础工程建立后使用项目环境。先预览（不访问数据源、不创建探测状态）：
 
 ```bash
-python3 backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group catalog
+uv run --no-project python backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group catalog
 ```
 
 网络审批恢复后，分组少量执行；日期须换成已确认收盘的交易日：
 
 ```bash
-python3 backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group catalog --execute
-python3 backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group history --execute
+uv run --no-project python backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group catalog --execute
+uv run --no-project python backend/tools/probe_sources.py --date 2026-10-29 --source eastmoney --group history --execute
 ```
 
 支持 `catalog`、`history`、`classification`、`financial`、`factors` 分组；来源支持 `eastmoney`、`sina`、`tencent`。北交所样本优先从目录动态取得，单独运行历史/财务组时使用 24 小时内目录记录，或传入已核对的 `--bse-code`。预算不足或缺少代码时报告 `deferred`，留待后续执行。
@@ -74,7 +74,7 @@ Baostock 需要其 SDK/TCP 通道，当前工具尚不包含该协议。后续�
 离线验证命令：
 
 ```bash
-python3 -m unittest discover -s backend/tools/tests -v
+uv run --no-project python -m unittest discover -s backend/tools/tests -v
 ```
 
 ## 4. 联网验收与最终选源条件

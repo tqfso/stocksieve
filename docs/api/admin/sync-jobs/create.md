@@ -23,6 +23,7 @@
 ```
 
 - `kind` 取 `initialize`（股票基础信息）、`catalog`（行业、题材及股票归属）、`daily`（收盘行情与策略）。`source` 取[数据状态](../../market/status.md)返回的可用且支持对应任务的渠道 ID，两者必填；`catalog_provider` 仅为分类渠道示例。
+- `source` 为单个渠道 ID 字符串，每次任务选择一个渠道；后续执行与重试沿用该渠道。新增渠道通过数据状态接口提供，前端按返回的可用渠道生成选项。
 - `initialize`、`catalog` 不接受 `dataDate`，可在非交易日执行；`catalog` 需先初始化股票，且只更新分类。`daily` 省略日期时使用北京时间当天，也可指定历史交易日。
 - `catalog`、`daily` 未初始化返回 `409 DATA_NOT_INITIALIZED`；分类未同步不阻塞收盘任务。收盘任务提前触发限当天收盘后，仍需预检；非交易日返回 `400 NOT_TRADING_DAY`，未收盘或未来日期返回 `409 MARKET_NOT_CLOSED`。
 - 来源不可用或不支持该任务返回 `400 SOURCE_UNAVAILABLE`，不自动换源。已有未完成同步任务时返回 `409 SYNC_IN_PROGRESS`，`error.details.jobId` 指向该任务。

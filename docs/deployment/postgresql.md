@@ -84,4 +84,4 @@ postgres_backup_file="backups/stocksieve-$(date +%Y%m%d-%H%M%S).dump"
 docker compose exec -T postgres sh -eu -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$postgres_backup_file"
 ```
 
-日常启动不会重复执行建表脚本。后续结构调整使用迁移；恢复备份应另建空库，避免覆盖当前库。
+日常启动不会重复执行建表脚本。后续结构调整遵循[项目数据库约定](../../AGENT.md#数据库约束)；恢复备份应另建空库，避免覆盖当前库。
