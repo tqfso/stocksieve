@@ -1,7 +1,7 @@
 // 本文件验证完整报告样例、行业差异和策略参考价的一致性。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReportContent, REPORT_SAMPLE_VERSION } from '../src/mock/reports.ts';
+import { calculatePeTtm, createReportContent, REPORT_SAMPLE_VERSION } from '../src/mock/reports.ts';
 import { DATA_DATE, STOCKS, STRATEGIES } from '../src/mock/fixtures.ts';
 import type { Stock, Strategy } from '../src/types.ts';
 
@@ -12,12 +12,45 @@ test('三类报告包含可阅读的具体正文和指标，而不是占位说�
             assert.equal(report.sampleVersion, REPORT_SAMPLE_VERSION);
             assert.equal(report.dataDate, DATA_DATE);
             assert.ok(report.title.includes(stock.name));
-            assert.equal(report.metrics.length, 4);
+            assert.equal(report.metrics.length, kind === 'fundamental' ? 8 : 4);
             assert.equal(report.sections.length, 4);
             assert.ok(report.sections.every((section) => section.text.length > 45));
             assert.doesNotMatch(report.sections.map((section) => section.text).join(''), /此处展示|正式报告将在|当前仅展示|示例正文/);
             assert.ok(report.sources.some((source) => /模拟|虚构/.test(source)));
         }
+    }
+});
+
+test('基本面展示 TTM 收入、归母净利润及有效 PE，缺失市值不输出估值倍数', () => {
+    const stock = STOCKS[1]!;
+    const report = createReportContent(stock, 'fundamental');
+    const metric = (label: string): string => report.metrics.find((item) => item.label === label)!.value;
+    assert.ok(metric('营业收入（TTM）').endsWith('亿元'));
+    const profit = Number(metric('归母净利润（TTM）').replaceAll(',', '').replace('亿元', ''));
+    assert.equal(metric('PE（TTM）'), `${(stock.totalMarketCap! / profit).toFixed(1)}倍`);
+    const missing = createReportContent({ ...stock, totalMarketCap: null }, 'fundamental');
+    assert.equal(missing.metrics.find((item) => item.label === 'PE（TTM）')?.value, '—');
+    assert.equal(calculatePeTtm(100, 10), 10);
+    for (const profit of [null, 0, -10, Number.NaN, Number.POSITIVE_INFINITY]) assert.equal(calculatePeTtm(100, profit), null);
+});
+
+test('筹码图合计百分之百，参考位与图中档位及正文一致', () => {
+    for (const stock of STOCKS) {
+        const report = createReportContent(stock, 'chips');
+        const chart = report.chipDistribution!;
+        assert.equal(chart.currentPrice, stock.price);
+        assert.ok(Math.abs(chart.bins.reduce((sum, bin) => sum + bin.ratio, 0) - 100) < 1e-8);
+        assert.ok(chart.bins.every((bin, index) => bin.ratio >= 0 && bin.lower < bin.upper && (index === 0 || chart.bins[index - 1]!.upper === bin.lower)));
+        assert.ok(chart.support.upper <= stock.price && chart.support.price < stock.price);
+        assert.ok(chart.resistance.lower > stock.price && chart.resistance.price > stock.price);
+        assert.ok(chart.bins.some((bin) => bin.lower <= stock.price && bin.upper > stock.price));
+        assert.ok(chart.bins.some((bin) => bin.price === chart.support.price && bin.ratio === chart.support.ratio));
+        assert.ok(chart.bins.some((bin) => bin.price === chart.resistance.price && bin.ratio === chart.resistance.ratio));
+        assert.ok(chart.cost90[0] <= chart.cost70[0] && chart.cost70[0] <= chart.cost70[1] && chart.cost70[1] <= chart.cost90[1]);
+        assert.ok(chart.profitableRatio >= 0 && chart.profitableRatio <= 100);
+        assert.equal(report.metrics[0]?.value, `${chart.averageCost.toFixed(2)}元`);
+        assert.ok(report.sections.some((section) => section.text.includes(`支撑参考价${chart.support.price.toFixed(2)}`)));
+        assert.ok(report.sections.some((section) => section.text.includes(`压力参考价${chart.resistance.price.toFixed(2)}`)));
     }
 });
 

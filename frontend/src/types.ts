@@ -54,9 +54,26 @@ export interface Candle {
     low: number;
     volume: number;
 }
+/** 筹码档位表示一个成本区间的估算占比，不能当作某价位的真实持股清单。 */
+export interface ChipBin {
+    lower: number;
+    upper: number;
+    price: number;
+    ratio: number;
+}
+export interface ChipDistribution {
+    currentPrice: number;
+    bins: ChipBin[];
+    averageCost: number;
+    profitableRatio: number;
+    cost70: [number, number];
+    cost90: [number, number];
+    support: ChipBin;
+    resistance: ChipBin;
+}
 /** 完整模拟报告的内容结构，预览与保存后的报告共用。 */
 export interface ReportContent {
-    sampleVersion: 2;
+    sampleVersion: 3;
     title: string;
     dataDate: string;
     strategy: Strategy;
@@ -67,6 +84,7 @@ export interface ReportContent {
         text: string;
     }[];
     sources: string[];
+    chipDistribution?: ChipDistribution;
 }
 export interface Report extends ReportContent {
     id: string;

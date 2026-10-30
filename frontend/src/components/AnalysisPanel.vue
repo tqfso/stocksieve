@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import AppIcon from './AppIcon.vue';
 import StatePanel from './StatePanel.vue';
+import ChipDistributionChart from './ChipDistributionChart.vue';
 import { analyze, reportsFor } from '../mock/service.ts';
 import { createReportContent } from '../mock/reports.ts';
 import { STRATEGIES } from '../mock/fixtures.ts';
@@ -130,6 +131,7 @@ refresh();
         <strong>核心判断</strong>
         <p>{{ report.summary }}</p>
       </div>
+      <ChipDistributionChart v-if="report.chipDistribution" :distribution="report.chipDistribution" />
       <div class="report-sections">
         <article v-for="(section, index) in report.sections" :key="section.title">
           <span class="report-number">0{{ index + 1 }}</span>

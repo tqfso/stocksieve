@@ -2,6 +2,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { aggregateCandles, generateCandles } from '../mock/market.ts';
+import { calculateMovingAverages, MA_PERIODS } from '../moving-averages.ts';
+import type { MovingAveragePeriod } from '../moving-averages.ts';
 import type { Period, Stock } from '../types.ts';
 const props = defineProps<{
     stock: Stock;
@@ -10,7 +12,7 @@ const period = ref<Period>('day');
 const windowSize = ref(60);
 const offset = ref(0);
 const hovered = ref<number | null>(null);
-const averages = ref([20, 60]);
+const averages = ref<MovingAveragePeriod[]>([...MA_PERIODS]);
 const chart = ref<SVGSVGElement>();
 const dragging = ref(false);
 let dragStart = 0;
@@ -22,26 +24,19 @@ const start = computed(() => Math.max(0, end.value - windowSize.value));
 const visible = computed(() => all.value.slice(start.value, end.value));
 const step = computed(() => 910 / Math.max(1, visible.value.length));
 const active = computed(() => visible.value[hovered.value ?? visible.value.length - 1]);
-const upper = computed(() => Math.max(...visible.value.map((candle) => candle.high)) * 1.025);
-const lower = computed(() => Math.min(...visible.value.map((candle) => candle.low)) * 0.975);
+const averageSeries = computed(() => calculateMovingAverages(all.value));
+// 纵轴同时容纳已选均线，避免较长周期的均线被图表裁切。
+const visibleAverages = computed(() => averages.value.flatMap((size) => averageSeries.value[size].slice(start.value, end.value).filter((value): value is number => value !== null)));
+const upper = computed(() => Math.max(...visible.value.map((candle) => candle.high), ...visibleAverages.value) * 1.025);
+const lower = computed(() => Math.min(...visible.value.map((candle) => candle.low), ...visibleAverages.value) * 0.975);
 const maxVolume = computed(() => Math.max(...visible.value.map((candle) => candle.volume), 1));
 const priceTicks = computed(() => Array.from({ length: 5 }, (_, index) => upper.value - (upper.value - lower.value) * index / 4));
 const tickIndexes = computed(() => [...new Set([0, Math.floor(visible.value.length / 3), Math.floor(visible.value.length * 2 / 3), visible.value.length - 1])]);
-const averageColors: Record<number, string> = { 20: 'var(--ma20)', 60: 'var(--ma60)', 120: 'var(--ma120)' };
-const averageSeries = computed(() => Object.fromEntries([20, 60, 120].map((size) => {
-    let sum = 0;
-    const values = all.value.map((candle, index) => {
-        sum += candle.close;
-        if (index >= size)
-            sum -= all.value[index - size]!.close;
-        return index < size - 1 ? null : sum / size;
-    });
-    return [size, values];
-})) as Record<number, (number | null)[]>);
+const averageColors = Object.fromEntries(MA_PERIODS.map((size) => [size, `var(--ma${size})`])) as Record<MovingAveragePeriod, string>;
 function x(index: number): number { return 12 + step.value * (index + 0.5); }
 function y(price: number): number { return 15 + (upper.value - price) / Math.max(0.01, upper.value - lower.value) * 225; }
 function color(open: number, close: number): string { return close >= open ? 'var(--rise)' : 'var(--fall)'; }
-function line(size: number): string {
+function line(size: MovingAveragePeriod): string {
     let drawing = false;
     return averageSeries.value[size]!.slice(start.value, end.value).map((value, index) => {
         if (value === null) {
@@ -65,7 +60,7 @@ function beginDrag(event: PointerEvent): void { if (event.button !== 0)
     return; dragging.value = true; dragStart = event.clientX; dragOffset = offset.value; chart.value?.setPointerCapture(event.pointerId); }
 function stopDrag(): void { dragging.value = false; }
 function zoom(delta: number): void { windowSize.value = Math.max(10, Math.min(180, windowSize.value + delta)); offset.value = Math.min(offset.value, Math.max(0, all.value.length - windowSize.value)); hovered.value = null; }
-function averageLabel(size: number): string { const value = averageSeries.value[size]?.[start.value + (hovered.value ?? visible.value.length - 1)]; return value ? value.toFixed(2) : '—'; }
+function averageLabel(size: MovingAveragePeriod): string { const value = averageSeries.value[size]?.[start.value + (hovered.value ?? visible.value.length - 1)]; return value === null || value === undefined ? '—' : value.toFixed(2); }
 watch(period, () => { offset.value = 0; hovered.value = null; windowSize.value = period.value === 'year' ? 20 : 60; });
 watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; });
 </script>
@@ -110,13 +105,13 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
       </span>
     </div>
     <div class="ma-legend">
-      <label v-for="size in [20, 60, 120]" :key="size" :style="{ color: averageColors[size] }">
+      <label v-for="size in MA_PERIODS" :key="size" :style="{ color: averageColors[size] }">
         <input v-model="averages" type="checkbox" :value="size" />
         MA
         {{ size }}
         <b>{{ averageLabel(size) }}</b>
       </label>
-      <span>均线按当前周期计算</span>
+      <span>均线按当前周期计算 · — 表示历史不足</span>
     </div>
     <svg
       ref="chart"

@@ -1,8 +1,15 @@
 // 本文件生成接近成品阅读效果的 AI 报告样例；财务、估值和筹码数据均为虚构。
 import type { AnalysisKind, ReportContent, Stock, Strategy } from '../types.ts';
 import { DATA_DATE, STRATEGIES, selectionReason } from './fixtures.ts';
+import { createChipDistribution } from './chips.ts';
 
-export const REPORT_SAMPLE_VERSION = 2;
+export const REPORT_SAMPLE_VERSION = 3;
+
+/** 市值与滚动归母净利润必须同币种同单位；亏损、零利润或缺失时不显示有效 PE。 */
+export function calculatePeTtm(marketCap: number | null, netProfitTtm: number | null): number | null {
+    if (marketCap === null || netProfitTtm === null || !Number.isFinite(marketCap) || !Number.isFinite(netProfitTtm) || marketCap <= 0 || netProfitTtm <= 0) return null;
+    return marketCap / netProfitTtm;
+}
 
 /** 行业情景只用于组织模拟报告正文，不代表已核实的公司经营资料。 */
 const INDUSTRY_CONTEXT: Record<string, { business: string; driver: string; risk: string }> = {
@@ -32,26 +39,32 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
         const roe = +(8 + seed % 9 * 1.1).toFixed(1);
         const cashRatio = +(0.82 + seed % 7 * 0.065).toFixed(2);
         const bank = stock.industry === '银行';
-        const pe = bank ? 7 + seed % 5 * 0.8 : 18 + seed % 15 * 1.3;
+        const modelPe = bank ? 7 + seed % 5 * 0.8 : 18 + seed % 15 * 1.3;
         const margin = 12 + seed % 12 * 0.9;
-        const profit = (stock.totalMarketCap ?? stock.amount * 30) / pe;
-        const revenue = profit / (margin / 100);
+        const profit = +((stock.totalMarketCap ?? stock.amount * 30) / modelPe).toFixed(2);
+        const revenue = +(profit / (margin / 100)).toFixed(2);
+        const pe = calculatePeTtm(stock.totalMarketCap, profit);
+        const peDescription = pe === null ? '当前无法计算有效的PE（TTM），不能据此作出估值高低判断。' : `PE（TTM）约${pe.toFixed(1)}倍。结合${profitGrowth.toFixed(1)}%的归母净利润增速，估值消化依赖后续增长延续；增长放缓可能增加估值调整压力。`;
         const interestMargin = +(1.55 + seed % 7 * 0.06).toFixed(2);
         const badLoanRatio = +(0.72 + seed % 8 * 0.05).toFixed(2);
         const context = INDUSTRY_CONTEXT[stock.industry] ?? { business: '零售及对公金融服务', driver: '客户经营与业务结构共同影响盈利表现', risk: '净息差变化、资产质量和信用成本' };
         return {
             ...base,
-            summary: `${stock.name}经营保持增长，近12个月营收同比${signed(revenueGrowth)}，净利润同比${signed(profitGrowth)}。${bank ? '盈利稳定性需要结合净息差与资产质量持续观察。' : cashRatio >= 1 ? '经营现金流能够覆盖净利润，盈利兑现情况较好。' : '经营现金流暂未完全覆盖净利润，回款与营运资金占用仍需跟踪。'}当前估值对后续业绩兑现仍有一定依赖。`,
+            summary: `${stock.name}营业收入（TTM）${number(revenue)}亿元，归母净利润（TTM）${number(profit)}亿元，同比${signed(profitGrowth)}。${pe === null ? '当前缺少有效的PE（TTM）。' : `PE（TTM）为${pe.toFixed(1)}倍。`}${bank ? '盈利稳定性需要结合净息差与资产质量持续观察。' : cashRatio >= 1 ? '经营现金流能够覆盖净利润，盈利兑现情况较好。' : '经营现金流暂未完全覆盖净利润，回款与营运资金占用仍需跟踪。'}`,
             metrics: [
+                { label: '营业收入（TTM）', value: `${number(revenue)}亿元`, detail: '滚动最近四个季度' },
+                { label: '归母净利润（TTM）', value: `${number(profit)}亿元`, detail: 'PE的盈利分母' },
+                { label: 'PE（TTM）', value: pe === null ? '—' : `${pe.toFixed(1)}倍`, detail: '总市值／归母净利润（TTM）' },
+                { label: '总市值', value: stock.totalMarketCap === null ? '—' : `${number(stock.totalMarketCap)}亿元`, detail: `截至${DATA_DATE}` },
                 { label: '营收同比', value: signed(revenueGrowth), detail: '近12个月' },
-                { label: '净利润同比', value: signed(profitGrowth), detail: '近12个月' },
+                { label: '归母净利润同比', value: signed(profitGrowth), detail: '近12个月' },
                 { label: bank ? '净息差' : '净资产收益率', value: `${bank ? interestMargin.toFixed(2) : roe.toFixed(1)}%`, detail: bank ? '利差水平' : 'ROE' },
                 { label: bank ? '不良贷款率' : '现金流／净利润', value: bank ? `${badLoanRatio.toFixed(2)}%` : `${cashRatio.toFixed(2)}倍`, detail: bank ? '资产质量' : '经营现金流覆盖情况' },
             ],
             sections: [
-                { title: '业务与经营表现', text: `公司收入由${context.business}构成，${context.driver}。近12个月营业收入${number(revenue)}亿元，净利润${number(profit)}亿元。${profitGrowth > revenueGrowth ? '利润增速高于收入增速，盈利弹性有所体现。' : '利润增长未显著快于收入，需要关注成本和费用端的变化。'}` },
+                { title: '业务与经营表现', text: `公司收入由${context.business}构成，${context.driver}。营业收入（TTM）${number(revenue)}亿元，归母净利润（TTM）${number(profit)}亿元。TTM表示最近四个季度的滚动12个月。${profitGrowth > revenueGrowth ? '利润增速高于收入增速，盈利弹性有所体现。' : '利润增长未显著快于收入，需要关注成本和费用端的变化。'}` },
                 { title: bank ? '盈利稳定性与资产质量' : '盈利质量与现金流', text: bank ? `净息差为${interestMargin.toFixed(2)}%，不良贷款率为${badLoanRatio.toFixed(2)}%。盈利增长与资产质量应同时评估；若息差继续收窄或信用成本上升，利润增长的持续性需要重新判断。` : `净资产收益率为${roe.toFixed(1)}%，经营现金流／净利润为${cashRatio.toFixed(2)}倍。${cashRatio >= 1 ? '利润已形成相应现金流，经营质量具备一定支撑。后续重点检查这一覆盖水平能否保持。' : '利润尚未完全转化为经营现金流，后续应重点检查应收账款和存货变化，不能仅凭利润增速判断经营质量。'}` },
-                { title: '估值与业绩匹配', text: `总市值为${stock.totalMarketCap === null ? '暂无数据' : `${number(stock.totalMarketCap)}亿元`}，市盈率约${pe.toFixed(1)}倍。结合${profitGrowth.toFixed(1)}%的利润增速，估值消化依赖后续增长延续。若增长放缓而估值未同步调整，价格波动压力可能增加。` },
+                { title: '估值与业绩匹配', text: `总市值为${stock.totalMarketCap === null ? '暂无数据' : `${number(stock.totalMarketCap)}亿元`}，归母净利润（TTM）为${number(profit)}亿元。${peDescription}PE采用总市值除以同口径的滚动归母净利润；分母缺失、为零或为负时不显示有效倍数。` },
                 { title: '风险与后续观察', text: `重点跟踪${context.risk}。下一次财务更新需要验证收入与利润能否同步增长，以及${bank ? '净息差和资产质量是否保持稳定' : '现金流改善是否跟上利润增长'}；如这些条件转弱，应下调对经营趋势的判断。` },
             ],
             sources: [`近12个月财务快照 · 截至${DATA_DATE}（虚构）`, '公司业务与行业情景（模拟）', '估值与现金流计算样例（模拟）'],
@@ -59,14 +72,15 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
     }
 
     if (kind === 'chips') {
-        const averageCost = +(stock.price / (1 + (2.4 + seed % 5 * 0.6) / 100)).toFixed(2);
-        const low70 = +(averageCost * 0.96).toFixed(2), high70 = +(averageCost * 1.06).toFixed(2);
-        const low90 = +(averageCost * 0.90).toFixed(2), high90 = +(averageCost * 1.12).toFixed(2);
-        const profitableRatio = 64 + seed % 17;
+        const distribution = createChipDistribution(stock.price, seed);
+        const { averageCost, profitableRatio, support, resistance } = distribution;
+        const [low70, high70] = distribution.cost70;
+        const [low90, high90] = distribution.cost90;
         const premium = (stock.price / averageCost - 1) * 100;
         return {
             ...base,
-            summary: `收盘价${stock.price.toFixed(2)}元，高于估算平均成本${averageCost.toFixed(2)}元约${premium.toFixed(1)}%，仍处于中央70%成本区间。下方成本区域具有观察价值，上方${high70.toFixed(2)}元附近的成交变化将影响短期价格表现。`,
+            chipDistribution: distribution,
+            summary: `收盘价${stock.price.toFixed(2)}元，较估算平均成本${averageCost.toFixed(2)}元${premium >= 0 ? '高' : '低'}约${Math.abs(premium).toFixed(1)}%。下方${support.lower.toFixed(2)}～${support.upper.toFixed(2)}元为主要筹码支撑参考区，上方${resistance.lower.toFixed(2)}～${resistance.upper.toFixed(2)}元为压力参考区，需要结合后续价格与成交变化验证。`,
             metrics: [
                 { label: '估算平均成本', value: `${averageCost.toFixed(2)}元`, detail: '与当前报价同口径' },
                 { label: '收盘价及以下筹码', value: `${profitableRatio.toFixed(1)}%`, detail: '估算分布占比' },
@@ -74,10 +88,10 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
                 { label: '当日换手率', value: `${stock.turnover.toFixed(2)}%`, detail: '成交活跃度' },
             ],
             sections: [
-                { title: '成本分布与价格位置', text: `中央70%筹码成本位于${low70.toFixed(2)}～${high70.toFixed(2)}元，中央90%位于${low90.toFixed(2)}～${high90.toFixed(2)}元。当前价格高于平均成本${premium.toFixed(1)}%，有${profitableRatio.toFixed(1)}%的估算筹码成本处于收盘价及以下，价格暂未显著脱离主要成本区域。` },
+                { title: '成本分布与价格位置', text: `中央70%筹码成本位于${low70.toFixed(2)}～${high70.toFixed(2)}元，中央90%位于${low90.toFixed(2)}～${high90.toFixed(2)}元。有${profitableRatio.toFixed(2)}%的估算筹码成本位于收盘价及以下，平均成本为${averageCost.toFixed(2)}元。横向柱形图展示各价格区间的占比，不等同于该价位当日的成交量或真实股东持股数量。` },
                 { title: '成交与筹码交换', text: `当日成交额${stock.amount.toFixed(1)}亿元，换手率${stock.turnover.toFixed(2)}%，成交额为此前5日均值的${stock.volumeRatio.toFixed(2)}倍。${stock.volumeRatio >= 1.5 ? '价格变化伴随成交放大，筹码交换较活跃，后续需要观察放量后价格能否保持。' : '成交放大幅度有限，尚不足以仅凭单日量能判断新一轮趋势已经形成。'}` },
-                { title: '上下方观察区域', text: `下方先观察${averageCost.toFixed(2)}元附近的成本区域，进一步关注${low70.toFixed(2)}元。上方关注${high70.toFixed(2)}元附近的成交与收盘表现：持续放量站上可视为进一步观察条件；反复冲高回落则说明该区域仍有分歧。` },
-                { title: '风险与判断边界', text: `如果后续放量跌回${low70.toFixed(2)}元以下，当前成本支撑的解释需要重新评估。筹码分布属于估算结果，无法据此确认机构、游资或散户的真实持仓，也不能把估算平均成本当作确定的主力成本。` },
+                { title: '支撑与压力参考', text: `支撑参考价${support.price.toFixed(2)}元，对应${support.lower.toFixed(2)}～${support.upper.toFixed(2)}元区间，占估算筹码${support.ratio.toFixed(2)}%；压力参考价${resistance.price.toFixed(2)}元，对应${resistance.lower.toFixed(2)}～${resistance.upper.toFixed(2)}元区间，占${resistance.ratio.toFixed(2)}%。两处均取自现价两侧的主要筹码档位，需由后续收盘和成交表现验证。` },
+                { title: '风险与判断边界', text: `如果后续放量跌回${support.lower.toFixed(2)}元以下，当前成本支撑的解释需要重新评估。支撑、压力仅为估算成本分布的参考，不能保证价格一定反弹或受阻；也无法据此确认机构、游资或散户的真实持仓。` },
             ],
             sources: [`成本分布样例 · ${DATA_DATE}（虚构）`, '成交额与换手率快照（模拟）', '估算成本区间与价格位置（模拟）'],
         };
