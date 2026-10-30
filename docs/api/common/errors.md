@@ -14,4 +14,4 @@
 
 参数格式和枚举错误使用 `400`；资源 ID 合法但不存在使用 `404`。列表筛选的未知分类 ID 使用 `400 INVALID_ARGUMENT`。
 
-异步任务自身失败通过详情中的 `status: failed` 与 `error` 展示，任务查询仍可成功返回 `200`。重试创建新任务；只有请求失败的重发才复用原 `Idempotency-Key`。
+异步任务自身失败通过详情中的 `data.status=failed` 与 `data.error` 展示，任务查询仍可成功返回 `200`。重试创建新任务；只有请求失败的重发才复用原 `Idempotency-Key`。

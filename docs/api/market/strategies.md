@@ -1,30 +1,33 @@
-# 策略说明
+# 策略说明 `GET /strategies`
 
-[接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-## 策略说明 `GET /strategies`
+权限：登录用户。
 
 无需行情快照，即使尚未初始化也可查询。成功 `200`：
 
 ```json
 {
-  "version": "v1",
-  "items": [
-    {
-      "id": "short",
-      "name": "短线",
-      "subtitle": "放量突破",
-      "observationPeriod": "3～10 个交易日",
-      "description": "关注突破近期高点、成交额同步放大的机会。",
-      "conditions": [
-        { "id": "price_breakout", "label": "价格突破", "description": "收盘价超过此前 20 个交易日最高价。" },
-        { "id": "amount_expansion", "label": "成交放大", "description": "成交额至少为此前 5 日均值的 1.5 倍。" },
-        { "id": "ma20_distance", "label": "均线偏离受限", "description": "收盘价高于 MA20，偏离不超过 10%。" }
-      ],
-      "invalidationDescription": "后续收盘价低于入选时的突破参考价 B。",
-      "defaultSort": { "field": "amountMultiple", "order": "desc" }
-    }
-  ]
+  "data": {
+    "version": "v1",
+    "items": [
+      {
+        "id": "short",
+        "name": "短线",
+        "subtitle": "放量突破",
+        "observationPeriod": "3～10 个交易日",
+        "description": "关注突破近期高点、成交额同步放大的机会。",
+        "conditions": [
+          { "id": "price_breakout", "label": "价格突破", "description": "收盘价超过此前 20 个交易日最高价。" },
+          { "id": "amount_expansion", "label": "成交放大", "description": "成交额至少为此前 5 日均值的 1.5 倍。" },
+          { "id": "ma20_distance", "label": "均线偏离受限", "description": "收盘价高于 MA20，偏离不超过 10%。" }
+        ],
+        "invalidationDescription": "后续收盘价低于入选时的突破参考价 B。",
+        "defaultSort": { "field": "amountMultiple", "order": "desc" }
+      }
+    ]
+  },
+  "requestId": "req_example"
 }
 ```
 

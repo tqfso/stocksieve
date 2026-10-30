@@ -1,8 +1,8 @@
-# K 线数据
+# K 线 `GET /stocks/{stockId}/candles`
 
-[接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-## K 线 `GET /stocks/{stockId}/candles`
+权限：登录用户。
 
 | 查询参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -15,13 +15,16 @@
 
 ```json
 {
-  "stockId": "SZSE.300750", "snapshotId": "snapshot_example", "dataDate": "2026-10-28",
-  "period": "day", "adjustment": "qfq",
-  "items": [
-    { "time": "2026-10-28", "open": 259.20, "high": 270.10, "low": 258.20, "close": 268.32, "volume": 32000000, "amount": 8640000000, "ma5": 261.60, "ma10": 257.30, "ma20": 251.24, "ma60": 238.72, "ma120": 226.40, "isComplete": true }
-  ],
-  "hasMore": true,
-  "nextBefore": "2026-10-28"
+  "data": {
+    "stockId": "SZSE.300750", "snapshotId": "snapshot_example", "dataDate": "2026-10-28",
+    "period": "day", "adjustment": "qfq",
+    "items": [
+      { "time": "2026-10-28", "open": 259.20, "high": 270.10, "low": 258.20, "close": 268.32, "volume": 32000000, "amount": 8640000000, "ma5": 261.60, "ma10": 257.30, "ma20": 251.24, "ma60": 238.72, "ma120": 226.40, "isComplete": true }
+    ],
+    "hasMore": true,
+    "nextBefore": "2026-10-28"
+  },
+  "requestId": "req_example"
 }
 ```
 
@@ -29,4 +32,4 @@
 - 日线按交易日历提供实际可用记录，缺失记录不伪造。周线按自然周、年线按自然年聚合；`time` 为该根内最后一个实际有行情的交易日。
 - 聚合使用首开、末收、最高、最低，成交量和成交额求和。全部行情截至快照日；当周 / 当年仍有尚未收盘的交易日时，`isComplete: false`，按交易日历判定；日线为已收盘数据。
 - `ma5`、`ma10`、`ma20`、`ma60`、`ma120` 是当前 K 线周期的收盘均线，覆盖现有策略需要的所有周期。包含本根，使用分页窗口之外的历史计算；历史不足或必需窗口内记录缺失时为 `null`。周 / 年线均线不能代替选股规则中的日线均线。
-- `qfq` 为 V1 唯一价格复权口径，取自所选快照；成交量、成交额为原始值。
+- OHLC 与均线价格、成交额 `amount` 的单位为人民币元，成交量 `volume` 为股。`qfq` 为唯一价格复权口径；成交量、成交额保持原始值。

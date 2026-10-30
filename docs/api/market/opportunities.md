@@ -1,8 +1,8 @@
-# 机会筛选
+# 机会列表 `GET /opportunities`
 
-[接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-## 机会列表 `GET /opportunities`
+权限：登录用户。
 
 | 查询参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -21,26 +21,29 @@
 
 ```json
 {
-  "snapshot": { "id": "snapshot_example", "dataDate": "2026-10-28", "publishedAt": "2026-10-28T18:30:00+08:00", "adjustment": "qfq", "strategyVersion": "v1" },
-  "items": [
-    {
-      "stock": {
-        "stockId": "SZSE.300750", "code": "300750", "name": "示例股票", "exchange": "SZSE", "board": "CHINEXT",
-        "industry": { "id": "industry_power", "name": "电力设备" },
-        "concepts": [{ "id": "concept_storage", "name": "储能" }]
-      },
-      "quote": { "price": 268.32, "change": 4.35, "turnover": 2.86, "amount": 8640000000, "totalMarketCap": 1180000000000 },
-      "strategies": ["short", "long"],
-      "signal": {
-        "id": "signal_example", "strategy": "short",
-        "reason": "突破此前 20 日高点，成交额放大 2.30 倍，高于 MA20 6.8%。",
-        "metrics": { "breakoutReference": 260.50, "amountMultiple": 2.30, "ma20": 251.24, "ma20Distance": 6.8 }
+  "data": {
+    "snapshot": { "id": "snapshot_example", "dataDate": "2026-10-28", "publishedAt": "2026-10-28T18:30:00+08:00", "adjustment": "qfq", "strategyVersion": "v1" },
+    "items": [
+      {
+        "stock": {
+          "stockId": "SZSE.300750", "code": "300750", "name": "示例股票", "exchange": "SZSE", "board": "CHINEXT",
+          "industry": { "id": "industry_power", "name": "电力设备" },
+          "concepts": [{ "id": "concept_storage", "name": "储能" }]
+        },
+        "quote": { "price": 268.32, "change": 4.35, "turnover": 2.86, "amount": 8640000000, "totalMarketCap": 1180000000000 },
+        "strategies": ["short", "long"],
+        "signal": {
+          "id": "signal_example", "strategy": "short",
+          "reason": "突破此前 20 日高点，成交额放大 2.30 倍，高于 MA20 6.8%。",
+          "metrics": { "breakoutReference": 260.50, "amountMultiple": 2.30, "ma20": 251.24, "ma20Distance": 6.8 }
+        }
       }
-    }
-  ],
-  "page": 1, "pageSize": 20, "total": 1,
-  "summary": { "industryCount": 1, "strategyCounts": { "short": 1, "swing": 0, "long": 1 } },
-  "sort": { "field": "amountMultiple", "order": "desc" }
+    ],
+    "page": 1, "pageSize": 20, "total": 1,
+    "summary": { "industryCount": 1, "strategyCounts": { "short": 1, "swing": 0, "long": 1 } },
+    "sort": { "field": "amountMultiple", "order": "desc" }
+  },
+  "requestId": "req_example"
 }
 ```
 
@@ -50,6 +53,6 @@
 - 默认排序按策略说明执行；其他排序的缺失值始终排最后，值相同时按 `stockId` 升序，保证分页稳定。
 - `sort` 响应返回实际生效的字段及方向。有效快照下无匹配结果返回 `items: []`，不是 `DATA_NOT_READY`。
 
-`quote.price` 为快照日收盘价，`change` 为同一复权口径下较前一交易日收盘价的涨跌幅，`amount` 为当日原始成交额。`turnover` 采用当日流通 A 股数量为分母的换手率，无法取得或确认该口径时为 `null`。
+`data.items[].quote` 的价格、成交额和总市值均以人民币元返回；`change`、`turnover` 为百分数，例如 `4.35` 表示4.35%。`quote.price` 为快照日收盘价，`change` 为同一复权口径下较前一交易日收盘价的涨跌幅，`amount` 为当日原始成交额。`turnover` 采用当日流通 A 股数量为分母的换手率，无法取得或确认该口径时为 `null`。
 
 `quote.totalMarketCap` 为快照日总市值，采用未复权价格口径，不是流通市值，也不由图表前复权价格直接推算。未知时返回 `null`；设置任一市值边界时，排除市值未知的股票，不将其按零值匹配。请求 `minMarketCap=10000000000&maxMarketCap=50000000000` 表示筛选 100～500 亿元。

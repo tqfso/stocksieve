@@ -1,27 +1,30 @@
-# 数据状态
+# 数据状态 `GET /market/status`
 
-[接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-## 数据状态 `GET /market/status`
+权限：登录用户。
 
 成功 `200`：
 
 ```json
 {
-  "initialized": true,
-  "latestTradingDate": "2026-10-29",
-  "publishedSnapshot": {
-    "id": "snapshot_example",
-    "dataDate": "2026-10-28",
-    "publishedAt": "2026-10-28T18:30:00+08:00",
-    "adjustment": "qfq",
-    "strategyVersion": "v1"
+  "data": {
+    "initialized": true,
+    "latestTradingDate": "2026-10-29",
+    "publishedSnapshot": {
+      "id": "snapshot_example",
+      "dataDate": "2026-10-28",
+      "publishedAt": "2026-10-28T18:30:00+08:00",
+      "adjustment": "qfq",
+      "strategyVersion": "v1"
+    },
+    "coverage": { "totalStocks": 5348, "byExchange": { "SSE": 2300, "SZSE": 2800, "BSE": 248 } },
+    "sources": [
+      { "id": "sina", "name": "Sina", "available": true, "supportedSyncKinds": ["initialize", "daily"] },
+      { "id": "baostock", "name": "Baostock", "available": false, "supportedSyncKinds": [] }
+    ]
   },
-  "coverage": { "totalStocks": 5348, "byExchange": { "SSE": 2300, "SZSE": 2800, "BSE": 248 } },
-  "sources": [
-    { "id": "sina", "name": "Sina", "available": true, "supportedSyncKinds": ["initialize", "daily"] },
-    { "id": "baostock", "name": "Baostock", "available": false, "supportedSyncKinds": [] }
-  ]
+  "requestId": "req_example"
 }
 ```
 

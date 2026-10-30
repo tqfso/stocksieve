@@ -1,24 +1,27 @@
-# 筛选选项
+# 筛选选项 `GET /catalog/filters`
 
-[接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-## 筛选选项 `GET /catalog/filters`
+权限：登录用户。
 
 可选查询参数 `snapshotId`。成功 `200`：
 
 ```json
 {
-  "snapshotId": "snapshot_example",
-  "boards": [
-    { "id": "SSE_MAIN", "name": "沪市主板", "exchange": "SSE" },
-    { "id": "SZSE_MAIN", "name": "深市主板", "exchange": "SZSE" },
-    { "id": "CHINEXT", "name": "创业板", "exchange": "SZSE" },
-    { "id": "STAR", "name": "科创板", "exchange": "SSE" },
-    { "id": "BSE", "name": "北交所", "exchange": "BSE" }
-  ],
-  "industries": [{ "id": "industry_power", "name": "电力设备" }],
-  "concepts": [{ "id": "concept_storage", "name": "储能" }],
-  "coverage": { "board": "complete", "industry": "complete", "concepts": "partial", "turnover": "complete", "totalMarketCap": "complete" }
+  "data": {
+    "snapshotId": "snapshot_example",
+    "boards": [
+      { "id": "SSE_MAIN", "name": "沪市主板", "exchange": "SSE" },
+      { "id": "SZSE_MAIN", "name": "深市主板", "exchange": "SZSE" },
+      { "id": "CHINEXT", "name": "创业板", "exchange": "SZSE" },
+      { "id": "STAR", "name": "科创板", "exchange": "SSE" },
+      { "id": "BSE", "name": "北交所", "exchange": "BSE" }
+    ],
+    "industries": [{ "id": "industry_power", "name": "电力设备" }],
+    "concepts": [{ "id": "concept_storage", "name": "储能" }],
+    "coverage": { "board": "complete", "industry": "complete", "concepts": "partial", "turnover": "complete", "totalMarketCap": "complete" }
+  },
+  "requestId": "req_example"
 }
 ```
 
