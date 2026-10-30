@@ -143,7 +143,11 @@ if (!storageAvailable)
           </el-radio-group>
         </el-form-item>
         <el-form-item label="AI 分析">
-          <el-switch v-model="review.aiFail" active-text="模拟生成失败" inactive-text="正常生成" />
+          <el-radio-group v-model="review.aiScenario">
+            <el-radio-button value="normal">资料完整</el-radio-button>
+            <el-radio-button value="partial">资料不完整</el-radio-button>
+            <el-radio-button value="failed">分析失败</el-radio-button>
+          </el-radio-group>
         </el-form-item>
         <el-form-item v-if="session.isAdmin" label="数据同步">
           <el-switch v-model="review.syncFail" active-text="模拟任务失败" inactive-text="正常完成" />

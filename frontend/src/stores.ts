@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import * as api from './mock/service.ts';
-import type { Scenario, SyncJob } from './types.ts';
+import type { AnalysisScenario, Scenario, SyncJob } from './types.ts';
 export const useSession = defineStore('session', () => {
     const user = ref(api.currentUser());
     const isAdmin = computed(() => user.value?.role === 'admin');
@@ -12,9 +12,9 @@ export const useSession = defineStore('session', () => {
 });
 export const useReview = defineStore('review', () => {
     const listScenario = ref<Scenario>('normal');
-    const aiFail = ref(false);
+    const aiScenario = ref<AnalysisScenario>('normal');
     const syncFail = ref(false);
-    return { listScenario, aiFail, syncFail };
+    return { listScenario, aiScenario, syncFail };
 });
 export const useSync = defineStore('sync', () => {
     const initialized = ref(false);

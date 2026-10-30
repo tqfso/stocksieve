@@ -1,6 +1,6 @@
 # StockSieve V1 API 接口文档
 
-状态：设计稿，接口尚未实现。本文档集是前后端联调契约，覆盖[需求说明](../requirements.md)及当前前端页面。业务策略遵循[选股策略设计](../strategies/README.md)。
+状态：设计稿，接口尚未实现。本文档集是前后端联调契约，覆盖[需求说明](../requirements.md)及当前前端页面。业务策略遵循[选股策略设计](../product/strategies/README.md)。
 
 ## 阅读入口
 

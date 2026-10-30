@@ -1,9 +1,19 @@
 // 本文件验证模拟账号权限、报告隔离、密码修改和同步任务的完整业务流程。
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as api from '../src/mock/service.ts';
 import { STOCKS } from '../src/mock/fixtures.ts';
 import { createReportContent } from '../src/mock/reports.ts';
+import { ANALYSIS_DURATION } from '../src/mock/analyses.ts';
+import type { AnalysisKind, Stock, Strategy } from '../src/types.ts';
+/** 以虚拟时钟等待模拟后台完成，不把任务简化成同步生成。 */
+function completeAnalysis(t: TestContext, stock: Stock, kind: AnalysisKind, strategy?: Strategy) {
+    const task = api.startAnalysis(stock, kind, { strategy });
+    t.mock.timers.tick(ANALYSIS_DURATION);
+    assert.equal(api.getAnalysis(task.id).status, 'succeeded');
+    return api.reportsFor(stock.code, kind, strategy)[0]!;
+}
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, 'localStorage', { value: {
         getItem: (key: string) => storage.get(key) ?? null,
@@ -35,31 +45,35 @@ test('模拟业务流程', async (t) => {
         await api.login('admin', 'newpass123');
         assert.equal(api.currentUser()?.role, 'admin');
     });
-    await t.test('报告生成失败不新增记录，成功报告按账号隔离', async () => {
+    await t.test('报告生成失败不新增记录，成功报告按账号隔离', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 9, 30, 8) });
         await api.login('admin', 'demo1234');
         const stock = STOCKS[0]!;
-        await assert.rejects(api.analyze(stock, 'fundamental', true), /超时/);
+        const failed = api.startAnalysis(stock, 'fundamental', { scenario: 'failed' });
+        t.mock.timers.tick(6000);
+        assert.equal(api.getAnalysis(failed.id).status, 'failed');
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 0);
         const preview = createReportContent(stock, 'fundamental');
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 0);
-        const generated = await api.analyze(stock, 'fundamental', false);
+        const generated = completeAnalysis(t, stock, 'fundamental');
         assert.equal(generated.summary, preview.summary);
         assert.deepEqual(generated.metrics, preview.metrics);
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 1);
         api.logout();
         await api.login('viewer', 'demo1234');
         assert.equal(api.reportsFor(stock.code, 'fundamental').length, 0);
-        await api.analyze(stock, 'chips', false);
+        completeAnalysis(t, stock, 'chips');
         assert.equal(api.reportsFor(stock.code, 'chips').length, 1);
         api.logout();
         await api.login('admin', 'demo1234');
         assert.equal(api.reportsFor(stock.code, 'chips').length, 0);
     });
-    await t.test('同一股票的买卖条件历史按策略分别读取', async () => {
+    await t.test('同一股票的买卖建议历史按策略分别读取', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 9, 30, 8) });
         await api.login('admin', 'demo1234');
         const stock = STOCKS.find((item) => item.code === '300750')!;
-        await api.analyze(stock, 'trade', false, 'short');
-        await api.analyze(stock, 'trade', false, 'long');
+        completeAnalysis(t, stock, 'trade', 'short');
+        completeAnalysis(t, stock, 'trade', 'long');
         assert.equal(api.reportsFor(stock.code, 'trade', 'short').length, 1);
         assert.equal(api.reportsFor(stock.code, 'trade', 'long').length, 1);
         assert.equal(api.reportsFor(stock.code, 'trade', 'short')[0]?.strategy, 'short');
@@ -140,10 +154,11 @@ test('模拟业务流程', async (t) => {
         assert.equal(api.syncSnapshot().catalogUpdatedAt, catalogTime);
         assert.equal(api.syncSnapshot().stockUpdatedAt, stockTime);
     });
-    await t.test('趋势埋伏报告独立保存，不混入同一股票的波段历史', async () => {
+    await t.test('趋势埋伏报告独立保存，不混入同一股票的波段历史', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 9, 30, 8) });
         await api.login('admin', 'demo1234');
         const stock = STOCKS.find((item) => item.code === '600036')!;
-        await api.analyze(stock, 'trade', false, 'trend_wait');
+        completeAnalysis(t, stock, 'trade', 'trend_wait');
         assert.equal(api.reportsFor(stock.code, 'trade', 'trend_wait').length, 1);
         assert.equal(api.reportsFor(stock.code, 'trade', 'swing').length, 0);
         assert.equal(api.reportsFor(stock.code, 'trade', 'long').length, 0);

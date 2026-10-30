@@ -1,9 +1,20 @@
 // 本文件生成接近成品阅读效果的 AI 报告样例；财务、估值和筹码数据均为虚构。
-import type { AnalysisKind, ReportContent, Stock, Strategy } from '../types.ts';
+import type { AnalysisKind, ReportContent, ReportOverview, ReportSource, Stock, Strategy } from '../types.ts';
 import { DATA_DATE, STRATEGIES, distanceToUpper, isWaitingStrategy, selectionReason, strategyMetric } from './fixtures.ts';
 import { createChipDistribution } from './chips.ts';
 
-export const REPORT_SAMPLE_VERSION = 3;
+export const REPORT_SAMPLE_VERSION = 4;
+
+/** 来源时间为虚构样例；链接仅指向公开披露入口，不能据此核验样例财务数值。 */
+function sourceSamples(titles: string[], stock: Stock): ReportSource[] {
+    const exchangeUrl = stock.exchange === '上海' ? 'https://www.sse.com.cn/' : stock.exchange === '深圳' ? 'https://www.szse.cn/' : 'https://www.bse.cn/';
+    return titles.map((title, index) => ({
+        title,
+        url: index === 1 ? exchangeUrl : null,
+        publishedAt: index === 1 ? '2026-10-29T18:00:00+08:00' : null,
+        fetchedAt: '2026-10-29T18:30:00+08:00',
+    }));
+}
 
 /** 市值与滚动归母净利润必须同币种同单位；亏损、零利润或缺失时不显示有效 PE。 */
 export function calculatePeTtm(marketCap: number | null, netProfitTtm: number | null): number | null {
@@ -27,10 +38,72 @@ const INDUSTRY_CONTEXT: Record<string, { business: string; driver: string; risk:
     机械设备: { business: '工程机械、轨交设备及配套服务', driver: '设备交付与服务需求共同影响收入确认', risk: '订单执行、下游投资节奏和应收账款回收' },
 };
 
-/** 将同一股票的样例指标固定下来，预览、生成及历史正文保持一致。 */
+/** 摘要按分析类型组织，价位复用详细报告的规则口径；所有情景均为虚构。 */
+function createOverview(stock: Stock, kind: AnalysisKind, strategy: Strategy, content: Omit<ReportContent, 'overview'>): ReportOverview {
+    if (kind === 'fundamental') return {
+        decision: { action: 'wait', label: '先观察', reason: '经营样例向好，但股东减持计划尚未结束。' },
+        opportunities: ['示例收入和利润保持增长，可继续跟踪经营改善。', '若后续财报延续增长，盈利表现可能形成支撑。'],
+        risks: ['虚构情景：股东减持计划尚未结束，需关注实际实施进度。', stock.industry === '银行' ? '留意利息收入空间和贷款回收质量的变化。' : '关注货款能否及时收回，以及行业需求是否走弱。'],
+    };
+    if (kind === 'chips') {
+        const chart = content.chipDistribution!;
+        return {
+            decision: { action: 'wait', label: '先观察', reason: '价格仍在上下参考区之间，暂不急于追价。' },
+            opportunities: [`当前价格${stock.price >= chart.averageCost ? '高于' : '低于'}估算平均成本 ${chart.averageCost.toFixed(2)} 元，可结合图中的成本集中区观察。`],
+            risks: ['成本分布来自估算，图中参考价不保证价格反弹或受阻。'],
+        };
+    }
+    const waiting = isWaitingStrategy(strategy) && !!stock.waiting;
+    const ma20 = stock.price / (1 + stock.ma20Distance / 100);
+    const ma60 = stock.price / (1 + stock.ma60Distance / 100);
+    const reference = strategy === 'long' ? ma60 : stock.reference;
+    const entryPrice = waiting ? `${stock.waiting!.upper.toFixed(2)} 元`
+        : strategy === 'short' ? `${reference.toFixed(2)}～${(reference * 1.015).toFixed(2)} 元`
+        : strategy === 'swing' ? `${(ma20 * .99).toFixed(2)}～${(ma20 * 1.01).toFixed(2)} 元` : `${ma60.toFixed(2)} 元附近`;
+    const exitReference = waiting ? stock.waiting!.lower : reference;
+    const inEntryRange = strategy === 'short' ? stock.price >= reference && stock.price <= reference * 1.015
+        : strategy === 'swing' && stock.price >= ma20 * .99 && stock.price <= ma20 * 1.01;
+    // 仅落入价格区间不足以确认买入；样例还需具备可核对的回调企稳信号。
+    const entryConfirmed = strategy === 'swing' && inEntryRange && stock.strategies.includes('swing') && stock.pullbackRatio <= .8;
+    const decision: ReportOverview['decision'] = waiting
+        ? { action: 'wait', label: '等待突破', reason: '当前还未确认突破，先不买入。' }
+        : stock.price < exitReference ? { action: 'avoid', label: '暂不买', reason: '当前价格低于失效参考，原有信号需要重新评估。' }
+        : entryConfirmed ? { action: 'consider', label: '可考虑买入', reason: '样例价格接近参考位置，缩量回调与企稳信号支持考虑。' }
+        : inEntryRange ? { action: 'wait', label: '先等确认', reason: '价格接近参考位置，但回踩条件尚未确认，先等待。' }
+        : { action: 'wait', label: '先等回踩', reason: '当前价格未回到建议位置，先等待。' };
+    return {
+        decision,
+        opportunities: [waiting ? '当前仍在整理区间内，先等待突破确认。' : `当前符合${STRATEGIES[strategy].name}规则，按下列条件观察价格变化。`],
+        risks: ['参考价来自当前行情快照，条件变化后需要重新评估。'],
+        pricePlan: {
+            waiting, entryLabel: waiting ? '等待突破参考价' : '参考买入位置', entryPrice,
+            entryCondition: waiting ? '收盘超过该价后，还需重新满足放量突破等短线条件。'
+                : strategy === 'short' ? '回踩该区间、成交缩小且收盘守住突破参考价后，再确认条件。'
+                : strategy === 'swing' ? '回到近期平均价附近后，需缩量并重新走稳。'
+                : '靠近60日均价时，仍需确认中长期趋势保持向上。',
+            exitPrice: `${exitReference.toFixed(2)} 元${strategy === 'long' ? '（动态均价）' : ''}`,
+            exitCondition: strategy === 'long' ? '连续5天收盘低于各自的60日均价，或均线趋势转弱时复查。'
+                : '后续收盘低于该参考价，本次信号需要重新评估。',
+            considerIf: waiting ? '如果你看好后续突破，也愿意等待价格与成交确认，可在条件齐备后再考虑。'
+                : strategy === 'long' ? '如果你看好长期经营，且基本面和趋势经过核实，可关注回调后的参考位置。'
+                : '如果你看好当前趋势延续，也能接受短期波动，可在参考位置且条件满足时考虑。',
+            avoidIf: waiting ? '当前还没突破确认，或你不愿承受等待与再次下跌的风险，先别买。'
+                : '如果你在意短期价格下跌，或价格远离参考位置、原有条件已失效，先别买。',
+        },
+    };
+}
+
+/** 摘要与详细正文、预览与历史共用同一份数据。 */
 export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: Strategy = stock.strategies[0]!): ReportContent {
+    const content = createDetailedReport(stock, kind, strategy);
+    return { ...content, overview: createOverview(stock, kind, strategy, content) };
+}
+
+function createDetailedReport(stock: Stock, kind: AnalysisKind, strategy: Strategy): Omit<ReportContent, 'overview'> {
     const seed = [...stock.code].reduce((sum, digit) => sum + Number(digit), 0);
-    const base = { sampleVersion: REPORT_SAMPLE_VERSION, title: `${stock.name} · ${kind === 'fundamental' ? '基本面分析' : kind === 'chips' ? '筹码分析' : `${STRATEGIES[strategy].name}买卖条件`}`, dataDate: DATA_DATE, strategy } as const;
+    const base = { sampleVersion: REPORT_SAMPLE_VERSION, title: `${stock.name} · ${kind === 'fundamental' ? '机会与风险' : kind === 'chips' ? '筹码分布（估算）' : `${STRATEGIES[strategy].name}买卖建议`}`, dataDate: DATA_DATE, strategy,
+        materialsAsOfAt: '2026-10-29T18:30:00+08:00', dataQuality: 'complete', missingInformation: [] as string[],
+    } as const;
     const number = (value: number): string => value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const signed = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
 
@@ -66,9 +139,10 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
                 { title: '业务与经营表现', text: `公司收入由${context.business}构成，${context.driver}。营业收入（TTM）${number(revenue)}亿元，归母净利润（TTM）${number(profit)}亿元。TTM表示最近四个季度的滚动12个月。${profitGrowth > revenueGrowth ? '利润增速高于收入增速，盈利弹性有所体现。' : '利润增长未显著快于收入，需要关注成本和费用端的变化。'}` },
                 { title: bank ? '盈利稳定性与资产质量' : '盈利质量与现金流', text: bank ? `净息差为${interestMargin.toFixed(2)}%，不良贷款率为${badLoanRatio.toFixed(2)}%。盈利增长与资产质量应同时评估；若息差继续收窄或信用成本上升，利润增长的持续性需要重新判断。` : `净资产收益率为${roe.toFixed(1)}%，经营现金流／净利润为${cashRatio.toFixed(2)}倍。${cashRatio >= 1 ? '利润已形成相应现金流，经营质量具备一定支撑。后续重点检查这一覆盖水平能否保持。' : '利润尚未完全转化为经营现金流，后续应重点检查应收账款和存货变化，不能仅凭利润增速判断经营质量。'}` },
                 { title: '估值与业绩匹配', text: `总市值为${stock.totalMarketCap === null ? '暂无数据' : `${number(stock.totalMarketCap)}亿元`}，归母净利润（TTM）为${number(profit)}亿元。${peDescription}PE采用总市值除以同口径的滚动归母净利润；分母缺失、为零或为负时不显示有效倍数。` },
+                { title: '股东减持风险（虚构情景）', text: '本评审情景设定存在一项仍处于实施期间的股东减持计划，完全虚构，不代表该股票的真实情况。需要分别核对计划上限、已披露的实际减持及剩余期间，不能把计划上限当作已减持数量。后续结合实施进度复查潜在影响，资料不足时明确标注风险未核验。' },
                 { title: '风险与后续观察', text: `重点跟踪${context.risk}。下一次财务更新需要验证收入与利润能否同步增长，以及${bank ? '净息差和资产质量是否保持稳定' : '现金流改善是否跟上利润增长'}；如这些条件转弱，应下调对经营趋势的判断。` },
             ],
-            sources: [`近12个月财务快照 · 截至${DATA_DATE}（虚构）`, '公司业务与行业情景（模拟）', '估值与现金流计算样例（模拟）'],
+            sources: sourceSamples([`近12个月财务快照 · 截至${DATA_DATE}（虚构）`, '公司公告与股东减持资料（虚构情景）', '估值与现金流计算样例（模拟）'], stock),
         };
     }
 
@@ -94,11 +168,11 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
                 { title: '支撑与压力参考', text: `支撑参考价${support.price.toFixed(2)}元，对应${support.lower.toFixed(2)}～${support.upper.toFixed(2)}元区间，占估算筹码${support.ratio.toFixed(2)}%；压力参考价${resistance.price.toFixed(2)}元，对应${resistance.lower.toFixed(2)}～${resistance.upper.toFixed(2)}元区间，占${resistance.ratio.toFixed(2)}%。两处均取自现价两侧的主要筹码档位，需由后续收盘和成交表现验证。` },
                 { title: '风险与判断边界', text: `如果后续放量跌回${support.lower.toFixed(2)}元以下，当前成本支撑的解释需要重新评估。支撑、压力仅为估算成本分布的参考，不能保证价格一定反弹或受阻；也无法据此确认机构、游资或散户的真实持仓。` },
             ],
-            sources: [`成本分布样例 · ${DATA_DATE}（虚构）`, '成交额与换手率快照（模拟）', '估算成本区间与价格位置（模拟）'],
+            sources: sourceSamples([`成本分布样例 · ${DATA_DATE}（虚构）`, '公司公告与事件资料（模拟）', '成交额、换手率与估算成本计算（模拟）'], stock),
         };
     }
 
-    // 买卖条件沿用详情页的规则指标，避免报告与信号快照使用不同参考价。
+    // 买卖建议沿用详情页的规则指标，避免报告与信号快照使用不同参考价。
     const ma20 = stock.price / (1 + stock.ma20Distance / 100);
     const ma60 = stock.price / (1 + stock.ma60Distance / 100);
     const definition = STRATEGIES[strategy];
@@ -121,7 +195,7 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
                 { title: '失效与名单变化', text: `${definition.invalid}本次区间下沿P固定为${lower.toFixed(2)}元，后续收盘跌破该价位需要重新评估。${trend ? '趋势条件转弱时移出当日趋势埋伏名单；仍符合其他策略的信号单独保留。' : 'MA20升至MA60及以上时，重新检查趋势埋伏条件；不自动认定趋势修复成功。'}复查参考价时应保持相同复权口径。` },
                 { title: '主要风险与复查重点', text: `${trend ? '窄幅整理可能向上突破，也可能向下破位，当前的缩量不能单独证明后续方向。' : '历史低位可能持续较长时间，也可能再次下跌，停止创新低只是当前窗口内的观察结果。'}近5日均额为近20日的${(amountRatio * 100).toFixed(0)}%，需要结合后续收盘、成交和经营资料复查。当前样例用于${definition.period}的观察情景演示。` },
             ],
-            sources: [`${definition.name}策略信号快照 · ${DATA_DATE}（模拟）`, '固定区间上下沿、均线及成交额比例（虚构）', `策略规则：${definition.subtitle}`],
+            sources: sourceSamples([`${definition.name}策略信号快照 · ${DATA_DATE}（模拟）`, '公司公告与事件资料（模拟）', `策略规则：${definition.subtitle}`], stock),
         };
     }
     const reference = strategy === 'long' ? ma60 : stock.reference;
@@ -145,6 +219,6 @@ export function createReportContent(stock: Stock, kind: AnalysisKind, strategy: 
             { title: '失效与退出观察条件', text: `${definition.invalid}${strategy === 'long' ? 'MA60需按后续每日数据更新，不能一直使用本次报告的固定数值。' : `本次参考价为${reference.toFixed(2)}元，后续应按同一价格口径复查。`}` },
             { title: '主要风险', text: `信号可能受到跳空、成交变化或突发消息影响。当前结果用于${definition.period}范围内的持续观察；若价格偏离均线进一步扩大，或原入选条件转弱，应重新评估信号质量。` },
         ],
-        sources: [`${definition.name}策略信号快照 · ${DATA_DATE}（模拟）`, '收盘价、成交额与均线指标（模拟）', `策略规则：${definition.subtitle}`],
+        sources: sourceSamples([`${definition.name}策略信号快照 · ${DATA_DATE}（模拟）`, '公司公告与事件资料（模拟）', `策略规则：${definition.subtitle}`], stock),
     };
 }

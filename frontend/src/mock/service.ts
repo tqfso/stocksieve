@@ -1,14 +1,17 @@
 // 本文件集中提供异步模拟业务和浏览器持久化；页面不直接访问存储或网络。
-import type { AnalysisKind, Report, Role, Scenario, Stock, StockQuery, Strategy, SyncJob, User } from '../types.ts';
-import { STOCKS } from './fixtures.ts';
+import type { AnalysisKind, AnalysisScenario, AnalysisTask, Report, Role, Scenario, Stock, StockQuery, Strategy, SyncJob, User } from '../types.ts';
+import { DATA_DATE, STOCKS } from './fixtures.ts';
 import { filterStocks } from './market.ts';
 import { createReportContent, REPORT_SAMPLE_VERSION } from './reports.ts';
+import { publicAnalysis, reconcileAnalyses } from './analyses.ts';
+import type { StoredAnalysis } from './analyses.ts';
 interface Account extends User {
     password: string;
 }
 interface Database {
     accounts: Account[];
     reports: Report[];
+    analyses: StoredAnalysis[];
     jobs: SyncJob[];
     initialized: boolean;
     /** 两类基础数据分别保留最近成功时间，不随任务历史淘汰或失败而清空。 */
@@ -48,8 +51,10 @@ function write(key: string, value: string): void {
 }
 /** 首次读取演示数据并恢复中断任务，后续复用当前会话内的数据。 */
 function db(): Database {
-    if (database)
+    if (database) {
+        if (reconcileAnalyses(database.analyses, database.reports, Date.now())) save();
         return database;
+    }
     try {
         const parsed = JSON.parse(read(DB_KEY) ?? 'null') as Database | null;
         if (parsed && Array.isArray(parsed.accounts) && Array.isArray(parsed.jobs) && Array.isArray(parsed.reports) && parsed.accounts.some((account) => account.role === 'admin'))
@@ -60,11 +65,13 @@ function db(): Database {
         accounts: [
             { id: 'admin', username: 'admin', name: '演示管理员', role: 'admin', password: 'demo1234', createdAt: '2026-10-28 09:00' },
             { id: 'viewer', username: 'viewer', name: '演示用户', role: 'user', password: 'demo1234', createdAt: '2026-10-28 09:00' },
-        ], reports: [], jobs: [], initialized: false, stockUpdatedAt: null, catalogUpdatedAt: null,
+        ], reports: [], analyses: [], jobs: [], initialized: false, stockUpdatedAt: null, catalogUpdatedAt: null,
     };
     // 兼容拆分前的本地缓存，保留账号、报告及股票初始化状态；分类由独立任务同步。
     database.stockUpdatedAt ??= null;
     database.catalogUpdatedAt ??= null;
+    database.analyses ??= [];
+    reconcileAnalyses(database.analyses, database.reports, Date.now());
     // 刷新会中断前端计时器，将未完成任务转为可重试状态。
     for (const job of database.jobs)
         if (job.status === 'running') {
@@ -161,22 +168,55 @@ export async function changePassword(oldPassword: string, newPassword: string): 
     save();
     logout();
 }
-/** AI 报告是固定结构的示例文本，不访问模型、财报或筹码数据。 */
-export async function analyze(stock: Stock, kind: AnalysisKind, fail: boolean, strategy: Strategy = stock.strategies[0]!): Promise<Report> {
+/** 受理时固定输入和演示场景；重复提交返回已有任务，模拟前端处理幂等与进行中冲突。 */
+export function startAnalysis(stock: Stock, kind: AnalysisKind, options: {
+    strategy?: Strategy;
+    scenario?: AnalysisScenario;
+    idempotencyKey?: string;
+} = {}): AnalysisTask {
     const user = requireUser();
-    await delay(1500);
-    if (fail)
-        throw new Error('模拟分析服务超时。本次未生成报告，可以重试。');
-    const report: Report = { id: crypto.randomUUID(), userId: user.id, code: stock.code, kind, createdAt: timeLabel(), ...createReportContent(stock, kind, strategy) };
-    db().reports.unshift(report);
-    db().reports = db().reports.slice(0, 100);
+    const strategy = kind === 'trade' ? options.strategy ?? stock.strategies[0]! : null;
+    if (!STOCKS.some((item) => item.code === stock.code) || (strategy && !stock.strategies.includes(strategy)))
+        throw new Error('当前股票或策略不支持指定分析。');
+    const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
+    if (idempotencyKey.length < 8 || idempotencyKey.length > 128)
+        throw new Error('提交标识需为 8～128 位。');
+    const data = db();
+    // 1. 超时重发使用原 key；同 key 改变请求内容时拒绝。
+    const replay = data.analyses.find((task) => task.userId === user.id && task.code === stock.code && task.idempotencyKey === idempotencyKey && Date.now() - Date.parse(task.createdAt) < 86400000);
+    if (replay) {
+        if (replay.kind !== kind || replay.strategy !== strategy) throw new Error('相同提交标识对应的分析内容不同。');
+        return publicAnalysis(replay);
+    }
+    // 2. 不同 key 的重复点击也恢复原任务，避免重复生成。
+    const active = data.analyses.find((task) => task.userId === user.id && task.code === stock.code && task.kind === kind && task.strategy === strategy && (task.status === 'queued' || task.status === 'running'));
+    if (active) return publicAnalysis(active);
+    const task: StoredAnalysis = {
+        id: crypto.randomUUID(), userId: user.id, code: stock.code, kind, strategy,
+        snapshotId: `snapshot_demo_${DATA_DATE}`, dataDate: DATA_DATE,
+        status: 'queued', stage: 'queued', progress: 0, createdAt: new Date().toISOString(),
+        startedAt: null, finishedAt: null, error: null, reportId: null,
+        idempotencyKey, scenario: options.scenario ?? 'normal', input: createReportContent(stock, kind, strategy ?? stock.strategies[0]!),
+    };
+    data.analyses.unshift(task);
     save();
-    return report;
+    return publicAnalysis(task);
+}
+/** 读取本人任务并恢复已受理状态，不因页面刷新或账号退出创建新任务。 */
+export function analysesFor(code: string, kind: AnalysisKind, strategy?: Strategy): AnalysisTask[] {
+    const user = requireUser();
+    return db().analyses.filter((task) => task.userId === user.id && task.code === code && task.kind === kind && (kind !== 'trade' || !strategy || task.strategy === strategy)).map(publicAnalysis);
+}
+export function getAnalysis(id: string): AnalysisTask {
+    const user = requireUser();
+    const task = db().analyses.find((item) => item.id === id && item.userId === user.id);
+    if (!task) throw new Error('分析任务不存在。');
+    return publicAnalysis(task);
 }
 /** 按当前用户隔离报告历史，避免切换演示账号后混用报告。 */
 export function reportsFor(code: string, kind: AnalysisKind, strategy?: Strategy): Report[] {
     const user = requireUser();
-    return db().reports.filter((item) => item.sampleVersion === REPORT_SAMPLE_VERSION && item.userId === user.id && item.code === code && item.kind === kind && (kind !== 'trade' || !strategy || item.strategy === strategy));
+    return structuredClone(db().reports.filter((item) => item.sampleVersion === REPORT_SAMPLE_VERSION && item.userId === user.id && item.code === code && item.kind === kind && (kind !== 'trade' || !strategy || item.strategy === strategy)));
 }
 export function syncSnapshot(): {
     initialized: boolean;
