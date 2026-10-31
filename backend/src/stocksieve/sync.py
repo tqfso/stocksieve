@@ -121,6 +121,7 @@ class Sync:
 
     async def precheck(self, lease: Lease, source: Source, task: dict[str, Any]) -> bool:
         target = task['target_date']
+        retry_pending = bool(task['options_json'].get('readinessRetryPending'))
         with self.db.transaction() as connection:
             calendar = {row['exchange']: row for row in connection.execute(select(t.calendar).where(t.calendar.c.trade_date == target)).mappings()}
         if set(calendar) == {'SSE', 'SZSE', 'BSE'} and all(row['is_open'] is False for row in calendar.values()):
@@ -150,8 +151,9 @@ class Sync:
                 result['latestDataDate'] = result['latestDataDate'].isoformat()
             normalized.append(result)
         precheck = {'checkedAt': self.tasks.clock().isoformat(), 'boards': normalized}
-        retry_count = task['retry_count'] + int(task['wait_reason'] == 'BOARD_DATA_NOT_READY')
-        self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count}, '已完成五板块就绪检查。')
+        retry_count = task['retry_count'] + int(retry_pending)
+        options = {**task['options_json'], 'readinessRetryPending': False}
+        self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count, 'options_json': options}, '已完成五板块就绪检查。')
         if any(item['status'] == 'unsupported' for item in normalized):
             raise DomainError('BOARD_DATA_UNSUPPORTED', '所选渠道不支持某个开市板块。', 503)
         if all(item['status'] == 'market_closed' for item in normalized):
@@ -270,7 +272,7 @@ class Sync:
             connection.execute(t.snapshots.insert().values(id=snapshot_id, sync_task_id=lease.id,
                 base_snapshot_id=base['id'] if base else None, data_date=task['target_date'], source=source.id, status='building',
                 adjustment='qfq', strategy_version='v1', calculation_version='v1', strategy_config_json=strategy_catalog(), calendar_json=calendar,
-                history_start_date=base['history_start_date'] if base and base['source'] == source.id else None))
+                history_start_date=base['history_start_date'] if base and base['source'] == source.id else None, created_at=self.tasks.clock()))
             for stock in universe:
                 self.save_stock(connection, stock, source.id, insert_only=True)
                 relation = classifications.get(stock.stock_id, {})
@@ -300,7 +302,7 @@ class Sync:
                        'concepts': coverage(options['catalogKnownCount']),
                        'turnover': coverage(sum(row['turnover'] is not None for row in rows)),
                        'totalMarketCap': coverage(sum(row['total_market_cap'] is not None for row in rows))}
-            version = connection.scalar(text("SELECT nextval('snapshot_version_seq')")) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
+            version = connection.scalar(text('SELECT nextval(CAST(:sequence AS regclass))'), {'sequence': f'{self.db.schema or "public"}.snapshot_version_seq'}) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
             connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='published', version=version,
                 published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'filters': filters, 'catalogTaskId': options['catalogTaskId']}))
             self.finish(connection, lease, 'updated', len(rows), snapshot_id=snapshot_id, skipped=options.get('skipped', 0))

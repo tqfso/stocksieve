@@ -1,0 +1,16 @@
+# 本文件限制构建上下文，凭据、测试数据和本机虚拟环境不得进入镜像。
+.env
+.env.*
+**/.env
+**/.env.*
+.venv
+.state
+.source-probe
+**/__pycache__
+**/*.pyc
+.pytest_cache
+tests
+tools
+sql
+deploy/postgres
+*.log

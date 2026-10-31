@@ -30,12 +30,12 @@
 {
   "data": {
     "id": "analysis_example", "stockId": "SZSE.300750", "kind": "fundamental", "strategy": null,
-    "snapshotId": "snapshot_example", "dataDate": "2026-10-28",
+    "snapshotId": "snapshot_example", "dataDate": "2026-10-28", "simulated": false,
     "status": "succeeded", "stage": "completed", "progress": 100,
     "createdAt": "2026-10-29T18:30:00+08:00", "startedAt": "2026-10-29T18:30:02+08:00", "finishedAt": "2026-10-29T18:30:40+08:00",
     "error": null,
     "report": {
-      "title": "示例股票 · 基本面分析",
+      "title": "示例股票 · 基本面分析", "simulated": false,
       "overview": {
         "decision": { "action": "wait", "label": "暂缓买入", "reason": "股东减持风险尚未核实，先等待资料补齐。" },
         "opportunities": ["已有经营资料显示收入和利润增长。"],
@@ -61,6 +61,7 @@
 ```
 
 - `sections` 是纯文本章节，不是可直接执行的 HTML。`sources` 为实际资料列表；来源 URL 仅允许 HTTP(S)，URL 与发布日期未知时可为 `null`，`fetchedAt` 必填，不得补造链接或日期。
+- 任务和报告的 `simulated=true` 表示模拟结果，标题和摘要包含“模拟”。模拟报告不调用真实模型或联网查询，不能作为真实 AI 分析展示；即使财报不足也可返回说明缺失的模拟基本面报告，`dataQuality=partial`。筹码图、财务指标及参考价只使用实际取得的输入和计算结果。
 - `title` 为报告标题，`metrics` 为关键指标卡片，含 `label`、`value`、`detail`；没有可展示的已核实指标时返回空数组，不填造数值。上述数据仅为虚构接口示例。
 - `overview` 为默认展示的精简结果：`decision` 含 `action`（`consider` / `wait` / `avoid`）、明确的建议 `label` 及一句 `reason`；`opportunities`、`risks` 为短句数组，默认各展示一条。详细正文及来源按需展开。
 - 买卖建议可附 `overview.pricePlan`，含 `waiting`、`entryLabel`、`entryPrice`、`entryCondition`、`exitPrice`、`exitCondition`、`considerIf`、`avoidIf`。价位字段为含单位的展示文本，条件与适合/暂不适合的情况在详细依据中查看；价位缺乏依据时省略计划，并在当前建议说明等待或暂不买。

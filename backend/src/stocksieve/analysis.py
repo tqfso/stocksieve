@@ -248,6 +248,8 @@ class Analysis:
         tools = AnalysisTools(self.tasks, lease, self.http, self.search)
         if tools.task['options_json'].get('runtime') != self.runtime.identity():
             raise DomainError('ANALYSIS_CONFIG_CHANGED', '受理后模型配置发生变化，请重新发起分析。', 503)
+        identity = tools.task['options_json']['runtime']
+        simulated = identity.get('mode') == 'mock'
         await tools.snapshot_facts()
         if tools.task['kind'] == 'fundamental':
             await tools.financial_facts()
@@ -260,7 +262,7 @@ class Analysis:
         available = {key: value for key, value in tools.seen.items() if value['status'] == 'available'}
         if any(key not in available for key in draft.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告引用了未取得的资料。', 503)
-        if tools.task['kind'] == 'fundamental' and not tools.facts.get('financial') and not any(value['material_kind'] == 'research' for value in available.values()):
+        if not simulated and tools.task['kind'] == 'fundamental' and not tools.facts.get('financial') and not any(value['material_kind'] == 'research' for value in available.values()):
             raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '没有足够的经营或财务资料，无法生成基本面分析。', 503)
         tools.stage('writing', 85)
         overview = draft.overview.model_dump()
@@ -296,10 +298,12 @@ class Analysis:
         report = {'title': f"{tools.record['stock']['name']} · { {'fundamental': '机会与风险', 'chips': '筹码分布（估算）', 'trade': '买卖建议'}[tools.task['kind']]}",
                   'overview': overview, 'summary': draft.summary, 'sections': [section.model_dump() for section in draft.sections],
                   'metrics': metrics, 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
-                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat()}
+                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': simulated}
+        if simulated:
+            report['title'] = '【模拟】' + report['title']
+            report['summary'] = '模拟分析，未调用真实模型。' + report['summary']
         if 'chips' in tools.facts:
             report['chipDistribution'] = tools.facts['chips']
-        identity = tools.task['options_json']['runtime']
         with self.tasks.db.transaction(serialized=True) as connection:
             task = self.tasks.assert_lease(connection, lease)
             connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=1,

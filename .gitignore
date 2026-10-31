@@ -215,6 +215,7 @@ node_modules/
 /backend/deploy/postgres/backups/
 /backend/.source-probe/
 /backend/.state/
+/backend/.docker-build/
 
 # PyPI configuration file
 .pypirc

@@ -51,7 +51,9 @@ class Tasks:
                           waitReason=row['wait_reason'], nextRetryAt=stamp(row['run_after']) if row['wait_reason'] else None,
                           retryDeadlineAt=stamp(row['retry_deadline_at']), retryCount=row['retry_count'], precheck=row['precheck_json'], result=public_result)
         else:
-            result.update(stockId=row['stock_id'], strategy=row['strategy_code'], snapshotId=row['input_snapshot_id'], stage=(row['options_json'] or {}).get('stage', 'queued'))
+            options = row['options_json'] or {}
+            result.update(stockId=row['stock_id'], strategy=row['strategy_code'], snapshotId=row['input_snapshot_id'],
+                          stage=options.get('stage', 'queued'), simulated=options.get('runtime', {}).get('mode') == 'mock')
             if include_report:
                 report = connection.execute(select(t.results).where(t.results.c.task_id == row['id'])).mappings().first()
                 result['report'] = {**report['payload_json'], 'generatedAt': stamp(report['generated_at'])} if report else None
@@ -239,8 +241,10 @@ class Tasks:
             if not row:
                 return None
             attempt = row['attempt_no'] + 1
+            options = {**row['options_json'], 'readinessRetryPending': row['wait_reason'] == 'BOARD_DATA_NOT_READY' or row['options_json'].get('readinessRetryPending', False)}
             connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(status='running', lease_owner=owner,
-                lease_expires_at=now + timedelta(seconds=self.settings.lease_seconds), attempt_no=attempt, started_at=row['started_at'] or now))
+                lease_expires_at=now + timedelta(seconds=self.settings.lease_seconds), attempt_no=attempt,
+                wait_reason=None, options_json=options, started_at=row['started_at'] or now))
             return Lease(row['id'], owner, attempt)
 
     def assert_lease(self, connection: Connection, lease: Lease) -> Any:

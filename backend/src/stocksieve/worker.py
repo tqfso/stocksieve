@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 
 from . import tables as t
 from .errors import DomainError
+from .database import utc
 from .sources import SourceDeferred
 from .sync import Sync
 from .tasks import Lease, SHANGHAI, Tasks
@@ -48,8 +49,15 @@ class Worker:
             await operation
         except SourceDeferred as deferred:
             if category == 'sync':
-                self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': deferred.until},
-                                 f'遵循渠道频控，下次可执行时间：{deferred.until.isoformat()}。')
+                with self.tasks.db.transaction() as connection:
+                    task = self.tasks.assert_lease(connection, lease)
+                    deadline = utc(task['retry_deadline_at']) if task['retry_deadline_at'] and task['options_json'].get('readinessRetryPending') else None
+                if deadline and deadline <= self.tasks.clock():
+                    self.fail_if_owned(lease, DomainError('DATA_READY_TIMEOUT', '等待收盘数据已达到截止时间。', 503))
+                else:
+                    retry = min(deferred.until, deadline) if deadline else deferred.until
+                    self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': retry},
+                                     f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
             else:
                 self.fail_if_owned(lease, DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '资料渠道暂处于频控等待，请稍后重新发起分析。', 503))
         except DomainError as error:

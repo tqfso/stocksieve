@@ -27,6 +27,7 @@ class Settings:
     ai_protocol: str = 'chat_completions'
     ai_max_steps: int = 12
     ai_tools_supported: bool = True
+    ai_mode: str = 'mock'
     testing: bool = False
 
     @classmethod
@@ -54,6 +55,7 @@ class Settings:
                    source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '1000')),
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
                    ai_model=values.get('STOCKSIEVE_AI_MODEL'), ai_protocol=values.get('STOCKSIEVE_AI_PROTOCOL', 'chat_completions'),
+                   ai_mode=values.get('STOCKSIEVE_AI_MODE', 'mock'),
                    ai_tools_supported=cls.boolean(values.get('STOCKSIEVE_AI_TOOLS_SUPPORTED', 'true')))
 
     @staticmethod
@@ -67,5 +69,7 @@ class Settings:
             raise ValueError('默认渠道间隔不得低于10秒，日预算必须为正数。')
         if self.ai_protocol not in {'chat_completions', 'responses'}:
             raise ValueError('AI 协议配置无效。')
+        if self.ai_mode not in {'mock', 'live'}:
+            raise ValueError('AI 运行模式需为 mock 或 live。')
         if self.lease_seconds <= 0 or not 1 <= self.ai_max_steps <= 50:
             raise ValueError('租约和分析调用上限配置无效。')

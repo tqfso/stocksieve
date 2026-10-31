@@ -1,0 +1,43 @@
+# 本文件在当前 Linux 服务器运行三个后端容器，复用现有 PostgreSQL，不创建数据库容器。
+name: stocksieve-backend
+
+x-app: &app
+  image: ${STOCKSIEVE_BACKEND_IMAGE:-stocksieve-backend:local}
+  pull_policy: never
+  network_mode: host
+  restart: unless-stopped
+  env_file:
+    - path: ../postgres/.env
+      required: true
+    - path: ../../.env
+      required: false
+  environment:
+    STOCKSIEVE_STATE_DIR: /var/lib/stocksieve
+    UV_CACHE_DIR: /var/lib/stocksieve/uv-cache
+  volumes:
+    - backend_state:/var/lib/stocksieve
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  stop_grace_period: 30s
+
+services:
+  api:
+    <<: *app
+    command: [api, --host, 127.0.0.1, --port, "${STOCKSIEVE_API_PORT:-8000}"]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${STOCKSIEVE_API_PORT:-8000}/health/ready', timeout=5).close()"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 15s
+  worker:
+    <<: *app
+    command: [worker]
+  scheduler:
+    <<: *app
+    command: [scheduler]
+
+volumes:
+  backend_state:
+    name: stocksieve-backend-state

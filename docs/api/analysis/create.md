@@ -20,7 +20,7 @@
 {
   "data": {
     "id": "analysis_example", "stockId": "SZSE.300750", "kind": "fundamental",
-    "strategy": null,
+    "strategy": null, "simulated": false,
     "snapshotId": "snapshot_example", "dataDate": "2026-10-28",
     "status": "queued", "stage": "queued", "progress": 0,
     "createdAt": "2026-10-29T18:30:00+08:00", "startedAt": null, "finishedAt": null,
@@ -31,5 +31,7 @@
 ```
 
 同一用户、股票、快照、分析类型及策略已有非终态任务时，新 key 提交返回 `409 ANALYSIS_IN_PROGRESS`，`error.details.analysisId` 指向已有任务。非买卖建议任务的 `strategy` 为 `null`，买卖建议任务返回实际策略。历史成功报告不会因重新生成而覆盖。受理时没有足够日线数据或该股票不支持指定分析时，返回 `409 ANALYSIS_DATA_UNAVAILABLE` 并说明原因。
+
+`simulated` 表示本次任务是否生成模拟分析；当前阶段为 `true`。该标识从受理起固定，历史查询仍沿用原值。模拟分析也需已有行情快照，不能据此补造行情或财务数据。
 
 客户端收到进行中冲突后查询已有任务；请求超时重发沿用原 `Idempotency-Key`，主动重新生成或重试失败任务使用新 key。业务阶段及报告时间字段见[分析详情](detail.md)。

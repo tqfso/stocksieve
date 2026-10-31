@@ -75,6 +75,22 @@ def test_readiness_timeout_does_not_publish_or_move_target_date(context):
     assert context.request('GET', '/api/v1/market/status')[1]['data']['publishedSnapshot']['id'] == first
 
 
+def test_waiting_task_claim_clears_queued_only_fields_and_keeps_retry_context(context):
+    context.submit('initialize'); context.run()
+    context.source.pending = True
+    job = context.submit('daily'); context.run()
+    context.clock.advance(601)
+    lease = context.api.tasks.claim('sync', 'retry-worker')
+    with context.api.db.transaction() as connection:
+        row = context.api.tasks.assert_lease(connection, lease)
+        assert row['wait_reason'] is None
+        assert row['options_json']['readinessRetryPending'] is True
+    context.source.pending = False
+    asyncio.run(context.worker.sync.run(lease))
+    result = context.api.tasks.detail(job, 'sync')
+    assert result['status'] == 'succeeded' and result['retryCount'] == 1
+
+
 def test_closed_day_skips_without_querying_vendor(context):
     context.submit('initialize'); context.run()
     context.clock.advance(86400)

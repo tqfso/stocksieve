@@ -3,12 +3,13 @@
 import argparse
 import asyncio
 import getpass
+import json
 import os
 
 from aiohttp import web
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
-from .agent import DeepAgentsRuntime
+from .agent import create_runtime
 from .analysis import Analysis
 from .api import API
 from .config import Settings
@@ -28,7 +29,8 @@ def main() -> int:
     api.add_argument('--port', type=int, default=8000)
     sub.add_parser('worker')
     sub.add_parser('scheduler')
-    sub.add_parser('check-db')
+    check = sub.add_parser('check-db')
+    check.add_argument('--counts', action='store_true', help='只读显示public关键业务表行数与剩余临时测试schema数量')
     admin = sub.add_parser('create-admin')
     admin.add_argument('--username', default='admin')
     admin.add_argument('--name', default='管理员')
@@ -41,7 +43,7 @@ def main() -> int:
         if set(settings.enabled_sources) - registry.sources.keys():
             raise RuntimeError('请求启用的渠道尚无通过覆盖验证的适配器；不能仅靠配置将候选源标为可用。')
         database = Database(settings.database_url)
-        runtime = DeepAgentsRuntime(settings)
+        runtime = create_runtime(settings)
         service = API(database, settings, registry, runtime)
         if args.command == 'check-db':
             inspector = inspect(database.engine)
@@ -52,6 +54,12 @@ def main() -> int:
                 if set(table.c.keys()) - actual:
                     raise RuntimeError(f'数据库表字段不匹配：{name}')
             print('数据库连接和17张业务表字段检查通过。')
+            if args.counts:
+                with database.transaction() as connection:
+                    rows = {name: connection.scalar(text(f'SELECT count(*) FROM public.{name}')) for name in
+                            ('users', 'stocks', 'tasks', 'data_snapshots', 'daily_bars', 'strategy_signals', 'analysis_results')}
+                    rows['temporaryTestSchemas'] = connection.scalar(text("SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname ~ '^stocksieve_test_[a-f0-9]{16}$'"))
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
         elif args.command == 'create-admin':
             password = os.environ.get(args.password_env) if args.password_env else getpass.getpass('管理员密码：')
             if not password:
