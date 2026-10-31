@@ -41,7 +41,7 @@
 
 ## 分页
 
-普通列表使用 `page`、`pageSize`，默认 `1`、`20`；`page >= 1`，`1 <= pageSize <= 100`，均为整数。超过末页返回空 `items`，保留实际 `total`。
+普通列表使用 `page`、`pageSize`，默认 `1`、`20`；`1 <= page <= 2147483647`，`1 <= pageSize <= 100`，均为整数。超过末页返回空 `items`，保留实际 `total`。
 
 ```json
 {

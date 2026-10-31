@@ -214,6 +214,7 @@ node_modules/
 .vite/
 /backend/deploy/postgres/backups/
 /backend/.source-probe/
+/backend/.state/
 
 # PyPI configuration file
 .pypirc
