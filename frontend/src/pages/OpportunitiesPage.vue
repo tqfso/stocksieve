@@ -41,6 +41,10 @@ const visibleRows = computed(() => rows.value);
 const invalidTurnoverRange = computed(() => query.minTurnover !== undefined && query.maxTurnover !== undefined && query.minTurnover > query.maxTurnover);
 const invalidMarketCapRange = computed(() => query.minMarketCap !== undefined && query.maxMarketCap !== undefined && query.minMarketCap > query.maxMarketCap);
 const invalidRange = computed(() => invalidTurnoverRange.value || invalidMarketCapRange.value);
+/** 区分用户筛选后的空结果与当日策略本身没有入选股票。 */
+const hasFilters = computed(() => Boolean(query.search || query.industry || query.concept || query.board)
+    || [query.minTurnover, query.maxTurnover, query.minMarketCap, query.maxMarketCap].some(value => value !== undefined));
+const noStrategyMatches = computed(() => !hasFilters.value && !invalidRange.value && total.value === 0);
 const metricName = computed(() => strategy.value.metricName);
 const metricHint = computed(() => strategy.value.metricHint);
 /** 将下拉选项与现有的范围参数双向关联，清空时恢复为不限。 */
@@ -191,6 +195,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
       <b>{{ counts[key] ?? '—' }}</b>
     </button>
   </div>
+  <p class="muted">各策略数量随筛选条件变化；当日没有符合规则的股票时显示 0。</p>
   <section class="strategy-banner">
     <span class="banner-icon">
       <AppIcon :name="strategy.icon" :size="25" />
@@ -303,9 +308,9 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     />
     <StatePanel
       v-else-if="!rows.length"
-      title="暂时没有符合条件的股票"
-      :description="invalidRange ? '请先调整总市值或换手率范围。' : '试试调整板块、行业、概念或数值范围。'"
-      action="重置筛选"
+      :title="noStrategyMatches ? `当日暂无${strategy.name}机会` : '暂时没有符合条件的股票'"
+      :description="invalidRange ? '请先调整总市值或换手率范围。' : noStrategyMatches ? '当日没有股票同时满足这类策略的全部条件，可查看其他策略或等待下次数据更新。' : '可重置筛选，或查看其他策略。'"
+      :action="noStrategyMatches ? undefined : '重置筛选'"
       @action="resetFilters"
     />
     <template v-else>

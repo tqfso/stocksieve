@@ -16,7 +16,7 @@ from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from browser_check import run_access_check, run_check, run_concept_check
+from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check
 
 
 def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
@@ -41,6 +41,7 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
         assert any('/candles' in path for path in result['apiPaths'])
         assert '/auth/login' in result['apiPaths'] and '/auth/logout' in result['apiPaths']
         assert run_concept_check(server.base_url, 'admin', 'testpass123')['matchedStocks'] > 0
+        assert run_strategy_check(server.base_url, 'admin', 'testpass123')['filterResetChecked']
         run_access_check(server.base_url, 'admin', 'testpass123')
     finally:
         future.cancel()
@@ -70,4 +71,17 @@ def test_browser_against_deployed_concepts(request: Any) -> None:
     credentials = json.loads(Path(file).read_text())
     result = run_concept_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/concept-filter.png')
     assert result['snapshotId']
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def test_browser_against_deployed_strategies(request: Any) -> None:
+    if not request.config.getoption('--deployed-strategies'):
+        pytest.skip('正式策略验收需显式--deployed-strategies。')
+    base = request.config.getoption('--deployed-base')
+    file = request.config.getoption('--deployed-credentials')
+    if not base or not file:
+        pytest.fail('请指定正式地址与私有凭据文件。')
+    credentials = json.loads(Path(file).read_text())
+    result = run_strategy_check(base, credentials['username'], credentials['password'])
+    assert result['filterResetChecked']
     print(json.dumps(result, ensure_ascii=False))

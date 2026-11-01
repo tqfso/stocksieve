@@ -187,6 +187,68 @@ def run_concept_check(base: str, username: str, password: str, *, screenshot: Pa
         raise RuntimeError('题材浏览器验收未通过，阶段：' + stage + '。') from None
 
 
+def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any]:
+    """只读核对五种策略的接口与页面计数，并检查空结果、切换和重置筛选。"""
+    __tracebackhide__ = True
+    stage = '登录与读取五种策略'
+    try:
+        with browser_page() as page:
+            page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+            page.get_by_placeholder('请输入账号', exact=True).fill(username)
+            page.get_by_placeholder('请输入密码', exact=True).fill(password)
+            page.get_by_role('button', name='登录工作台', exact=True).click()
+            page.wait_for_url('**/#/opportunities*')
+            results = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const get = async path => {
+                    const response = await fetch('/api/v1'+path, {headers:{Authorization:'Bearer '+token}});
+                    if (!response.ok) throw new Error('接口未成功');
+                    return (await response.json()).data;
+                };
+                const status = await get('/market/status');
+                const id = status.publishedSnapshot.id;
+                const results = {};
+                for (const strategy of ['short','swing','long','trend_wait','base_wait']) {
+                    const result = await get('/opportunities?strategy='+strategy+'&pageSize=6&snapshotId='+id);
+                    results[strategy] = {total:result.total, counts:result.summary.strategyCounts};
+                }
+                return {snapshotId:id, strategies:results};
+            }""")
+            counts = {key: result['total'] for key, result in results['strategies'].items()}
+            assert all(result['counts'] == counts for result in results['strategies'].values())
+            page.goto(base.rstrip('/') + '/#/opportunities?' + urlencode({'strategy': 'short', 'snapshotId': results['snapshotId']}), wait_until='networkidle')
+            tabs = page.get_by_role('tab')
+            for index, (key, count) in enumerate(counts.items()):
+                stage = '切换策略：' + key
+                tabs.nth(index).click()
+                expect(tabs.nth(index)).to_have_attribute('aria-selected', 'true')
+                expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
+                expect(page.locator('.results-caption')).to_contain_text(f'{count} 只符合当前条件')
+                expect(page.locator('.stock-name')).to_have_count(min(6, count))
+                if count == 0:
+                    expect(page.locator('.results-panel .state-panel')).to_be_visible()
+                    expect(page.locator('.results-panel .state-panel h3')).to_contain_text('当日暂无')
+                    expect(page.locator('.results-panel .state-panel')).to_contain_text('当日没有股票同时满足这类策略的全部条件')
+                    expect(page.locator('.results-panel .state-panel button')).to_have_count(0)
+            stage = '搜索无结果与重置筛选'
+            page.get_by_placeholder('股票名称或代码', exact=True).fill('__stocksieve_no_match__')
+            expect(page.locator('.strategy-tabs b')).to_have_text(['0'] * 5)
+            expect(page.locator('.stock-name')).to_have_count(0)
+            expect(page.locator('.results-panel .state-panel h3')).to_have_text('暂时没有符合条件的股票')
+            page.locator('.results-panel').get_by_role('button', name='重置筛选', exact=True).click()
+            expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
+            expect(page.get_by_placeholder('股票名称或代码', exact=True)).to_have_value('')
+            page.reload(wait_until='networkidle')
+            expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
+            expect(page.get_by_placeholder('股票名称或代码', exact=True)).to_have_value('')
+            assert 'search' not in parse_qs(urlsplit(page.url.split('#', 1)[-1]).query)
+            page.locator('.sidebar-user').click()
+            page.wait_for_url('**/#/login*')
+            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True}
+    except Exception:
+        raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
+
+
 def run_access_check(base: str, username: str, password: str) -> None:
     """只供隔离测试：验证新增普通用户、服务端权限和改密撤销；不用于正式账号。"""
     __tracebackhide__ = True
