@@ -3,6 +3,7 @@
 import asyncio
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from itertools import zip_longest
 from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
@@ -44,7 +45,7 @@ class Sync:
         with self.db.transaction() as connection:
             task = dict(self.tasks.assert_lease(connection, lease))
         source = self.registry.get(task['data_source'], task['kind'], self.tasks.boards(task))
-        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced)):
+        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id):
             if task['kind'] == 'initialize':
                 await self.initialize(lease, source, task)
             elif task['kind'] == 'catalog':
@@ -99,7 +100,13 @@ class Sync:
 
     async def catalog(self, lease: Lease, source: Source) -> None:
         with self.db.transaction() as connection:
-            stocks = tuple(stock_value(row) for row in connection.execute(select(t.stocks)).mappings())
+            pool = tuple(stock_value(row) for row in connection.execute(select(t.stocks).order_by(t.stocks.c.stock_id)).mappings())
+            latest = connection.scalar(select(t.snapshots.c.id).where(t.snapshots.c.status == 'published').order_by(t.snapshots.c.data_date.desc(), t.snapshots.c.version.desc()).limit(1))
+            priority = set(connection.scalars(select(t.signals.c.stock_id).where(t.signals.c.snapshot_id == latest))) if latest else set()
+        # 分批渠道优先覆盖当前候选股，其余股票按板块交错，保持所有渠道使用统一股票输入。
+        grouped = [[stock for stock in pool if stock.board == board and stock.stock_id not in priority] for board in BOARDS]
+        grouped.append([stock for stock in pool if stock.board not in BOARDS and stock.stock_id not in priority])
+        stocks = tuple(stock for stock in pool if stock.stock_id in priority) + tuple(stock for group in zip_longest(*grouped) for stock in group if stock is not None)
         data = await source.catalog(stocks)
         if not isinstance(data, dict) or not isinstance(data.get('stocks'), dict):
             raise DomainError('DATA_INCOMPLETE', '分类响应缺少股票关联。', 503)
@@ -110,6 +117,25 @@ class Sync:
             self.tasks.assert_lease(connection, lease)
             previous = connection.execute(select(t.tasks.c.result_json).where(t.tasks.c.kind == 'catalog', t.tasks.c.status == 'succeeded')).scalars().all()
             revision = max((item.get('_catalogRevision', 0) for item in previous if item), default=0) + 1
+            fields = set(data.get('fields', ['industry', 'concepts']))
+            if not fields or not fields <= {'industry', 'concepts'}:
+                raise DomainError('DATA_INCOMPLETE', '分类更新范围无效。', 503)
+            # 单类分类渠道保留另一类资料及来源，避免因能力范围不同清空已有关系。
+            missing = {'industry', 'concepts'} - fields
+            if missing:
+                prior = max((item for item in previous if item), key=lambda item: item.get('_catalogRevision', 0), default={})
+                for stock_id, old in prior.get('_classifications', {}).items():
+                    if stock_id in valid_ids:
+                        relation = data['stocks'].setdefault(stock_id, {})
+                        for field in missing:
+                            relation[field] = old.get(field) if field != 'concepts' or old.get('_conceptsKnown', True) else None
+                provenance = dict(data.get('provenance', {}))
+                for field in missing:
+                    if provider := prior.get('_classificationProvenance', {}).get(field):
+                        provenance[field] = provider
+                data['provenance'] = provenance
+                if 'concepts' in missing:
+                    data.update(conceptCoverage=prior.get('_conceptCoverage'), conceptCollection=prior.get('_conceptCollection'))
             categories: dict[str, tuple[str, dict[str, str]]] = {}
             for relation in data['stocks'].values():
                 if not isinstance(relation, dict):
@@ -118,6 +144,8 @@ class Sync:
                 if not relation['_conceptsKnown']:
                     relation['concepts'] = []
                 for kind, category in [('industry', relation.get('industry'))] + [('concept', item) for item in relation.get('concepts', [])]:
+                    if ('concepts' if kind == 'concept' else kind) not in fields:
+                        continue
                     if category:
                         if not category.get('id') or not category.get('name'):
                             raise DomainError('DATA_INCOMPLETE', '分类ID或名称缺失。', 503)
@@ -131,7 +159,9 @@ class Sync:
                     raise DomainError('DATA_INCOMPLETE', '同一分类ID不能同时用作行业和题材。', 503)
                 codes = {**(old['source_codes'] if old else {}), source.id: category.get('sourceCode', key)}
                 upsert(connection, t.categories, {'id': key}, {'kind': kind, 'name': category['name'], 'source_codes': codes, 'updated_at': self.tasks.clock()})
-            self.finish(connection, lease, 'catalog_updated', len(stocks), internal={'_classifications': data['stocks'], '_catalogRevision': revision, '_classificationProvenance': data.get('provenance', {})})
+            self.finish(connection, lease, 'catalog_updated', len(stocks), internal={'_classifications': data['stocks'], '_catalogRevision': revision,
+                '_classificationProvenance': data.get('provenance', {}), '_conceptCoverage': data.get('conceptCoverage'),
+                '_catalogObservedAt': data.get('observedAt'), '_conceptCollection': data.get('conceptCollection')})
 
     async def precheck(self, lease: Lease, source: Source, task: dict[str, Any]) -> bool:
         target = task['target_date']
@@ -313,7 +343,8 @@ class Sync:
             options = {**row['options_json'], 'buildingSnapshotId': snapshot_id,
                        'sourceProgressMessage': '历史与补充资料准备完成，正在计算策略并保存结果。',
                        'stockIds': [stock.stock_id for stock in universe], 'nextIndex': 0, 'catalogTaskId': catalog['id'] if catalog else None,
-                       'catalogAsOfAt': utc(catalog['finished_at']).isoformat() if catalog else None,
+                       'catalogAsOfAt': ((catalog['result_json'] or {}).get('_catalogObservedAt') or utc(catalog['finished_at']).isoformat()) if catalog else None,
+                       'conceptCoverage': (catalog['result_json'] or {}).get('_conceptCoverage') if catalog else None,
                        'dataProvenance': {**getattr(source, 'provenance', {}), **((catalog['result_json'] or {}).get('_classificationProvenance', {}) if catalog else {})},
                        'catalogKnownCount': sum(stock.stock_id in classifications and classifications[stock.stock_id].get('_conceptsKnown', True) for stock in universe)}
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=80))
@@ -333,6 +364,8 @@ class Sync:
                        'concepts': coverage(options['catalogKnownCount']),
                        'turnover': coverage(sum(row['turnover'] is not None for row in rows)),
                        'totalMarketCap': coverage(sum(row['total_market_cap'] is not None for row in rows))}
+            if options.get('conceptCoverage') == 'partial' and filters['concepts'] == 'complete':
+                filters['concepts'] = 'partial'
             version = connection.scalar(text('SELECT nextval(CAST(:sequence AS regclass))'), {'sequence': f'{self.db.schema or "public"}.snapshot_version_seq'}) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
             connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='published', version=version,
                 published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {})}))

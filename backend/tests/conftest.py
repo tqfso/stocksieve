@@ -199,6 +199,7 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption('--deployed-base', default=None, help='正式部署的只读浏览器验收地址')
     parser.addoption('--deployed-credentials', default=None, help='正式管理员私有凭据JSON文件路径，不在终端显示内容')
     parser.addoption('--deployed-data', action='store_true', help='正式部署已发布真实行情时验收图表及后端模拟筹码报告')
+    parser.addoption('--deployed-concepts', action='store_true', help='显式验收正式题材筛选，不生成分析报告')
 
 
 def pytest_report_header(config: Any) -> str:

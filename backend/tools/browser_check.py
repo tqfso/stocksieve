@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import re
+from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -110,6 +112,79 @@ def run_check(base: str, username: str, password: str, *, require_data: bool = F
         return {'browserChecks': checked, 'apiPaths': sorted(paths), 'pageErrors': len(failures)}
     except Exception:
         raise RuntimeError(f'浏览器验收未通过，阶段：{stage}。') from None
+
+
+def run_concept_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
+    """实际选择一个已取得的题材，校验请求、成员归属和刷新恢复；不生成分析或改写行情。"""
+    __tracebackhide__ = True
+    stage = '登录与题材选项'
+    try:
+        with browser_page() as page:
+            page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+            page.get_by_placeholder('请输入账号', exact=True).fill(username)
+            page.get_by_placeholder('请输入密码', exact=True).fill(password)
+            page.get_by_role('button', name='登录工作台', exact=True).click()
+            page.wait_for_url('**/#/opportunities*')
+            choice = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const get = async path => {
+                    const response = await fetch('/api/v1'+path, {headers:{Authorization:'Bearer '+token}});
+                    if (!response.ok) throw new Error('接口未成功');
+                    return (await response.json()).data;
+                };
+                const status = await get('/market/status');
+                const id = status.publishedSnapshot.id;
+                const filters = await get('/catalog/filters?snapshotId='+id);
+                if (!filters.concepts.length || filters.coverage.concepts === 'unavailable') throw new Error('题材尚不可用');
+                for (const strategy of ['short','swing','long','trend_wait','base_wait']) {
+                    const result = await get('/opportunities?strategy='+strategy+'&pageSize=100&snapshotId='+id);
+                    const stock = result.items.find(row => row.stock.concepts.length && row.stock.industry);
+                    if (stock) return {snapshotId:id, strategy, concept:stock.stock.concepts[0], industry:stock.stock.industry};
+                }
+                return {snapshotId:id, strategy:'short', concept:filters.concepts[0], industry:filters.industries[0] ?? null};
+            }""")
+            stage = '选择题材与真实筛选请求'
+            page.goto(base.rstrip('/') + '/#/opportunities?' + urlencode({'strategy': choice['strategy'], 'snapshotId': choice['snapshotId']}), wait_until='networkidle')
+            if choice['industry']:
+                stage = '输入定位行业'
+                industry = page.locator('label').filter(has_text=re.compile(r'^\s*行业')).locator('.el-select')
+                industry.click()
+                industry.locator('.el-select__input').fill(choice['industry']['name'])
+                expect(page.locator('[role="option"]:visible')).to_have_count(1)
+                with page.expect_response(lambda response: '/api/v1/opportunities' in response.url and parse_qs(urlsplit(response.url).query).get('industryId') == [choice['industry']['id']]):
+                    page.get_by_role('option', name=choice['industry']['name'], exact=True).click()
+            stage = '输入定位题材'
+            control = page.locator('label').filter(has_text='题材 / 概念').locator('.el-select')
+            expect(control).not_to_have_class(re.compile(r'is-disabled'))
+            control.click()
+            control.locator('.el-select__input').fill(choice['concept']['name'])
+            expect(page.locator('[role="option"]:visible')).to_have_count(1)
+            def matching(response: Any) -> bool:
+                return '/api/v1/opportunities' in response.url and parse_qs(urlsplit(response.url).query).get('conceptId') == [choice['concept']['id']]
+            with page.expect_response(matching) as received:
+                page.get_by_role('option', name=choice['concept']['name'], exact=True).click()
+            response = received.value
+            assert response.status == 200
+            result = response.json()['data']
+            assert result['snapshot']['id'] == choice['snapshotId']
+            assert all(any(concept['id'] == choice['concept']['id'] for concept in item['stock']['concepts']) for item in result['items'])
+            if choice['industry']:
+                assert all((item['stock']['industry'] or {}).get('id') == choice['industry']['id'] for item in result['items'])
+            if result['total']:
+                expect(page.locator('.stock-name').first).to_be_visible()
+            stage = '刷新恢复题材筛选'
+            page.reload(wait_until='networkidle')
+            expect(control).to_contain_text(choice['concept']['name'])
+            if choice['industry']:
+                expect(industry).to_contain_text(choice['industry']['name'])
+            if screenshot:
+                screenshot.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(screenshot), full_page=True)
+            page.locator('.sidebar-user').click()
+            page.wait_for_url('**/#/login*')
+            return {'industry': (choice['industry'] or {}).get('name'), 'concept': choice['concept']['name'], 'matchedStocks': result['total'], 'snapshotId': choice['snapshotId'], 'typedSearchChecked': True}
+    except Exception:
+        raise RuntimeError('题材浏览器验收未通过，阶段：' + stage + '。') from None
 
 
 def run_access_check(base: str, username: str, password: str) -> None:

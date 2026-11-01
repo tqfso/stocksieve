@@ -269,20 +269,26 @@ class BaostockSource:
             return DailyPacket(stock, state, tuple(packet))
         return await asyncio.to_thread(load)
 
+    def industries(self, stocks: tuple[Stock, ...]) -> dict[str, Any]:
+        """真实行业查询独立复用，组合分类渠道无需重复请求不支持的概念方法。"""
+        import hashlib
+        rows = self.read(self.wire.sdk.query_stock_industry())
+        if not rows:
+            raise DomainError('DATA_NOT_AVAILABLE', '行业渠道未返回可核验记录。', 503)
+        known = {self.vendor_code(stock): stock.stock_id for stock in stocks}
+        relationships = {}
+        for row in rows:
+            if row['code'] not in known or not row.get('industry'):
+                continue
+            name = row['industry']
+            identifier = 'bs_' + hashlib.sha256((row.get('industryClassification', '') + ':' + name).encode()).hexdigest()[:24]
+            relationships[known[row['code']]] = {'industry': {'id': identifier, 'name': name, 'sourceCode': row.get('industry_code') or name}, 'concepts': None}
+        return relationships
+
     async def catalog(self, stocks: tuple[Stock, ...]) -> dict[str, Any]:
         def load() -> dict[str, Any]:
-            rows = self.read(self.wire.sdk.query_stock_industry())
-            if not rows:
-                raise DomainError('DATA_NOT_AVAILABLE', '行业渠道未返回可核验记录。', 503)
+            relationships = self.industries(stocks)
             known = {self.vendor_code(stock): stock.stock_id for stock in stocks}
-            relationships = {}
-            for row in rows:
-                if row['code'] not in known or not row.get('industry'):
-                    continue
-                name = row['industry']
-                import hashlib
-                identifier = 'bs_' + hashlib.sha256((row.get('industryClassification', '') + ':' + name).encode()).hexdigest()[:24]
-                relationships[known[row['code']]] = {'industry': {'id': identifier, 'name': name, 'sourceCode': row.get('industry_code') or name}, 'concepts': None}
             # 官方SDK模块提供概念分类；仅使用匿名通道实际返回的关系，不以行业或模型代造题材。
             from baostock.security.sectorinfo import query_stock_concept
             try:
@@ -291,7 +297,7 @@ class BaostockSource:
                 if error.code != 'DATA_NOT_AVAILABLE':
                     raise
                 concepts = []
-                report_progress('当前免费概念接口未提供可核验资料，题材保持未知。', 9)
+                report_progress('当前通道仅更新行业，题材沿用已有资料。', 9)
             for row in concepts:
                 if row.get('code') not in known:
                     continue
@@ -310,5 +316,6 @@ class BaostockSource:
             provenance = {'industry': 'baostock'}
             if any(relation.get('concepts') for relation in relationships.values()):
                 provenance['concepts'] = 'baostock'
-            return {'stocks': relationships, 'provenance': provenance}
+            return {'stocks': relationships, 'provenance': provenance,
+                    'fields': ['industry', 'concepts'] if 'concepts' in provenance else ['industry']}
         return await asyncio.to_thread(load)

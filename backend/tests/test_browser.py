@@ -17,7 +17,7 @@ from stocksieve.sync import Sync
 from stocksieve.worker import Worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from browser_check import run_access_check, run_check
+from browser_check import run_access_check, run_check, run_concept_check
 
 
 def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
@@ -41,6 +41,7 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
         assert result['pageErrors'] == 0
         assert any('/candles' in path for path in result['apiPaths'])
         assert '/auth/login' in result['apiPaths'] and '/auth/logout' in result['apiPaths']
+        assert run_concept_check(server.base_url, 'admin', 'testpass123')['matchedStocks'] > 0
         run_access_check(server.base_url, 'admin', 'testpass123')
     finally:
         future.cancel()
@@ -58,3 +59,16 @@ def test_browser_against_deployed_database(request: Any) -> None:
     credentials = json.loads(Path(file).read_text())
     result = run_check(base, credentials['username'], credentials['password'], require_data=request.config.getoption('--deployed-data'))
     assert result['pageErrors'] == 0
+
+
+def test_browser_against_deployed_concepts(request: Any) -> None:
+    if not request.config.getoption('--deployed-concepts'):
+        pytest.skip('题材正式验收需显式--deployed-concepts。')
+    base = request.config.getoption('--deployed-base')
+    file = request.config.getoption('--deployed-credentials')
+    if not base or not file:
+        pytest.fail('请指定正式地址与私有凭据文件。')
+    credentials = json.loads(Path(file).read_text())
+    result = run_concept_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/concept-filter.png')
+    assert result['snapshotId']
+    print(json.dumps(result, ensure_ascii=False))

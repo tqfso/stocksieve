@@ -77,12 +77,16 @@ def main() -> int:
         settings = Settings.from_env()
         registry = Registry(settings.market_boards)
         policy = SourcePolicy(settings.rate_dir, settings.request_interval, settings.source_daily_limit)
+        if 'baidu_concepts' in settings.enabled_sources:
+            from .baidu_concepts import BaiduCatalogSource, BaiduConcepts
+            registry.register(BaiduCatalogSource(BaiduConcepts(policy, settings.state_dir / 'source-cache')))
         if 'baostock' in settings.enabled_sources:
             from .baostock_wire import BaostockWire
             from .baostock_source import BaostockSource
             from .tencent_metadata import TencentMetadata
             wire = BaostockWire(policy, settings.state_dir / 'baostock-wire')
-            registry.register(BaostockSource(wire, settings.state_dir / 'baostock-market.sqlite', metadata=TencentMetadata(policy, settings.state_dir / 'source-cache')))
+            base_source = BaostockSource(wire, settings.state_dir / 'baostock-market.sqlite', metadata=TencentMetadata(policy, settings.state_dir / 'source-cache'))
+            registry.register(base_source)
         if set(settings.enabled_sources) - registry.sources.keys():
             raise RuntimeError('请求启用的渠道尚无通过覆盖验证的适配器；不能仅靠配置将候选源标为可用。')
         database = Database(settings.database_url)

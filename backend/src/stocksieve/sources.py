@@ -23,16 +23,24 @@ from .errors import DomainError
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
 _progress: ContextVar[Callable[[str, int, bool], None] | None] = ContextVar('source_progress', default=None)
+_operation: ContextVar[str | None] = ContextVar('source_operation', default=None)
 
 
 @contextmanager
-def progress_sink(callback: Callable[[str, int, bool], None]) -> Iterator[None]:
+def progress_sink(callback: Callable[[str, int, bool], None], *, operation_id: str | None = None) -> Iterator[None]:
     """跨异步任务及取数线程传递进度回调，不把数据库任务对象放入渠道接口。"""
     token = _progress.set(callback)
+    operation = _operation.set(operation_id)
     try:
         yield
     finally:
         _progress.reset(token)
+        _operation.reset(operation)
+
+
+def current_operation_id() -> str | None:
+    """提供不透明操作标识供分页缓存恢复，不向渠道暴露数据库任务对象。"""
+    return _operation.get()
 
 
 def report_progress(message: str, progress: int, advanced: bool = False) -> None:
@@ -47,7 +55,8 @@ def supplier(url: str, fallback: str) -> str:
     host = urlsplit(url).hostname or ''
     for domain, name in [('sina.com.cn', 'sina'), ('sina.cn', 'sina'), ('eastmoney.com', 'eastmoney'),
                          ('qq.com', 'tencent'), ('gtimg.cn', 'tencent'), ('sse.com.cn', 'sse'),
-                         ('szse.cn', 'szse'), ('bse.cn', 'bse'), ('cninfo.com.cn', 'cninfo')]:
+                         ('szse.cn', 'szse'), ('bse.cn', 'bse'), ('cninfo.com.cn', 'cninfo'),
+                         ('10jqka.com.cn', 'ths'), ('thsi.cn', 'ths'), ('baidu.com', 'baidu'), ('baidu.cn', 'baidu')]:
         if host == domain or host.endswith('.' + domain):
             return name
     return fallback
@@ -86,6 +95,24 @@ class Source(Protocol):
     async def precheck(self, target: date) -> list[dict[str, Any]]: ...
     async def universe(self, target: date, known: tuple[Stock, ...]) -> tuple[Stock, ...]: ...
     async def daily(self, stock: Stock, target: date, history: tuple[Bar, ...]) -> DailyPacket: ...
+
+
+class CatalogOnlySource:
+    """分类适配器的能力基类，其他任务在注册表和直接调用时均明确拒绝。"""
+
+    supported_kinds = frozenset({'catalog'})
+
+    async def initialize(self) -> Initialization:
+        raise DomainError('SOURCE_UNAVAILABLE', '该渠道仅支持分类更新。')
+
+    async def precheck(self, target: date) -> list[dict[str, Any]]:
+        raise DomainError('SOURCE_UNAVAILABLE', '该渠道仅支持分类更新。')
+
+    async def universe(self, target: date, known: tuple[Stock, ...]) -> tuple[Stock, ...]:
+        raise DomainError('SOURCE_UNAVAILABLE', '该渠道仅支持分类更新。')
+
+    async def daily(self, stock: Stock, target: date, history: tuple[Bar, ...]) -> DailyPacket:
+        raise DomainError('SOURCE_UNAVAILABLE', '该渠道仅支持分类更新。')
 
 
 class Registry:
