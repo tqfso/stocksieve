@@ -6,7 +6,7 @@ Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一�
 
 ## 当前状态
 
-- API、worker、scheduler已通过Docker Compose在当前服务器启动，基础镜像为本机ubuntu:24.04；API同源提供编译后的真实前端。
+- PostgreSQL、API、worker、scheduler统一由backend/compose.yaml管理；后端基础镜像为本机ubuntu:24.04，API同源提供编译后的真实前端。
 - 登录、会话撤销、用户管理、持久化任务、策略与快照、查询、图表、报告和权限已实现。页面不再使用浏览器模拟业务层。
 - 正式HTTP已完成初始化、行业同步和首轮发布：5223只股票，沪市主板1700、深市主板1494、创业板1411、科创板618；已保存779633条真实日线，覆盖2026-03-20至2026-10-30的150个交易日。
 - 最新行情日为2026-10-30，短线32、波段4、长线150、趋势埋伏0、低位筑底9条信号；全部5223只股票的当日市值均经日期与收盘价交叉核对。
@@ -18,9 +18,11 @@ Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一�
 
 ## 运行与配置
 
-正式启动及维护见[Docker部署](../docs/deployment/backend.md)。服务器配置可放在`backend/.env`，数据库默认读取既有`deploy/postgres/.env`；环境变量优先。[示例](.env.example)不包含真实凭据。
+正式启动及维护见[Docker部署](../docs/deployment/backend.md)。服务器与数据库配置统一放在`backend/.env`，环境变量优先。[示例](.env.example)不包含真实凭据。
 
 当前`STOCKSIEVE_AI_MODE=mock`，无需模型配置，不调用真实模型或联网检索。任务和报告均返回`simulated=true`，标题与摘要明确标记；图表与参考价仍用实际输入计算。缺财报可生成说明缺失的模拟报告，缺少核心行情仍拒绝受理。未来改为`live`并填写模型参数；真实模式不可用时不自动回退模拟。
+
+历史补齐用`STOCKSIEVE_HISTORY_TRADING_DAYS`，默认150；最新窗口上限用`STOCKSIEVE_HISTORY_MAX_TRADING_DAYS`，默认0不限制。最少140天，非0上限不得小于补齐天数；旧快照和报告数据保留。配置示例与生效方式见部署说明。
 
 当前正式源请求至少间隔10秒、全渠道每天最多400次，共用原探测账本、次数与冷却。缓存命中不重新请求；正常成功分块中断最多短退避3次，明确拒绝访问和上游等待指令继续严格执行。不要删除账本来恢复访问。
 
@@ -36,6 +38,6 @@ uv run --project backend --frozen pytest backend/tests backend/tools/tests --pos
 
 默认模式使用独立SQLite；`--postgres`使用现有连接，在随机`stocksieve_test_`schema中执行完整SQL约束并自动清理，不向public写模拟行情。`--http`通过本机随机端口发送真实请求；`--browser`使用隔离浏览器上下文验证真实前端，需先构建前端。供应商与模型夹具仍是测试输入，与正式数据源验收分开记录。
 
-截至2026-11-01，分包后的完整PostgreSQL/HTTP/浏览器回归115项通过，另2项正式部署浏览器验收通过；包含领域依赖、应用端口和包导入/资源路径的架构约束。正式部署已复核登录、行情/K线、模拟报告及行业/题材输入定位和刷新恢复，截图在`backend/.state/concept-filter.png`。前端6组测试及生产构建此前通过；正式测试不改管理员口令。
+截至2026-11-01，完整PostgreSQL/HTTP/浏览器回归124项通过，另2项统一Compose部署后的正式浏览器验收通过；包含历史env范围、窗口上限与任务冻结、旧快照保留、容器迁移及架构依赖约束。迁移前后关键业务行数一致，备份已校验；容器覆盖250/500天的配置检查通过且未执行额外行情同步。前端6组测试及构建此前通过；正式测试不改管理员口令。
 
 VS Code从仓库根打开时，[工作区配置](../.vscode/settings.json)指定`backend/src`和uv解释器；旧诊断可重新选择`backend/.venv/bin/python`并执行`Developer: Reload Window`。

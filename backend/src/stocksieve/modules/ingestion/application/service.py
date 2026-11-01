@@ -1,6 +1,7 @@
 """本文件执行基础信息、独立分类与收盘同步，分批恢复并原子发布行情和策略快照。"""
 
 import asyncio
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from itertools import zip_longest
@@ -13,12 +14,16 @@ from sqlalchemy.engine import Connection
 
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import utc
-from stocksieve.modules.ingestion.application.ports import Source
+from stocksieve.modules.ingestion.application.ports import (
+    HistorySource,
+    Source,
+)
 from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.jobs.application.service import Tasks
 from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.application.queries import strategy_catalog
+from stocksieve.modules.market.domain.history import HistoryPolicy
 from stocksieve.modules.market.domain.models import BOARDS, Stock, adjusted_history
 from stocksieve.modules.market.domain.strategies import SORTS, Context, evaluate
 from stocksieve.shared.errors import DomainError, MissingData
@@ -43,6 +48,9 @@ class Sync:
         with self.db.transaction() as connection:
             task = dict(self.tasks.assert_lease(connection, lease))
         source = self.registry.get(task['data_source'], task['kind'], self.tasks.boards(task))
+        policy = HistoryPolicy(task['options_json'].get('historyDays', 150), task['options_json'].get('historyMaxDays', 0))
+        if isinstance(source, HistorySource):
+            source = source.for_history(policy)
         with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id):
             if task['kind'] == 'initialize':
                 await self.initialize(lease, source, task)
@@ -217,7 +225,34 @@ class Sync:
         self.tasks.patch(lease, {'wait_reason': None}, '所有开市板块已就绪。')
         return True
 
+    async def extend_history_calendar(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
+        """扩大历史窗口时先补真实日历；取数在事务外，失败保留原日历与快照。"""
+        if not isinstance(source, HistorySource):
+            return
+        target = task['target_date']
+        policy = HistoryPolicy(task['options_json'].get('historyDays', 150), task['options_json'].get('historyMaxDays', 0))
+        exchanges = {BOARDS[board][1] for board in self.tasks.boards(task)}
+        with self.db.transaction() as connection:
+            earliest = dict(connection.execute(select(t.calendar.c.exchange, func.min(t.calendar.c.trade_date))
+                .where(t.calendar.c.exchange.in_(exchanges)).group_by(t.calendar.c.exchange)).all())
+            present = set(connection.scalars(select(t.calendar.c.exchange).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.trade_date == target)))
+        start = policy.calendar_start(target)
+        if present == exchanges and all(earliest.get(exchange) is not None and earliest[exchange] <= start for exchange in exchanges):
+            return
+        calendar, fetched = await source.history_calendar(target)
+        if not exchanges <= set(calendar) or any(not calendar[exchange] or min(calendar[exchange]) > start or target not in calendar[exchange] for exchange in exchanges):
+            raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '真实日历未覆盖配置要求的历史范围。', 503)
+        with self.db.transaction(serialized=True) as connection:
+            self.tasks.assert_lease(connection, lease)
+            for exchange in exchanges:
+                for day, entry in calendar[exchange].items():
+                    if entry.is_open is True and (entry.close_at is None or entry.close_at.tzinfo is None or entry.close_at.astimezone(SHANGHAI).date() != day):
+                        raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '开市日缺少明确的收盘时间。', 503)
+                    upsert(connection, t.calendar, {'exchange': exchange, 'trade_date': day},
+                           {'is_open': entry.is_open, 'close_at': entry.close_at if entry.is_open else None, 'source': source.id, 'fetched_at': fetched})
+
     async def daily(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
+        await self.extend_history_calendar(lease, source, task)
         if not await self.precheck(lease, source, task):
             return
         with self.db.transaction() as connection:
@@ -248,6 +283,9 @@ class Sync:
                 base = connection.execute(select(t.snapshots).where(t.snapshots.c.id == snapshot['base_snapshot_id'])).mappings().first() if snapshot['base_snapshot_id'] else None
                 history = self.market.history(connection, base, stock_id) if base and base['source'] == source.id else []
                 history = [bar for bar in history if bar.day <= task['target_date']]
+                floor = date.fromisoformat(options['historyCutoffDate']) if options.get('historyCutoffDate') else None
+                if floor:
+                    history = [bar for bar in history if bar.day >= floor]
             if snapshot['calendar_json'][stock.exchange].get(task['target_date'].isoformat()) is False:
                 with self.db.transaction(serialized=True) as connection:
                     latest = self.tasks.assert_lease(connection, lease)
@@ -259,6 +297,8 @@ class Sync:
             packet = await source.daily(stock, task['target_date'], tuple(history))
             if packet.stock.stock_id != stock_id or any(bar.day > task['target_date'] for bar in packet.bars) or len({bar.day for bar in packet.bars}) != len(packet.bars):
                 raise DomainError('DATA_INCOMPLETE', '行情身份、日期或唯一性校验失败。', 503)
+            if floor:
+                packet = replace(packet, bars=tuple(bar for bar in packet.bars if bar.day >= floor))
             merged = {bar.day: bar for bar in history}
             merged.update({bar.day: bar for bar in packet.bars})
             data = sorted(merged.values(), key=lambda bar: bar.day)
@@ -323,11 +363,16 @@ class Sync:
             calendar: dict[str, dict[str, bool | None]] = {key: {} for key in ('SSE', 'SZSE', 'BSE')}
             for entry in connection.execute(select(t.calendar)).mappings():
                 calendar[entry['exchange']][entry['trade_date'].isoformat()] = entry['is_open']
+            policy = HistoryPolicy(row['options_json'].get('historyDays', 150), row['options_json'].get('historyMaxDays', 0))
+            floor = policy.cutoff((date.fromisoformat(day) for exchange in exchanges for day, opened in calendar[exchange].items() if opened is True), task['target_date'])
+            history_start = base['history_start_date'] if base and base['source'] == source.id else None
+            if history_start and floor:
+                history_start = max(history_start, floor)
             snapshot_id = t.identifier()
             connection.execute(t.snapshots.insert().values(id=snapshot_id, sync_task_id=lease.id,
                 base_snapshot_id=base['id'] if base else None, data_date=task['target_date'], source=source.id, status='building',
                 adjustment='qfq', strategy_version='v1', calculation_version='v1', strategy_config_json=strategy_catalog(), calendar_json=calendar,
-                history_start_date=base['history_start_date'] if base and base['source'] == source.id else None, created_at=self.tasks.clock()))
+                history_start_date=history_start, created_at=self.tasks.clock()))
             for stock in universe:
                 self.save_stock(connection, stock, source.id, insert_only=True)
                 relation = classifications.get(stock.stock_id, {})
@@ -339,6 +384,7 @@ class Sync:
                     connection.execute(t.concepts.insert(), [{'snapshot_id': snapshot_id, 'stock_id': stock.stock_id,
                         'concept_id': concept['id'], 'concept_name': concept['name']} for concept in relation['concepts']])
             options = {**row['options_json'], 'buildingSnapshotId': snapshot_id,
+                       'historyCutoffDate': floor.isoformat() if floor else None,
                        'sourceProgressMessage': '历史与补充资料准备完成，正在计算策略并保存结果。',
                        'stockIds': [stock.stock_id for stock in universe], 'nextIndex': 0, 'catalogTaskId': catalog['id'] if catalog else None,
                        'catalogAsOfAt': ((catalog['result_json'] or {}).get('_catalogObservedAt') or utc(catalog['finished_at']).isoformat()) if catalog else None,
@@ -366,5 +412,6 @@ class Sync:
                 filters['concepts'] = 'partial'
             version = connection.scalar(text('SELECT nextval(CAST(:sequence AS regclass))'), {'sequence': f'{self.db.schema or "public"}.snapshot_version_seq'}) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
             connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='published', version=version,
-                published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {})}))
+                published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {}),
+                    'historyPolicy': {'initialDays': options.get('historyDays', 150), 'maxDays': options.get('historyMaxDays', 0)}}))
             self.finish(connection, lease, 'updated', len(rows), snapshot_id=snapshot_id, skipped=options.get('skipped', 0))

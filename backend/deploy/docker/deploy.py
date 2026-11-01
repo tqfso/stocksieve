@@ -14,16 +14,22 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import BinaryIO
 from zoneinfo import TZPATH
 
+from stack import Stack, prepare_env
+
 ROOT = Path(__file__).resolve().parents[2]
-COMPOSE = ROOT / 'deploy/docker/compose.yaml'
+COMPOSE = ROOT / 'compose.yaml'
 DEFAULT_BASE = 'ubuntu:24.04'
 
 
-def command(args: list[str], *, capture: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def command(args: list[str], *, capture: bool = False, env: dict[str, str] | None = None,
+            stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> subprocess.CompletedProcess[str]:
     """参数始终按列表传递，镜像名和路径不作为 shell 代码执行。"""
-    return subprocess.run(args, cwd=ROOT, env=env, check=True, text=True, capture_output=capture)
+    return subprocess.run(args, cwd=ROOT, env=env, check=True, text=True, stdin=stdin,
+                          stdout=stdout if stdout is not None else subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None)
 
 
 def prepare() -> dict[str, str]:
@@ -141,36 +147,72 @@ def main() -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare-only', action='store_true')
     modes.add_argument('--build-only', action='store_true')
+    modes.add_argument('--database-only', action='store_true', help='首次仅准备统一配置、数据库及结构')
+    modes.add_argument('--validate-stack', action='store_true', help='准备统一配置并检查资源接续计划，不停止服务')
     args = parser.parse_args()
+    stack = None
     try:
+        if args.validate_stack:
+            env = prepare_env()
+            command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
+            planned = Stack(command, env)
+            migrate = planned.prepare()
+            print(json.dumps({'compose': str(COMPOSE), 'postgresMigrationRequired': migrate,
+                              'persistentVolumes': ['stocksieve-postgres-data', 'stocksieve-backend-state']}, ensure_ascii=False))
+            return 0
+        if args.database_only:
+            env = prepare_env()
+            command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
+            stack = Stack(command, env)
+            migrate = stack.prepare()
+            stack.start_database(migrate, database_only=True)
+            command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
+            stack.finish()
+            print('数据库已在backend/compose.yaml下就绪，私有配置位于backend/.env。')
+            return 0
         record = prepare()
         if args.prepare_only:
             return 0
         base_image = local_base(args.base_image, record)
         check_production_dependencies()
-        if not args.build_only:
-            # 部署前直接对齐项目SQL中的约束；先验证现有记录，不重新初始化业务表。
-            command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
         command(['docker', 'build', '--pull=false', '--file', str(ROOT / 'deploy/docker/Dockerfile'),
                  '--build-arg', f'STOCKSIEVE_BASE_IMAGE={base_image}', '--tag', args.image, str(ROOT)])
         if args.build_only:
             return 0
-        env = {**os.environ, 'STOCKSIEVE_BACKEND_IMAGE': args.image}
-        compose = ['docker', 'compose', '-f', str(COMPOSE)]
-        command([*compose, 'config', '--quiet'], env=env)
+        env = {**prepare_env(), 'STOCKSIEVE_BACKEND_IMAGE': args.image}
+        command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
+        stack = Stack(command, env)
+        migrate = stack.prepare()
+        stack.start_database(migrate)
+        # PG健康后直接对齐项目SQL约束；既有数据只审计、校验，不重新初始化。
+        command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
+        compose = stack.compose
         command([*compose, 'run', '--rm', '--no-deps', 'api', 'check-db'], env=env)
         command([*compose, 'up', '-d', '--no-build', '--pull', 'never', 'api', 'worker', 'scheduler'], env=env)
         # Compose旧版本对没有healthcheck的后台进程无法使用--wait，只等待API的真实健康检查。
         command([*compose, 'up', '-d', '--no-build', '--pull', 'never', '--wait', 'api'], env=env)
         running = set(command([*compose, 'ps', '--status', 'running', '--services'], capture=True, env=env).stdout.splitlines())
-        if not {'api', 'worker', 'scheduler'} <= running:
+        if not {'postgres', 'api', 'worker', 'scheduler'} <= running:
             raise RuntimeError('后端进程未全部处于运行状态。')
         port = env.get('STOCKSIEVE_API_PORT', '8000')
         command([*compose, 'exec', '-T', 'api', '/usr/local/bin/uv', 'run', '--frozen', '--no-dev', '--no-sync',
                  'python', 'http_check.py', '--base-url', f'http://127.0.0.1:{port}'], env=env)
+        command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', 'run.py', 'check-config'], env=env)
+        overridden = command([*compose, 'run', '--rm', '--no-deps', '--env', 'STOCKSIEVE_HISTORY_TRADING_DAYS=250',
+            '--env', 'STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=500', 'api', 'check-config'], capture=True, env=env)
+        active = json.loads(overridden.stdout)
+        if active['historyTradingDays'] != 250 or active['historyMaxTradingDays'] != 500:
+            raise RuntimeError('历史配置的容器环境覆盖校验失败。')
+        print('历史配置容器覆盖校验通过：250/500个交易日，仅检查配置，未执行行情同步。')
+        stack.finish()
         print('容器已通过基础HTTP检查；账号与真实数据验收仍需提供登录配置并运行完整检查。')
         return 0
     except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
+        if stack:
+            try:
+                stack.rollback()
+            except Exception:
+                print('自动恢复未完成；原数据卷与数据库备份保留，请核对容器状态。')
         print(f'部署未完成：{error}')
         return 2
 

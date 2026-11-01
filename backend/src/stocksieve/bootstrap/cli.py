@@ -37,6 +37,7 @@ def main() -> int:
     api.add_argument('--port', type=int, default=8000)
     sub.add_parser('worker')
     sub.add_parser('scheduler')
+    sub.add_parser('check-config', help='只读显示非敏感的历史窗口及运行模式配置')
     check = sub.add_parser('check-db')
     check.add_argument('--counts', action='store_true', help='只读显示public关键业务表行数与剩余临时测试schema数量')
     check.add_argument('--constraints', action='store_true', help='只读显示真实任务约束，核对现有数据库与初始化定义是否一致')
@@ -96,14 +97,19 @@ def main() -> int:
                 TencentMetadata,
             )
             wire = BaostockWire(policy, settings.state_dir / 'baostock-wire')
-            base_source = BaostockSource(wire, settings.state_dir / 'baostock-market.sqlite', metadata=TencentMetadata(policy, settings.state_dir / 'source-cache'))
+            base_source = BaostockSource(wire, settings.state_dir / 'baostock-market.sqlite',
+                history_days=settings.history_trading_days, history_max_days=settings.history_max_trading_days,
+                metadata=TencentMetadata(policy, settings.state_dir / 'source-cache'))
             registry.register(base_source)
         if set(settings.enabled_sources) - registry.sources.keys():
             raise RuntimeError('请求启用的渠道尚无通过覆盖验证的适配器；不能仅靠配置将候选源标为可用。')
         database = Database(settings.database_url)
         runtime = create_runtime(settings)
         service = API(database, settings, registry, runtime)
-        if args.command == 'check-db':
+        if args.command == 'check-config':
+            print(json.dumps({'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
+                              'marketBoards': list(settings.market_boards), 'aiMode': settings.ai_mode}, ensure_ascii=False))
+        elif args.command == 'check-db':
             inspector = inspect(database.engine)
             for name, table in table_metadata.tables.items():
                 if name not in inspector.get_table_names():

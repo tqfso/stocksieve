@@ -24,6 +24,8 @@ class Settings:
     default_source: str = 'sina'
     request_interval: float = 10
     source_daily_limit: int = 400
+    history_trading_days: int = 150
+    history_max_trading_days: int = 0
     retry_minutes: int = 10
     readiness_hours: int = 4
     lease_seconds: int = 120
@@ -39,7 +41,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> 'Settings':
         values: dict[str, str] = {}
-        for local in (ROOT / 'deploy/postgres/.env', ROOT / '.env'):
+        central = ROOT / '.env'
+        # 统一配置存在时只读取它；旧位置仅兼容尚未迁移的独立数据库部署。
+        for local in (central,) if central.exists() else (ROOT / 'deploy/postgres/.env',):
             if not local.exists():
                 continue
             for line in local.read_text().splitlines():
@@ -63,6 +67,8 @@ class Settings:
                    default_source=values.get('STOCKSIEVE_DEFAULT_SOURCE', 'sina'),
                    request_interval=float(values.get('STOCKSIEVE_SOURCE_INTERVAL_SECONDS', '10')),
                    source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '400')),
+                   history_trading_days=int(values.get('STOCKSIEVE_HISTORY_TRADING_DAYS', '150')),
+                   history_max_trading_days=int(values.get('STOCKSIEVE_HISTORY_MAX_TRADING_DAYS', '0')),
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
                    ai_model=values.get('STOCKSIEVE_AI_MODEL'), ai_protocol=values.get('STOCKSIEVE_AI_PROTOCOL', 'chat_completions'),
                    ai_mode=values.get('STOCKSIEVE_AI_MODE', 'mock'),
@@ -75,6 +81,10 @@ class Settings:
         return value.lower() == 'true'
 
     def __post_init__(self) -> None:
+        if type(self.history_trading_days) is not int or self.history_trading_days < 140:
+            raise ValueError('STOCKSIEVE_HISTORY_TRADING_DAYS需为至少140的整数。')
+        if type(self.history_max_trading_days) is not int or self.history_max_trading_days < 0 or self.history_max_trading_days and self.history_max_trading_days < self.history_trading_days:
+            raise ValueError('STOCKSIEVE_HISTORY_MAX_TRADING_DAYS需为0，或不小于补齐天数。')
         if not math.isfinite(self.request_interval) or self.request_interval < 10 or self.source_daily_limit < 1:
             raise ValueError('默认渠道间隔不得低于10秒，日预算必须为正数。')
         if self.ai_protocol not in {'chat_completions', 'responses'}:

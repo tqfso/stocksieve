@@ -2,8 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
+from stocksieve.modules.market.domain.history import HistoryPolicy
 from stocksieve.modules.market.domain.models import Bar, Stock, StockState
 from stocksieve.shared.errors import DomainError
 
@@ -41,6 +42,14 @@ class Source(Protocol):
     async def precheck(self, target: date) -> list[dict[str, Any]]: ...
     async def universe(self, target: date, known: tuple[Stock, ...]) -> tuple[Stock, ...]: ...
     async def daily(self, stock: Stock, target: date, history: tuple[Bar, ...]) -> DailyPacket: ...
+
+
+@runtime_checkable
+class HistorySource(Protocol):
+    """支持按任务固定历史配置及扩展真实日历的可选渠道能力。"""
+
+    def for_history(self, policy: HistoryPolicy) -> Source: ...
+    async def history_calendar(self, target: date) -> tuple[dict[str, dict[date, CalendarDay]], datetime]: ...
 
 
 class CatalogOnlySource:

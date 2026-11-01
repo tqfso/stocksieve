@@ -4,7 +4,8 @@ import asyncio
 import json
 import sqlite3
 import time
-from datetime import date, datetime, timedelta
+from copy import copy
+from datetime import date, datetime
 from datetime import time as daytime
 from decimal import Decimal
 from pathlib import Path
@@ -21,13 +22,14 @@ from stocksieve.modules.ingestion.infrastructure.baostock_wire import BaostockWi
 from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
     TencentMetadata,
 )
+from stocksieve.modules.market.domain.history import HistoryPolicy
 from stocksieve.modules.market.domain.models import (
     Bar,
     Stock,
     StockState,
     decimal_value,
 )
-from stocksieve.shared.errors import DomainError
+from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.time import SHANGHAI
 
 FOUR_BOARDS = frozenset({'SSE_MAIN', 'SZSE_MAIN', 'CHINEXT', 'STAR'})
@@ -55,8 +57,9 @@ class BaostockSource:
     supported_kinds = frozenset({'initialize', 'catalog', 'daily'})
     boards = FOUR_BOARDS
 
-    def __init__(self, wire: BaostockWire, cache: Path, history_days: int = 150, metadata: TencentMetadata | None = None) -> None:
+    def __init__(self, wire: BaostockWire, cache: Path, history_days: int = 150, metadata: TencentMetadata | None = None, history_max_days: int = 0) -> None:
         self.wire, self.cache, self.history_days = wire, cache, history_days
+        self.history_policy = HistoryPolicy(history_days, history_max_days)
         self.metadata = metadata
         self.provenance = {'prices': 'baostock', 'volume': 'baostock', 'amount': 'baostock',
                            'calendar': 'baostock', 'industry': 'baostock', 'adjustment': 'baostock-preclose-relative-v1'}
@@ -77,6 +80,20 @@ class BaostockSource:
     def read(self, result: Any) -> list[dict[str, str]]:
         return self.wire.rows(result)
 
+    def for_history(self, policy: HistoryPolicy) -> 'BaostockSource':
+        """共享受控连接和成功缓存，按任务克隆历史配置，避免新配置改写排队任务。"""
+        source = copy(self)
+        source.history_days, source.history_policy = policy.initial_days, policy
+        if policy != self.history_policy:
+            source._days = None
+        return source
+
+    async def history_calendar(self, target: date) -> tuple[dict[str, dict[date, CalendarDay]], datetime]:
+        """返回实际取得的历史日历及获取时间，供用例扩展持久化范围。"""
+        days = await asyncio.to_thread(self.calendar, target)
+        assert self._calendar_fetched_at is not None
+        return {exchange: days for exchange in ('SSE', 'SZSE')}, self._calendar_fetched_at
+
     def directory(self) -> list[dict[str, str]]:
         if self._directory is None or time.time() - self._directory_at > 600:
             self._directory = self.read(self.wire.sdk.query_stock_basic())
@@ -87,7 +104,8 @@ class BaostockSource:
 
     def calendar(self, target: date) -> dict[date, CalendarDay]:
         today = datetime.now(SHANGHAI).date()
-        if self._days is None or target not in self._days or self._calendar_fetched_at is None or self._calendar_fetched_at.date() != today:
+        start = self.history_policy.calendar_start(target)
+        if self._days is None or target not in self._days or min(self._days) > start or self._calendar_fetched_at is None or self._calendar_fetched_at.date() != today:
             rows = None
             # 复用此前已成功保存的官方SDK证据，不因正式部署重复抓取同一份日历。
             for file in sorted(self.wire.policy.directory.glob('baostock-*.json'), reverse=True):
@@ -97,12 +115,12 @@ class BaostockSource:
                 record = next((item for item in saved.get('results', []) if item.get('id') == 'calendar' and item.get('errorCode') == '0' and item.get('completeFirstPage')), None)
                 if record and record.get('fields') == ['calendar_date', 'is_trading_day']:
                     candidate = [dict(zip(record['fields'], values)) for values in record['rows']]
-                    if any(row['calendar_date'] == str(target) for row in candidate) and min(row['calendar_date'] for row in candidate) <= str(target - timedelta(days=300)):
+                    if any(row['calendar_date'] == str(target) for row in candidate) and min(row['calendar_date'] for row in candidate) <= str(start):
                         rows = candidate
                         self._calendar_fetched_at = datetime.fromtimestamp(file.stat().st_mtime, SHANGHAI)
                         break
             if rows is None:
-                rows = self.read(self.wire.sdk.query_trade_dates(str(target - timedelta(days=730)), str(date(target.year, 12, 31))))
+                rows = self.read(self.wire.sdk.query_trade_dates(str(start), str(date(target.year, 12, 31))))
                 self._calendar_fetched_at = datetime.now(SHANGHAI)
             days: dict[date, CalendarDay] = {}
             for row in rows:
@@ -206,9 +224,10 @@ class BaostockSource:
     async def universe(self, target: date, known: tuple[Stock, ...]) -> tuple[Stock, ...]:
         def prepare() -> tuple[Stock, ...]:
             stocks = self.stocks(target)
-            dates = sorted(day for day, entry in self.calendar(target).items() if entry.is_open and day <= target)[-self.history_days:]
-            if len(dates) < 140:
-                raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '历史交易日不足140天。', 503)
+            try:
+                dates = self.history_policy.initial_dates((day for day, entry in self.calendar(target).items() if entry.is_open), target)
+            except MissingData as error:
+                raise DomainError('TRADING_CALENDAR_UNAVAILABLE', str(error), 503) from error
             with sqlite3.connect(self.cache) as connection:
                 prepared = {day for (day,) in connection.execute('SELECT day FROM days')}
             completed = len(prepared & {str(day) for day in dates})
@@ -244,8 +263,11 @@ class BaostockSource:
     async def daily(self, stock: Stock, target: date, history: tuple[Bar, ...]) -> DailyPacket:
         def load() -> DailyPacket:
             code = self.vendor_code(stock)
+            floor = self.history_policy.cutoff((day for day, entry in self.calendar(target).items() if entry.is_open), target) if self.history_policy.max_days else None
             with sqlite3.connect(self.cache) as connection:
-                rows = [json.loads(value) for (value,) in connection.execute('SELECT payload FROM raw WHERE code=? AND day<=? ORDER BY day', (code, str(target)))]
+                query = 'SELECT payload FROM raw WHERE code=? AND day<=?' + (' AND day>=?' if floor else '') + ' ORDER BY day'
+                parameters = (code, str(target), str(floor)) if floor else (code, str(target))
+                rows = [json.loads(value) for (value,) in connection.execute(query, parameters)]
             current = next((row for row in reversed(rows) if row['date'] == str(target)), None)
             if not current:
                 raise DomainError('DATA_INCOMPLETE', '证券目标日行情缺失。', 503)

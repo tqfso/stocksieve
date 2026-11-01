@@ -101,6 +101,8 @@ class Tasks:
         options = dict(options or {})
         if category == 'sync':
             options.setdefault('marketBoards', list(self.settings.market_boards))
+            options.setdefault('historyDays', self.settings.history_trading_days)
+            options.setdefault('historyMaxDays', self.settings.history_max_trading_days)
         connection.execute(t.tasks.insert().values(id=task_id, category=category, kind=kind, created_by=user_id,
             trigger='scheduled' if scheduled_for else 'manual', data_source=source, target_date=target,
             stock_id=stock_id, input_snapshot_id=snapshot_id, strategy_code=strategy, status='queued', progress=0,

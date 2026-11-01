@@ -1,0 +1,78 @@
+# 本文件统一管理PostgreSQL、API、worker和scheduler，沿用已有数据卷与本机镜像。
+name: stocksieve-backend
+
+x-app: &app
+  image: ${STOCKSIEVE_BACKEND_IMAGE:-stocksieve-backend:local}
+  pull_policy: never
+  network_mode: host
+  restart: unless-stopped
+  env_file: [.env]
+  environment:
+    STOCKSIEVE_STATE_DIR: /var/lib/stocksieve
+    STOCKSIEVE_RATE_DIR: /var/lib/stocksieve-rate
+    UV_CACHE_DIR: /var/lib/stocksieve/uv-cache
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    - backend_state:/var/lib/stocksieve
+    - type: bind
+      source: ./.source-probe
+      target: /var/lib/stocksieve-rate
+    - type: bind
+      source: ./.state/baostock-wire
+      target: /var/lib/stocksieve/baostock-wire
+    - type: bind
+      source: ./.state/source-cache
+      target: /var/lib/stocksieve/source-cache
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    pull_policy: never
+    container_name: stocksieve-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${STOCKSIEVE_POSTGRES_USER:-stocksieve_admin}
+      POSTGRES_DB: ${STOCKSIEVE_POSTGRES_DB:-stocksieve}
+      POSTGRES_PASSWORD: ${STOCKSIEVE_POSTGRES_PASSWORD:?请先通过部署脚本准备backend/.env}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --encoding=UTF8
+    command: [postgres, -c, timezone=Asia/Shanghai, -c, log_timezone=Asia/Shanghai]
+    ports:
+      - "0.0.0.0:${STOCKSIEVE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 60s
+  api:
+    <<: *app
+    command: [api, --host, 127.0.0.1, --port, "${STOCKSIEVE_API_PORT:-8000}"]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${STOCKSIEVE_API_PORT:-8000}/health/ready', timeout=5).close()"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 15s
+  worker:
+    <<: *app
+    command: [worker]
+  scheduler:
+    <<: *app
+    command: [scheduler]
+
+volumes:
+  postgres_data:
+    name: stocksieve-postgres-data
+    external: true
+  backend_state:
+    name: stocksieve-backend-state
+    external: true
