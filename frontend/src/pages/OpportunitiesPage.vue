@@ -7,28 +7,37 @@ import StatePanel from '../components/StatePanel.vue';
 import { BOARDS, isBoard } from '../boards.ts';
 import { MARKET_CAP_RANGES, TURNOVER_RANGES, withSavedRange } from '../filter-ranges.ts';
 import type { RangeOption } from '../filter-ranges.ts';
-import { DATA_DATE, STOCKS, STRATEGIES, STRATEGY_ORDER, isWaitingStrategy, selectionReason, strategyMetric } from '../mock/fixtures.ts';
-import { listStocks } from '../mock/service.ts';
-import { useReview } from '../stores.ts';
-import type { Stock, StockQuery, Strategy } from '../types.ts';
+import { STRATEGIES, STRATEGY_ORDER, isWaitingStrategy, selectionReason, strategyMetric } from '../strategies.ts';
+import { ApiError, filters, formatNumber, listStocks, quoteClass } from '../api.ts';
+import type { LiveStock as Stock } from '../api.ts';
+import type { Board, StockQuery, Strategy } from '../types.ts';
 const route = useRoute();
 const router = useRouter();
-const review = useReview();
 const query = reactive<StockQuery>({ strategy: 'short', search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true });
 const rows = ref<Stock[]>([]);
 const loading = ref(true);
 const error = ref('');
 const page = ref(1);
 const pageSize = 6;
+const total = ref(0);
+const snapshotId = ref('');
+const dataDate = ref('');
+const catalogAsOfAt = ref<string | null>(null);
+const needsData = ref(false);
+const counts = ref<Partial<Record<Strategy, number>>>({});
+const industryCount = ref(0);
+let loadedFilters = '';
+let restoring = false;
 const strategyOpen = ref(false);
 let requestId = 0;
 let debounce: ReturnType<typeof setTimeout> | undefined;
 const strategies = STRATEGY_ORDER;
-const industries = [...new Set(STOCKS.map((stock) => stock.industry))];
-const concepts = [...new Set(STOCKS.flatMap((stock) => stock.concepts))];
+const industries = ref<{ id: string; name: string }[]>([]);
+const concepts = ref<{ id: string; name: string }[]>([]);
+const activeBoards = ref<Board[]>([]);
+const coverage = ref<Record<string, string>>({});
 const strategy = computed(() => STRATEGIES[query.strategy]);
-const visibleRows = computed(() => rows.value.slice((page.value - 1) * pageSize, page.value * pageSize));
-const industryCount = computed(() => new Set(rows.value.map((stock) => stock.industry)).size);
+const visibleRows = computed(() => rows.value);
 const invalidTurnoverRange = computed(() => query.minTurnover !== undefined && query.maxTurnover !== undefined && query.minTurnover > query.maxTurnover);
 const invalidMarketCapRange = computed(() => query.minMarketCap !== undefined && query.maxMarketCap !== undefined && query.minMarketCap > query.maxMarketCap);
 const invalidRange = computed(() => invalidTurnoverRange.value || invalidMarketCapRange.value);
@@ -51,6 +60,7 @@ const { options: turnoverOptions, selection: turnoverRange } = useRangeSelection
 const { options: marketCapOptions, selection: marketCapRange } = useRangeSelection(MARKET_CAP_RANGES, 'minMarketCap', 'maxMarketCap', '亿元');
 /** 从 URL 恢复筛选，支持详情返回、浏览器前进后退与刷新。 */
 function restore(): void {
+    restoring = true;
     const read = (key: string): string => typeof route.query[key] === 'string' ? route.query[key] as string : '';
     const numeric = (key: string): number | undefined => { const value = read(key); return value && Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : undefined; };
     query.strategy = strategies.includes(read('strategy') as Strategy) ? read('strategy') as Strategy : 'short';
@@ -66,9 +76,12 @@ function restore(): void {
     query.sort = ['change', 'turnover', 'amount', 'totalMarketCap'].includes(read('sort')) ? read('sort') as StockQuery['sort'] : 'default';
     query.descending = read('order') !== 'asc';
     page.value = Math.max(1, Number.parseInt(read('page'), 10) || 1);
+    snapshotId.value = read('snapshotId');
+    restoring = false;
 }
 function syncUrl(): void {
     const values: Record<string, string> = { strategy: query.strategy };
+    if (snapshotId.value) values.snapshotId = snapshotId.value;
     for (const key of ['search', 'industry', 'concept', 'board'] as const)
         if (query[key])
             values[key] = query[key];
@@ -92,42 +105,55 @@ async function load(): Promise<void> {
     const id = ++requestId;
     loading.value = true;
     error.value = '';
+    needsData.value = false;
     try {
         if (invalidRange.value) {
             rows.value = [];
             return;
         }
-        const result = await listStocks({ ...query }, review.listScenario);
+        const result = await listStocks({ ...query }, page.value, pageSize, snapshotId.value || undefined);
         if (id !== requestId)
             return;
-        rows.value = result;
-        page.value = Math.min(page.value, Math.max(1, Math.ceil(result.length / pageSize)));
+        rows.value = result.items;
+        total.value = result.total;
+        counts.value = result.summary.strategyCounts;
+        industryCount.value = result.summary.industryCount;
+        snapshotId.value = result.snapshot.id;
+        dataDate.value = result.snapshot.dataDate;
+        catalogAsOfAt.value = result.snapshot.catalogAsOfAt ?? null;
+        if (loadedFilters !== result.snapshot.id) {
+            const options = await filters(result.snapshot.id);
+            if (id !== requestId) return;
+            industries.value = options.industries; concepts.value = options.concepts; activeBoards.value = options.boards.map(board => board.id); coverage.value = options.coverage; loadedFilters = result.snapshot.id;
+        }
+        syncUrl();
     }
     catch (cause) {
-        if (id === requestId)
+        if (id === requestId) {
             error.value = (cause as Error).message;
+            needsData.value = cause instanceof ApiError && ['DATA_NOT_READY', 'DATA_NOT_INITIALIZED'].includes(cause.code);
+        }
     }
     finally {
         if (id === requestId)
             loading.value = false;
     }
 }
-function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true }); page.value = 1; review.listScenario = 'normal'; }
+function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true }); page.value = 1; void load(); }
 function sortBy(key: StockQuery['sort']): void { query.descending = query.sort === key ? !query.descending : true; query.sort = key; }
-function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.code}`, query: { strategy: query.strategy, back: route.fullPath } }); }
+function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.stockId}`, query: { strategy: query.strategy, snapshotId: stock.snapshotId, back: route.fullPath } }); }
 restore();
 void load();
-watch(query, () => { page.value = 1; syncUrl(); clearTimeout(debounce); ++requestId; loading.value = true; debounce = setTimeout(() => { void load(); }, 220); });
-watch(page, syncUrl);
+watch(query, () => { if (restoring) return; page.value = 1; syncUrl(); clearTimeout(debounce); ++requestId; loading.value = true; debounce = setTimeout(() => { void load(); }, 220); }, { flush: 'sync' });
+watch(page, () => { if (!restoring) { syncUrl(); void load(); } }, { flush: 'sync' });
 watch(() => route.query, () => {
-    const before = JSON.stringify(query);
+    const before = JSON.stringify([query, page.value, snapshotId.value]);
     restore();
-    if (before !== JSON.stringify(query)) {
+    if (before !== JSON.stringify([query, page.value, snapshotId.value])) {
         clearTimeout(debounce);
         void load();
     }
 });
-watch(() => review.listScenario, () => { page.value = 1; void load(); });
 onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
 </script>
 
@@ -142,7 +168,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
       <span class="status-dot" />
       <span>
         收盘数据
-        <small>{{ DATA_DATE }} · 固定示例</small>
+        <small>{{ dataDate || '等待发布' }}</small>
       </span>
     </div>
   </div>
@@ -157,7 +183,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     >
       <strong>{{ STRATEGIES[key].name }}机会</strong>
       <span>{{ STRATEGIES[key].subtitle }}</span>
-      <b>{{ STOCKS.filter(stock => stock.strategies.includes(key)).length }}</b>
+      <b>{{ counts[key] ?? '—' }}</b>
     </button>
   </div>
   <section class="strategy-banner">
@@ -181,7 +207,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <div class="summary-card">
       <span>筛选结果</span>
       <strong>
-        {{ loading ? '—' : rows.length }}
+        {{ loading ? '—' : total }}
         <small>只股票</small>
       </strong>
       <p>同一股票可符合多个策略</p>
@@ -219,31 +245,31 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
       </label>
       <label>
         行业
-        <el-select v-model="query.industry" placeholder="全部行业" clearable>
-          <el-option v-for="industry in industries" :key="industry" :label="industry" :value="industry" />
+        <el-select v-model="query.industry" :placeholder="coverage.industry === 'unavailable' ? '此快照行业未知' : '全部行业'" :disabled="coverage.industry === 'unavailable'" clearable>
+          <el-option v-for="industry in industries" :key="industry.id" :label="industry.name" :value="industry.id" />
         </el-select>
       </label>
       <label>
         题材 / 概念
-        <el-select v-model="query.concept" placeholder="全部概念" clearable>
-          <el-option v-for="concept in concepts" :key="concept" :label="concept" :value="concept" />
+        <el-select v-model="query.concept" :placeholder="coverage.concepts === 'unavailable' ? '此快照题材未知' : '全部概念'" :disabled="coverage.concepts === 'unavailable'" clearable>
+          <el-option v-for="concept in concepts" :key="concept.id" :label="concept.name" :value="concept.id" />
         </el-select>
       </label>
       <label>
         上市板块
         <el-select v-model="query.board" placeholder="全部板块" clearable>
-          <el-option v-for="(board, id) in BOARDS" :key="id" :label="board.name" :value="id" />
+          <el-option v-for="id in activeBoards" :key="id" :label="BOARDS[id].name" :value="id" />
         </el-select>
       </label>
       <label>
         换手率
-        <el-select v-model="turnoverRange" placeholder="不限" clearable aria-label="换手率区间">
+        <el-select v-model="turnoverRange" placeholder="不限" :disabled="coverage.turnover === 'unavailable'" clearable aria-label="换手率区间">
           <el-option v-for="option in turnoverOptions" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
       </label>
       <label>
         总市值
-        <el-select v-model="marketCapRange" placeholder="不限" clearable aria-label="总市值区间">
+        <el-select v-model="marketCapRange" :placeholder="coverage.totalMarketCap === 'unavailable' ? '此快照市值未知' : '不限'" :disabled="coverage.totalMarketCap === 'unavailable'" clearable aria-label="总市值区间">
           <el-option v-for="option in marketCapOptions" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
       </label>
@@ -255,18 +281,18 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <div class="section-caption results-caption">
       <div>
         <strong>{{ strategy.name }}机会列表</strong>
-        <span class="muted">{{ loading ? '正在筛选' : `${rows.length} 只符合当前条件` }}</span>
+        <span class="muted">{{ loading ? '正在筛选' : `${total} 只符合当前条件` }}</span>
       </div>
-      <span class="tiny-label">人民币 / 示例数据</span>
+      <span class="tiny-label">人民币 / 收盘数据</span>
     </div>
-    <StatePanel v-if="loading" kind="loading" title="正在筛选机会" description="正在读取模拟收盘数据…" />
+    <StatePanel v-if="loading" kind="loading" title="正在筛选机会" description="正在读取已发布收盘快照…" />
     <StatePanel
       v-else-if="error"
       kind="error"
-      title="列表加载失败"
+      :title="needsData ? '收盘数据尚未准备好' : '列表加载失败'"
       :description="error"
       action="重试"
-      @action="review.listScenario = 'normal'"
+      @action="load"
     />
     <StatePanel
       v-else-if="!rows.length"
@@ -305,18 +331,18 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
                 <button class="stock-name" @click="openStock(stock)">{{ stock.name }}</button>
                 <div class="stock-meta">
                   <span>{{ stock.code }}</span>
-                  <span class="board-tag">{{ BOARDS[stock.board].name }}</span>
+                  <span class="board-tag">{{ stock.board ? BOARDS[stock.board].name : '未知板块' }}</span>
                   <span>{{ stock.industry }}</span>
                 </div>
                 <div class="strategy-tags" aria-label="所属策略">
                   <span v-for="key in stock.strategies" :key="key" :class="{ selected: key === query.strategy }">{{ STRATEGIES[key].name }}</span>
                 </div>
               </td>
-              <td class="numeric">{{ stock.price.toFixed(2) }}</td>
-              <td class="numeric" :class="stock.change >= 0 ? 'rise' : 'fall'">{{ stock.change >= 0 ? '+' : '' }}{{ stock.change.toFixed(2) }}%</td>
-              <td class="numeric">{{ stock.turnover.toFixed(2) }}%</td>
+              <td class="numeric">{{ formatNumber(stock.price) }}</td>
+              <td class="numeric" :class="quoteClass(stock.change)">{{ stock.change !== null && stock.change >= 0 ? '+' : '' }}{{ formatNumber(stock.change) }}%</td>
+              <td class="numeric">{{ formatNumber(stock.turnover) }}%</td>
               <td class="numeric">
-                {{ stock.amount.toFixed(1) }}
+                {{ formatNumber(stock.amount, 1) }}
                 <small>亿</small>
               </td>
               <td class="numeric">{{ stock.totalMarketCap === null ? '—' : stock.totalMarketCap.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }}</td>
@@ -343,7 +369,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
         <el-pagination
           v-model:current-page="page"
           :page-size="pageSize"
-          :total="rows.length"
+          :total="total"
           layout="prev, pager, next"
           small
         />
@@ -352,7 +378,8 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
   </section>
   <p class="page-footnote">
     <AppIcon name="info" :size="14" />
-    信号按收盘数据观察。当前指标未经真实策略计算，仅供产品交互评审。
+    信号基于所选收盘快照计算；新快照发布不会改写当前快照的历史结果。
+    <span v-if="catalogAsOfAt">行业标签获取于 {{ new Date(catalogAsOfAt).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }) }}（北京时间），可能晚于行情日期。</span>
   </p>
   <el-dialog v-model="strategyOpen" :title="`${strategy.name}策略 · ${strategy.subtitle}`" width="min(600px, 92vw)">
     <p class="muted">观察周期：{{ strategy.period }}。真实策略需满足全部入选条件。</p>
@@ -364,6 +391,6 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
       <strong>失效条件</strong>
       <p>{{ strategy.invalid }}</p>
     </div>
-    <p class="muted">共用规则：剔除当日停牌、ST、退市整理、历史不足等情况；近 20 个交易日日均成交额不低于 3,000 万元。原型使用固定样例，不执行这些计算。</p>
+    <p class="muted">共用规则：剔除当日停牌、ST、退市整理、历史不足等情况；近 20 个交易日日均成交额不低于 3,000 万元。所有条件与参考价由后端计算。</p>
   </el-dialog>
 </template>

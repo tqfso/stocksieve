@@ -35,6 +35,7 @@ class Stock:
     board: str | None
     listed_on: date | None = None
     delisted_on: date | None = None
+    source_code: str | None = None
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isascii() or not self.code.isdigit():

@@ -10,6 +10,7 @@ from . import tables as t
 from .auth import Auth
 from .config import Settings
 from .database import Database, utc
+from .domain import BOARDS
 from .errors import DomainError
 from .http import REQUEST_ID, USER, body, envelope, success
 from .market import Market, strategy_catalog
@@ -29,7 +30,7 @@ class API:
                  runtime: Runtime | None = None, clock: Callable[[], datetime] | None = None) -> None:
         self.db, self.settings = database, settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.registry = registry or Registry()
+        self.registry = registry or Registry(settings.market_boards)
         self.runtime = runtime
         self.auth = Auth(database, self.clock)
         self.market = Market(database)
@@ -48,6 +49,13 @@ class API:
             web.post('/api/v1/stocks/{stockId}/analyses', self.submit_analysis),
             web.get('/api/v1/analyses', self.analysis_list), web.get('/api/v1/analyses/{analysisId}', self.analysis_detail),
         ])
+        # 仅提供编译后的前端目录；不把项目源码、配置或状态目录映射到HTTP。
+        if (settings.web_dir / 'index.html').is_file():
+            self.app.router.add_get('/', self.index)
+            self.app.router.add_static('/', settings.web_dir, follow_symlinks=False)
+
+    async def index(self, request: web.Request) -> web.FileResponse:
+        return web.FileResponse(self.settings.web_dir / 'index.html')
 
     @web.middleware
     async def authenticate(self, request: web.Request, handler: Any) -> web.StreamResponse:
@@ -112,17 +120,18 @@ class API:
                 stamp = connection.scalar(select(func.max(t.tasks.c.finished_at)).where(t.tasks.c.category == 'sync', t.tasks.c.kind == kind, t.tasks.c.status == 'succeeded'))
                 times[kind] = utc(stamp).isoformat() if stamp else None
             initialized = self.tasks.initialized(connection)
-            counts = dict(connection.execute(select(t.stocks.c.exchange, func.count()).group_by(t.stocks.c.exchange)).all()) if initialized else {}
+            counts = dict(connection.execute(select(t.stocks.c.exchange, func.count()).where(t.stocks.c.board.in_(self.settings.market_boards)).group_by(t.stocks.c.exchange)).all()) if initialized else {}
             snapshot = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published').order_by(t.snapshots.c.data_date.desc(), t.snapshots.c.published_at.desc(), t.snapshots.c.version.desc()).limit(1)).mappings().first()
-            # 必须有三个交易所完整日历及明确收盘时间，才能声称最近交易日。
-            calendar_rows = connection.execute(select(t.calendar).where(t.calendar.c.is_open.is_(True), t.calendar.c.close_at <= self.clock()).order_by(t.calendar.c.trade_date.desc())).mappings().all()
+            # 仅依据当前覆盖范围所需交易所的完整日历确定最近交易日。
+            exchanges = {BOARDS[board][1] for board in self.settings.market_boards}
+            calendar_rows = connection.execute(select(t.calendar).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.is_open.is_(True), t.calendar.c.close_at <= self.clock()).order_by(t.calendar.c.trade_date.desc())).mappings().all()
             latest = None
             for day in sorted({row['trade_date'] for row in calendar_rows}, reverse=True):
-                all_rows = connection.execute(select(t.calendar).where(t.calendar.c.trade_date == day)).mappings().all()
-                if {row['exchange'] for row in all_rows} == {'SSE', 'SZSE', 'BSE'} and all(row['is_open'] is False or (row['is_open'] is True and row['close_at'] is not None and utc(row['close_at']) <= self.clock()) for row in all_rows):
+                all_rows = connection.execute(select(t.calendar).where(t.calendar.c.trade_date == day, t.calendar.c.exchange.in_(exchanges))).mappings().all()
+                if {row['exchange'] for row in all_rows} == exchanges and all(row['is_open'] is False or (row['is_open'] is True and row['close_at'] is not None and utc(row['close_at']) <= self.clock()) for row in all_rows):
                     latest = day.isoformat()
                     break
-        return success(request, {'initialized': initialized, 'stockUpdatedAt': times['initialize'], 'catalogUpdatedAt': times['catalog'],
+        return success(request, {'initialized': initialized, 'stockUpdatedAt': times['initialize'], 'catalogUpdatedAt': times['catalog'], 'marketBoards': list(self.settings.market_boards),
             'latestTradingDate': latest, 'publishedSnapshot': self.market.snapshot_view(snapshot) if snapshot else None,
             'coverage': {'totalStocks': sum(counts.values()), 'byExchange': {key: counts.get(key, 0) for key in ('SSE', 'SZSE', 'BSE')}}, 'sources': self.registry.public()})
 

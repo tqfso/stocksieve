@@ -39,6 +39,32 @@ def prepare() -> dict[str, str]:
     import certifi
     output = ROOT / '.docker-build'
     output.mkdir(exist_ok=True)
+    # 挂载既有公开取数账本，保留探测阶段已消耗次数和冷却，容器不能另起空账本。
+    rate = ROOT / '.source-probe'
+    rate.mkdir(exist_ok=True)
+    if rate.is_symlink():
+        raise RuntimeError('取数账本目录不能是符号链接。')
+    for path in [rate, *rate.iterdir()]:
+        if path.is_symlink():
+            raise RuntimeError('取数账本中不能包含符号链接。')
+        os.chown(path, 10001, 10001)
+    # 仅共享公开源的成功响应缓存；管理员私有凭据不在这些挂载目录内。
+    for name in ('baostock-wire', 'source-cache'):
+        public_cache = ROOT / '.state' / name
+        public_cache.mkdir(parents=True, exist_ok=True)
+        for path in [public_cache, *public_cache.rglob('*')]:
+            if path.is_symlink():
+                raise RuntimeError('公开取数缓存不能包含符号链接。')
+            os.chown(path, 10001, 10001)
+    web = ROOT.parent / 'frontend/dist'
+    if not (web / 'index.html').is_file():
+        raise RuntimeError('请先在frontend目录执行npm run build，部署只使用已构建的前端文件。')
+    web_output = output / 'web'
+    if web_output.is_symlink():
+        raise RuntimeError('前端构建材料目录不能是符号链接。')
+    if web_output.exists():
+        shutil.rmtree(web_output)
+    shutil.copytree(web, web_output)
     shutil.copy2(uv, output / 'uv')
     runtime = output / 'python'
     if runtime.is_symlink():
@@ -59,7 +85,7 @@ def prepare() -> dict[str, str]:
               'uvVersion': command([uv, '--version'], capture=True).stdout.strip(),
               'uvSha256': hashlib.sha256((output / 'uv').read_bytes()).hexdigest()}
     (output / 'manifest.json').write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
-    print(f"已准备 uv、Python {record['pythonVersion']} 和公开CA。")
+    print(f"已准备 uv、Python {record['pythonVersion']}、前端构建和公开CA。")
     return record
 
 
@@ -122,6 +148,9 @@ def main() -> int:
             return 0
         base_image = local_base(args.base_image, record)
         check_production_dependencies()
+        if not args.build_only:
+            # 部署前直接对齐项目SQL中的约束；先验证现有记录，不重新初始化业务表。
+            command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
         command(['docker', 'build', '--pull=false', '--file', str(ROOT / 'deploy/docker/Dockerfile'),
                  '--build-arg', f'STOCKSIEVE_BASE_IMAGE={base_image}', '--tag', args.image, str(ROOT)])
         if args.build_only:
@@ -130,7 +159,12 @@ def main() -> int:
         compose = ['docker', 'compose', '-f', str(COMPOSE)]
         command([*compose, 'config', '--quiet'], env=env)
         command([*compose, 'run', '--rm', '--no-deps', 'api', 'check-db'], env=env)
-        command([*compose, 'up', '-d', '--no-build', '--pull', 'never', '--wait', 'api', 'worker', 'scheduler'], env=env)
+        command([*compose, 'up', '-d', '--no-build', '--pull', 'never', 'api', 'worker', 'scheduler'], env=env)
+        # Compose旧版本对没有healthcheck的后台进程无法使用--wait，只等待API的真实健康检查。
+        command([*compose, 'up', '-d', '--no-build', '--pull', 'never', '--wait', 'api'], env=env)
+        running = set(command([*compose, 'ps', '--status', 'running', '--services'], capture=True, env=env).stdout.splitlines())
+        if not {'api', 'worker', 'scheduler'} <= running:
+            raise RuntimeError('后端进程未全部处于运行状态。')
         port = env.get('STOCKSIEVE_API_PORT', '8000')
         command([*compose, 'exec', '-T', 'api', '/usr/local/bin/uv', 'run', '--frozen', '--no-dev', '--no-sync',
                  'python', 'http_check.py', '--base-url', f'http://127.0.0.1:{port}'], env=env)

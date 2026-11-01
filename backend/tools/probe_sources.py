@@ -11,6 +11,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -70,6 +71,19 @@ def make_plan(target: date, bse_code: str | None = None) -> list[Probe]:
         "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
         page="1", num="5", sort="symbol", asc="1", node="hs_a", symbol="",
     ), "sina_catalog"))
+    # 板块标识从渠道元数据发现，不仅凭股票代码前缀推定市场身份。
+    result.extend([
+        Probe("sina_nodes", "sina", "metadata",
+              "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodes", "sina_nodes"),
+        Probe("sina_count", "sina", "metadata", endpoint(
+              "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount", node="hs_a"), "sina_count"),
+    ])
+    for board, node in (("SSE_MAIN", "sh_a"), ("SZSE_MAIN", "sz_a"),
+                        ("CHINEXT", "cyb"), ("STAR", "kcb"), ("BSE", "hs_bjs")):
+        result.append(Probe(f"sina_catalog_{board}", "sina", "catalog", endpoint(
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
+            page="1", num="5", sort="symbol", asc="1", node=node, symbol="",
+        ), "sina_catalog", board))
     # 2. 不复权与前复权分别取有限历史，用于后续核查日期、单位和复权差异。
     begin = target - timedelta(days=400)
     for board, (prefix, code) in samples.items():
@@ -84,13 +98,24 @@ def make_plan(target: date, bse_code: str | None = None) -> list[Probe]:
             "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
             param=f"{prefix}{code},day,{begin},{target},640,",
         ), "tencent_history", board))
+        result.append(Probe(f"tencent_history_{board}_qfq", "tencent", "history", endpoint(
+            "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+            param=f"{prefix}{code},day,{begin},{target},640,qfq",
+        ), "tencent_history_qfq", board))
         result.append(Probe(f"sina_financial_{board}", "sina", "financial", endpoint(
             "https://quotes.sina.cn/cn/api/openapi.php/CompanyFinanceService.getFinanceReport2022",
             paperCode=f"{prefix}{code}", source="lrb", type="0", page="1", num="8",
         ), "sina_financial", board))
+        result.append(Probe(f"sina_history_{board}", "sina", "history",
+            f"https://finance.sina.com.cn/realstock/company/{prefix}{code}/hisdata_klc2/klc_kl.js",
+            "sina_compressed", board))
     # 3. 复权因子和分类成员均只探测一个样本；不能据此认定全市场覆盖。
     result.append(Probe("sina_qfq_factor", "sina", "factors",
                         "https://finance.sina.com.cn/realstock/company/sh600000/qfq.js", "sina_factor"))
+    result.append(Probe("sina_hfq_factor", "sina", "factors",
+                        "https://finance.sina.com.cn/realstock/company/sh600000/hfq.js", "sina_factor"))
+    result.append(Probe("sina_calendar", "sina", "calendar",
+                        "https://finance.sina.com.cn/realstock/company/klc_td_sh.txt", "sina_compressed"))
     for kind, host, market_filter, sample_board in (
         ("industry", "17", "m:90 t:2 f:!50", "BK1027"),
         ("concept", "79", "m:90 t:3 f:!50", "BK0715"),
@@ -172,16 +197,60 @@ def retry_delay(value: str | None, now: float) -> float:
     return max(86400.0, seconds)
 
 
+def tencent_volume_candidates(rows: list[Any]) -> list[int]:
+    """用原价区间与额/量关系诊断单位候选；仅形成探测证据，不自动换算业务数据。"""
+    candidates = {1, 100}
+    checked = 0
+    for row in rows:
+        if len(row) < 9:
+            continue
+        try:
+            low, high, volume, amount = (Decimal(str(row[index])) for index in (4, 3, 5, 8))
+        except InvalidOperation as error:
+            raise ValueError("腾讯原价或成交字段不是数值") from error
+        if any(not value.is_finite() for value in (low, high, volume, amount)) or low <= 0 or high < low or min(volume, amount) < 0:
+            raise ValueError("腾讯原价或成交数据不合法")
+        if volume == 0 or amount == 0:
+            continue
+        # 成交额候选口径为万元；允许两位小数价格和万元金额的舍入误差。
+        cash = amount * 10000
+        candidates &= {scale for scale in (1, 100)
+                       if (low - Decimal('.01')) * volume * scale - 100 <= cash
+                       <= (high + Decimal('.01')) * volume * scale + 100}
+        checked += 1
+    return sorted(candidates) if checked else []
+
+
 def inspect_payload(probe: Probe, body: str, target: date) -> dict[str, Any]:
     """仅校验有业务数据且结构基本可读；单位、覆盖与复权仍须人工核验。"""
     if body.lstrip().lower().startswith(("<!doctype", "<html")):
         raise ValueError("返回 HTML，可能为拦截或验证页面")
+    if probe.shape == "sina_compressed":
+        # 只保存严格的字符串赋值，解码前不将压缩资源算作可用行情。
+        matched = re.fullmatch(r'\s*var\s+[A-Za-z_$][\w$]*\s*=\s*("(?:[^"\\]|\\.)*")\s*;?\s*', body)
+        if not matched:
+            raise ValueError("压缩资源不是预期的单个字符串赋值")
+        value = json.loads(matched.group(1))
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9+/]+", value):
+            raise ValueError("压缩资源包含非预期字符")
+        return {"quality": "artifact_only", "decoded": False, "encodedCharacters": len(value)}
     if probe.shape == "sina_factor":
-        # 新浪返回 JS 赋值；只解析 JSON，不执行 eval 或远程 JavaScript。
-        body = body[body.index("=") + 1:].strip().rstrip(";")
+        # 上游SDK只读取首个赋值行；此处只解析该行JSON，不执行后续脚本。
+        matched = re.match(r'\s*var\s+[A-Za-z_$][\w$]*\s*=\s*([^\r\n]+)', body)
+        if not matched:
+            raise ValueError("复权因子不是预期的字符串赋值")
+        body = matched.group(1).strip().rstrip(";")
     payload = json.loads(body)
     summary: dict[str, Any] = {"quality": "sample_only"}
     dates: list[str] = []
+    if probe.shape == "sina_count":
+        if isinstance(payload, bool) or not isinstance(payload, (str, int)) or not str(payload).isascii() or not str(payload).isdigit() or int(payload) <= 0:
+            raise ValueError("目录计数不是正整数")
+        return {**summary, "sourceTotal": int(payload)}
+    if probe.shape == "sina_nodes":
+        if not isinstance(payload, list) or not payload:
+            raise ValueError("渠道分类元数据为空或格式无效")
+        return {**summary, "topLevelItems": len(payload)}
     if probe.shape == "em_catalog":
         data = payload["data"]
         rows = data["diff"]
@@ -196,13 +265,23 @@ def inspect_payload(probe: Probe, body: str, target: date) -> dict[str, Any]:
         if any(len(row) < 11 for row in rows):
             raise ValueError("日线字段数量不足")
         dates = [row[0] for row in rows]
-    elif probe.shape == "tencent_history":
+    elif probe.shape in {"tencent_history", "tencent_history_qfq"}:
+        if type(payload.get("code")) is not int or payload["code"] != 0:
+            raise ValueError("腾讯接口未返回成功状态")
         entry = next(iter(payload["data"].values()))
-        rows = entry.get("day", [])
+        rows = entry.get("qfqday" if probe.shape == "tencent_history_qfq" else "day", [])
+        if not rows and probe.shape == "tencent_history_qfq" and entry.get("day"):
+            # 正常接口可能只给原价；保留原文，不能推定无需复权或伪造因子1。
+            rows = entry["day"]
+            summary.update(quality="artifact_only", adjustmentStatus="raw_only")
         if any(len(row) < 6 for row in rows):
             raise ValueError("腾讯日线字段数量不足")
         dates = [row[0] for row in rows]
         summary["unitCheck"] = "第六列单位及成交额覆盖待核验，不能直接映射 amount"
+        summary["rowFields"] = sorted({len(row) for row in rows})
+        if probe.shape == "tencent_history":
+            summary["volumeMultiplierCandidates"] = tencent_volume_candidates(rows)
+            summary["amountHypothesis"] = "第九列乘10000后与原价区间、成交量交叉检查，仍需来源口径验证"
     elif probe.shape == "sina_financial":
         reports = payload["result"]["data"]["report_list"]
         rows = list(reports.values())
@@ -213,6 +292,13 @@ def inspect_payload(probe: Probe, body: str, target: date) -> dict[str, Any]:
     elif probe.shape == "sina_factor":
         rows = payload["data"]
         summary["adjustmentCheck"] = "因子方向、锚定日期与除权样本待核验"
+    elif probe.shape == "sina_catalog":
+        rows = payload
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or not row.get("name") or not re.fullmatch(r"(?:sh|sz|bj)[0-9]{6}", str(row.get("symbol", ""))) or row.get("code") != row["symbol"][2:] for row in rows):
+            raise ValueError("新浪目录缺少有效证券身份或名称")
+        summary["codes"] = [row["code"] for row in rows]
+        summary["symbols"] = [row["symbol"] for row in rows]
+        summary["dateCheck"] = "目录仅有时刻，不据此确认目标交易日行情完整性"
     else:
         rows = payload
     if not isinstance(rows, list) or not rows:
@@ -227,18 +313,23 @@ def inspect_payload(probe: Probe, body: str, target: date) -> dict[str, Any]:
     return summary
 
 
-def fetch(probe: Probe, guard: Guard, target: date, opener: Any = None) -> dict[str, Any]:
+def fetch(probe: Probe, guard: Guard, target: date, opener: Any = None, *, offline: bool = False) -> dict[str, Any]:
     """单请求、无自动重试；限流、网络失败和解析失败均保留结果并冷却渠道。"""
     record: dict[str, Any] = {"id": probe.id, "source": probe.source, "board": probe.board, "url": probe.url,
                               "checkedAt": datetime.fromtimestamp(guard.now(), SHANGHAI).isoformat()}
     key = hashlib.sha256(probe.url.encode()).hexdigest()
     evidence = guard.directory / f"{key}.txt"
+    body: str | None = None
     try:
         # 1. 同一请求的成功响应保存 24 小时，重复验证直接读取证据。
-        cached = evidence.exists() and 0 <= guard.now() - evidence.stat().st_mtime < 86400
+        if offline and not evidence.exists():
+            evidence = guard.directory / f"{key}.rejected"
+        cached = evidence.exists() and (offline or 0 <= guard.now() - evidence.stat().st_mtime < 86400)
         if cached:
             body = evidence.read_text()
         else:
+            if offline:
+                raise Deferred("离线复验未找到已保存响应，不发送请求")
             guard.reserve(probe.source)
             request = Request(probe.url, headers={"User-Agent": "StockSieve-Source-Probe/0.1", "Accept": "application/json,text/plain"})
             with (opener or build_opener(NoRedirect())).open(request, timeout=15) as response:
@@ -250,20 +341,30 @@ def fetch(probe: Probe, guard: Guard, target: date, opener: Any = None) -> dict[
         summary = inspect_payload(probe, body, target)
         if not cached:
             evidence.write_text(body)
-        record.update(status="sample_received", cached=cached, summary=summary,
-                      evidence=evidence.name, sha256=hashlib.sha256(body.encode()).hexdigest())
+        record.update(status="artifact_received" if summary["quality"] == "artifact_only" else "sample_received", cached=cached, summary=summary,
+                      evidence=evidence.name, sha256=hashlib.sha256(body.encode()).hexdigest(),
+                      evidenceSavedAt=datetime.fromtimestamp(evidence.stat().st_mtime, SHANGHAI).isoformat(), offline=offline)
     except Deferred as error:
         record.update(status="deferred", reason=str(error))
     except HTTPError as error:
         limited = error.code in (403, 418, 429)
-        guard.cooldown(probe.source, retry_delay(error.headers.get("Retry-After"), guard.now()) if limited else 3600)
+        if not offline:
+            guard.cooldown(probe.source, retry_delay(error.headers.get("Retry-After"), guard.now()) if limited else 3600)
         record.update(status="http_error", httpStatus=error.code, reason=str(error))
     except (URLError, TimeoutError, OSError) as error:
-        guard.cooldown(probe.source, 3600)
+        if not offline:
+            guard.cooldown(probe.source, 3600)
         record.update(status="network_error", reason=str(error))
     except (ValueError, KeyError, TypeError, AttributeError, IndexError, StopIteration) as error:
-        guard.cooldown(probe.source, 86400)
+        if not offline:
+            guard.cooldown(probe.source, 86400)
         record.update(status="unverified_response", reason=str(error))
+        # 异常公开响应仅保留诊断证据，不能作为成功缓存或可用业务样本。
+        if body is not None:
+            rejected = evidence if offline else guard.directory / f"{key}.rejected"
+            if not offline:
+                rejected.write_text(body)
+            record.update(rejectedEvidence=rejected.name, rejectedSha256=hashlib.sha256(body.encode()).hexdigest())
     return record
 
 
@@ -271,20 +372,32 @@ def main() -> int:
     """预览探测计划，或在持有进程锁时执行有限的联网验证。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", required=True, type=date.fromisoformat, help="人工确认的已收盘交易日 YYYY-MM-DD")
-    parser.add_argument("--source", choices=("sina", "eastmoney", "tencent"))
-    parser.add_argument("--group", choices=("catalog", "history", "classification", "financial", "factors"))
+    parser.add_argument("--source", choices=("sina", "eastmoney", "tencent", "baostock"))
+    parser.add_argument("--group", choices=("catalog", "history", "classification", "financial", "factors", "metadata", "calendar", "sdk"))
+    parser.add_argument("--probe", action="append", help="只执行指定探测ID，可重复；仍遵守全部预算与冷却")
     parser.add_argument("--bse-code", help="已核对的当前北交所六位代码；省略时从目录样本发现")
-    parser.add_argument("--execute", action="store_true", help="实际联网；省略只打印计划")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--execute", action="store_true", help="实际联网；省略只打印计划")
+    modes.add_argument("--offline", action="store_true", help="只复验已保存响应，不发送请求或变更渠道冷却")
     args = parser.parse_args()
     if args.date > datetime.now(SHANGHAI).date():
         parser.error("目标日期不能在未来")
     if args.bse_code and not re.fullmatch(r"\d{6}", args.bse_code):
         parser.error("北交所代码须为六位数字，市场身份需另行核对")
-    probes = [probe for probe in make_plan(args.date, args.bse_code)
-              if (not args.source or probe.source == args.source) and (not args.group or probe.group == args.group)]
+    if args.source == 'baostock':
+        if args.group not in {None, 'sdk'} or args.probe:
+            parser.error('Baostock请使用sdk分组，不接受HTTP探测ID。')
+        from baostock_probe import run
+        return run(args.date, STATE_DIR, execute=args.execute, offline=args.offline)
+    plan = make_plan(args.date, args.bse_code)
+    if args.probe and set(args.probe) - {probe.id for probe in plan}:
+        parser.error("存在未知探测ID")
+    probes = [probe for probe in plan
+              if (not args.source or probe.source == args.source) and (not args.group or probe.group == args.group)
+              and (not args.probe or probe.id in args.probe)]
     if not probes:
         parser.error("所选渠道没有该分组的探测项")
-    if not args.execute:
+    if not args.execute and not args.offline:
         print(json.dumps({"mode": "preview", "requests": len(probes), "probes": [asdict(probe) for probe in probes]}, ensure_ascii=False, indent=2))
         return 0
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -296,7 +409,7 @@ def main() -> int:
         guard = Guard(STATE_DIR)
         discovered = guard.state.get("bse_sample", {})
         bse_code = args.bse_code or (discovered.get("code") if 0 <= guard.now() - discovered.get("at", 0) < 86400 else None)
-        report: dict[str, Any] = {"targetDate": str(args.date), "coverageVerified": False,
+        report: dict[str, Any] = {"targetDate": str(args.date), "coverageVerified": False, "mode": "offline" if args.offline else "network",
                                   "startedAt": datetime.now(SHANGHAI).isoformat(), "results": []}
         output = STATE_DIR / ("report-" + datetime.now(SHANGHAI).strftime("%Y%m%dT%H%M%S%f") + ".json")
         # 3. 每条完成即保存报告，外部中断后仍有证据；缺代码不猜测，不请求占位 URL。
@@ -305,13 +418,13 @@ def main() -> int:
                 record = {"id": probe.id, "source": probe.source, "status": "deferred", "reason": "先探测北交所目录并核对当前代码"}
             else:
                 resolved = Probe(probe.id, probe.source, probe.group, probe.url.replace("BSE_CODE", bse_code or ""), probe.shape, probe.board)
-                record = fetch(resolved, guard, args.date)
-                if probe.id == "em_catalog_BSE" and record["status"] == "sample_received":
+                record = fetch(resolved, guard, args.date, offline=args.offline)
+                if probe.id == "em_catalog_BSE" and record["status"] == "sample_received" and not args.offline:
                     bse_code = str(record["summary"]["codes"][0])
                     if not re.fullmatch(r"\d{6}", bse_code):
                         bse_code = None
                     else:
-                        guard.state["bse_sample"] = {"code": bse_code, "at": guard.now()}
+                        guard.state["bse_sample"] = {"code": bse_code, "at": datetime.fromisoformat(record["evidenceSavedAt"]).timestamp()}
                         guard.save()
             report["results"].append(record)
             output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

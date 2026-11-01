@@ -1,11 +1,20 @@
-<!-- 本文件提供管理员用户列表、搜索、角色筛选及新增普通用户的模拟流程。 -->
+<!-- 本文件通过后端接口提供管理员用户列表、搜索、角色筛选及新增普通用户。 -->
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
-import { addUser, listUsers } from '../mock/service.ts';
-const users = ref(listUsers());
+import { addUser, formatTime, listUsers } from '../api.ts';
+import type { User } from '../types.ts';
+const users = ref<User[]>([]);
+const listLoading = ref(true);
+const listError = ref('');
+async function loadUsers(): Promise<void> {
+    listLoading.value = true; listError.value = '';
+    try { users.value = await listUsers(); } catch (cause) { listError.value = (cause as Error).message; }
+    finally { listLoading.value = false; }
+}
+onMounted(loadUsers);
 const search = ref('');
 const role = ref('');
 const dialogOpen = ref(false);
@@ -25,7 +34,7 @@ async function submit(): Promise<void> {
     loading.value = true;
     try {
         const user = await addUser(form.username.trim(), form.name, form.password);
-        users.value = listUsers();
+        await loadUsers();
         dialogOpen.value = false;
         ElMessage.success(`用户 ${user.username} 已创建，可退出当前账号后验证登录。`);
     }
@@ -56,7 +65,7 @@ async function submit(): Promise<void> {
         {{ users.length }}
         <small>个</small>
       </strong>
-      <p>账号记录仅保存在当前浏览器</p>
+      <p>账号由服务器统一管理</p>
     </div>
     <div class="summary-card">
       <span>普通用户</span>
@@ -90,7 +99,9 @@ async function submit(): Promise<void> {
         </el-select>
       </div>
     </div>
-    <StatePanel v-if="!visible.length" title="没有找到匹配的用户" action="清除筛选" @action="search = ''; role = ''" />
+    <StatePanel v-if="listLoading" kind="loading" title="正在读取用户列表" />
+    <StatePanel v-else-if="listError" kind="error" title="用户列表加载失败" :description="listError" action="重试" @action="loadUsers" />
+    <StatePanel v-else-if="!visible.length" title="没有找到匹配的用户" action="清除筛选" @action="search = ''; role = ''" />
     <div v-else class="table-scroll">
       <table class="data-table">
         <thead>
@@ -114,7 +125,7 @@ async function submit(): Promise<void> {
             <td>
               <span class="tag" :class="user.role === 'admin' ? 'tag-green' : ''">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</span>
             </td>
-            <td>{{ user.createdAt }}</td>
+            <td>{{ formatTime(user.createdAt) }}</td>
             <td class="muted">{{ user.role === 'admin' ? '全部前端功能' : '机会筛选与个股分析' }}</td>
           </tr>
         </tbody>
@@ -133,7 +144,7 @@ async function submit(): Promise<void> {
     :close-on-press-escape="!loading"
     :show-close="!loading"
   >
-    <p class="muted">创建后即可用新账号登录此模拟版。请勿填写真实账号或常用密码。</p>
+    <p class="muted">创建普通用户后，即可使用新账号登录工作台。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="form-alert" />
     <el-form label-position="top" @submit.prevent="submit">
       <el-form-item label="登录账号">
@@ -148,7 +159,7 @@ async function submit(): Promise<void> {
           type="password"
           show-password
           maxlength="32"
-          placeholder="6～32 位，仅使用演示密码"
+          placeholder="6～32 位"
           autocomplete="new-password"
           :disabled="loading"
         />

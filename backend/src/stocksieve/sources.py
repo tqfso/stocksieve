@@ -6,11 +6,13 @@ import json
 import sqlite3
 import time
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Iterator, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -20,6 +22,23 @@ from .domain import BOARDS, Bar, Stock, StockState
 from .errors import DomainError
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
+_progress: ContextVar[Callable[[str, int, bool], None] | None] = ContextVar('source_progress', default=None)
+
+
+@contextmanager
+def progress_sink(callback: Callable[[str, int, bool], None]) -> Iterator[None]:
+    """跨异步任务及取数线程传递进度回调，不把数据库任务对象放入渠道接口。"""
+    token = _progress.set(callback)
+    try:
+        yield
+    finally:
+        _progress.reset(token)
+
+
+def report_progress(message: str, progress: int, advanced: bool = False) -> None:
+    callback = _progress.get()
+    if callback:
+        callback(message, progress, advanced)
 
 
 def supplier(url: str, fallback: str) -> str:
@@ -44,6 +63,7 @@ class CalendarDay:
 class Initialization:
     stocks: tuple[Stock, ...]
     calendar: dict[str, dict[date, CalendarDay]]
+    calendar_fetched_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -71,7 +91,8 @@ class Source(Protocol):
 class Registry:
     """注册只建立能力映射，启用渠道须以实测覆盖为依据，不能静默替换渠道。"""
 
-    def __init__(self) -> None:
+    def __init__(self, boards: tuple[str, ...] = tuple(BOARDS)) -> None:
+        self.boards = frozenset(boards)
         self.sources: dict[str, Source] = {}
         self.pending: dict[str, str] = {'sina': 'Sina', 'baostock': 'Baostock', 'eastmoney': '东方财富'}
 
@@ -84,14 +105,15 @@ class Registry:
         self.sources[source.id] = source
         self.pending.pop(source.id, None)
 
-    def get(self, source_id: str, kind: str) -> Source:
+    def get(self, source_id: str, kind: str, boards: tuple[str, ...] | None = None) -> Source:
         source = self.sources.get(source_id)
-        if not source or kind not in source.supported_kinds or kind == 'daily' and source.boards != frozenset(BOARDS):
+        required = frozenset(boards) if boards is not None else self.boards
+        if not source or kind not in source.supported_kinds or kind in {'initialize', 'daily'} and not required <= source.boards:
             raise DomainError('SOURCE_UNAVAILABLE', '该渠道未启用、未通过覆盖验证或不支持此任务。')
         return source
 
     def public(self) -> list[dict[str, Any]]:
-        return [{'id': key, 'name': source.name, 'available': True, 'supportedSyncKinds': sorted(source.supported_kinds)} for key, source in self.sources.items()] + [
+        return [{'id': key, 'name': source.name, 'available': bool(kinds := sorted(kind for kind in source.supported_kinds if kind == 'catalog' or self.boards <= source.boards)), 'supportedSyncKinds': kinds, 'supportedBoards': sorted(source.boards)} for key, source in self.sources.items()] + [
             {'id': key, 'name': name, 'available': False, 'supportedSyncKinds': []} for key, name in self.pending.items()]
 
 
@@ -143,10 +165,15 @@ class RateGate:
             connection.execute('UPDATE gates SET blocked_until=MAX(blocked_until,?) WHERE vendor=?', (instant + seconds, vendor))
 
 
+class RatePolicy(Protocol):
+    def reserve(self, vendor: str, now: float | None = None) -> None: ...
+    def block(self, vendor: str, seconds: float, now: float | None = None) -> None: ...
+
+
 class SourceHTTP:
     """GET 请求统一计费限频，无自动重试、代理轮换或隐含重定向。"""
 
-    def __init__(self, gate: RateGate, cache_dir: Path, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, gate: RatePolicy, cache_dir: Path, client: httpx.AsyncClient | None = None) -> None:
         self.gate, self.cache_dir = gate, cache_dir
         cache_dir.mkdir(parents=True, exist_ok=True)
         self.client = client or httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False,

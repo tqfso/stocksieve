@@ -1,10 +1,10 @@
-<!-- 本文件提供管理员修改自身模拟密码的校验及重新登录流程。 -->
+<!-- 本文件通过后端修改管理员密码并撤销旧会话。 -->
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import AppIcon from '../components/AppIcon.vue';
-import { changePassword } from '../mock/service.ts';
+import { changePassword } from '../api.ts';
 import { useSession } from '../stores.ts';
 const session = useSession();
 const router = useRouter();
@@ -26,8 +26,8 @@ async function submit(): Promise<void> {
     loading.value = true;
     try {
         await changePassword(form.old, form.password);
-        session.logout();
-        ElMessage.success('模拟密码已修改，请使用新密码重新登录。');
+        await session.logout();
+        ElMessage.success('密码已修改，请使用新密码重新登录。');
         await router.replace('/login');
     }
     catch (cause) {
@@ -43,7 +43,7 @@ async function submit(): Promise<void> {
     <div>
       <span class="eyebrow">ACCOUNT SETTINGS</span>
       <h1>修改登录密码</h1>
-      <p>修改当前管理员账号的演示密码，保存后重新登录。</p>
+      <p>修改当前管理员账号的密码，保存后重新登录。</p>
     </div>
   </div>
   <section class="panel password-panel">
@@ -55,7 +55,7 @@ async function submit(): Promise<void> {
       <span class="tag">{{ session.user?.username }}</span>
     </div>
     <div class="password-body">
-      <el-alert title="密码仅保存在本浏览器中，请使用演示密码。忘记后可在“演示场景”中重置全部演示数据。" type="info" :closable="false" show-icon />
+      <el-alert title="修改成功后，当前账号的所有登录会话将失效。" type="info" :closable="false" show-icon />
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="form-alert" />
       <el-form label-position="top" @submit.prevent="submit">
         <el-form-item label="当前密码">

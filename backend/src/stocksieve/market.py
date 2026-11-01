@@ -78,7 +78,9 @@ class Market:
     @staticmethod
     def snapshot_view(row: Any) -> dict[str, Any]:
         return {'id': row['id'], 'dataDate': row['data_date'].isoformat(), 'publishedAt': utc(row['published_at']).isoformat(),
-                'adjustment': row['adjustment'], 'strategyVersion': row['strategy_version']}
+                'adjustment': row['adjustment'], 'strategyVersion': row['strategy_version'], 'source': row['source'],
+                'boards': (row['coverage_json'] or {}).get('boards', list(BOARDS)), 'catalogAsOfAt': (row['coverage_json'] or {}).get('catalogAsOfAt'),
+                'dataProvenance': (row['coverage_json'] or {}).get('dataProvenance', {})}
 
     @staticmethod
     def signal_view(row: Any, *, detail: bool = False) -> dict[str, Any]:
@@ -107,7 +109,8 @@ class Market:
         industries = {row['stock']['industry']['id']: row['stock']['industry'] for row in records if row['stock']['industry']}
         concepts = {concept['id']: concept for row in records for concept in row['stock']['concepts']}
         coverage = (snapshot['coverage_json'] or {}).get('filters', {})
-        return {'snapshotId': snapshot['id'], 'boards': [{'id': key, 'name': value[0], 'exchange': value[1]} for key, value in BOARDS.items()],
+        active_boards = (snapshot['coverage_json'] or {}).get('boards', list(BOARDS))
+        return {'snapshotId': snapshot['id'], 'boards': [{'id': key, 'name': value[0], 'exchange': value[1]} for key, value in BOARDS.items() if key in active_boards],
                 'industries': sorted(industries.values(), key=lambda row: row['id']), 'concepts': sorted(concepts.values(), key=lambda row: row['id']),
                 'coverage': {key: coverage.get(key, 'unavailable') for key in ('board', 'industry', 'concepts', 'turnover', 'totalMarketCap')}}
 
@@ -141,6 +144,8 @@ class Market:
             snapshot = self.snapshot(connection, query.get('snapshotId'))
             records = self.records(connection, snapshot)
             filters = self.filters_view(snapshot, records)
+        if query.get('board') and query['board'] not in {item['id'] for item in filters['boards']}:
+            raise DomainError('FILTER_UNAVAILABLE', '所选快照未覆盖该上市板块。')
         for key, coverage_key in (('industryId', 'industry'), ('conceptId', 'concepts'), ('board', 'board')):
             if key in query and filters['coverage'][coverage_key] == 'unavailable':
                 raise DomainError('FILTER_UNAVAILABLE', '所选快照未覆盖该筛选条件。')

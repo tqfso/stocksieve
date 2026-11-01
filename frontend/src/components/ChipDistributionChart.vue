@@ -1,7 +1,9 @@
 <!-- 本文件在 AI 筹码分析结果内绘制价格区间占比，并标出估算支撑、压力与现价。 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { ChipBin, ChipDistribution } from '../types.ts';
+import type { ChipBin } from '../types.ts';
+import type { LiveReport } from '../api.ts';
+type ChipDistribution = NonNullable<LiveReport['chipDistribution']>;
 const props = defineProps<{
     distribution: ChipDistribution;
 }>();
@@ -12,9 +14,9 @@ const currentBin = computed(() => props.distribution.bins.find((bin) => bin.lowe
 const selected = computed(() => bins.value.find((bin) => bin.price === selectedPrice.value) ?? currentBin.value ?? bins.value[0]);
 /** 参考位来自同一份分布数据，图形标记与报告正文保持一致。 */
 function marker(bin: ChipBin): string {
-    if (bin.price === props.distribution.support.price)
+    if (bin.price === props.distribution.support?.price)
         return '支撑参考';
-    if (bin.price === props.distribution.resistance.price)
+    if (bin.price === props.distribution.resistance?.price)
         return '压力参考';
     if (bin.price === currentBin.value?.price)
         return '现价所在档';
@@ -27,19 +29,20 @@ watch(() => props.distribution, () => { selectedPrice.value = null; });
 </script>
 
 <template>
-  <section class="chip-distribution" aria-label="模拟筹码价格分布">
+  <section class="chip-distribution" aria-label="估算筹码价格分布">
     <div class="chip-title">
       <h3>筹码价格分布</h3>
-      <span class="tag tag-amber">模拟估算 · 合计 100%</span>
+      <span class="tag tag-amber">成本估算 · 合计 100%</span>
     </div>
     <div class="chip-levels">
       <div>
         <span>支撑参考</span>
-        <strong>
+        <strong v-if="distribution.support">
           {{ distribution.support.price.toFixed(2) }}
           <small>元</small>
         </strong>
-        <p>{{ distribution.support.lower.toFixed(2) }}～{{ distribution.support.upper.toFixed(2) }} 元</p>
+        <strong v-else>暂无参考</strong>
+        <p v-if="distribution.support">{{ distribution.support.lower.toFixed(2) }}～{{ distribution.support.upper.toFixed(2) }} 元</p>
       </div>
       <div>
         <span>当前收盘价</span>
@@ -47,15 +50,16 @@ watch(() => props.distribution, () => { selectedPrice.value = null; });
           {{ distribution.currentPrice.toFixed(2) }}
           <small>元</small>
         </strong>
-        <p>同一模拟价格口径</p>
+        <p>同一快照价格口径</p>
       </div>
       <div>
         <span>压力参考</span>
-        <strong>
+        <strong v-if="distribution.resistance">
           {{ distribution.resistance.price.toFixed(2) }}
           <small>元</small>
         </strong>
-        <p>{{ distribution.resistance.lower.toFixed(2) }}～{{ distribution.resistance.upper.toFixed(2) }} 元</p>
+        <strong v-else>暂无参考</strong>
+        <p v-if="distribution.resistance">{{ distribution.resistance.lower.toFixed(2) }}～{{ distribution.resistance.upper.toFixed(2) }} 元</p>
       </div>
     </div>
     <p class="chip-explanation">每根横条对应一个价格区间的估算筹码占比。悬停、点击或使用键盘选择，可查看该区间的具体比例。</p>
@@ -69,7 +73,7 @@ watch(() => props.distribution, () => { selectedPrice.value = null; });
         v-for="bin in bins"
         :key="bin.price"
         class="chip-row"
-        :class="{ 'is-support': bin.price === distribution.support.price, 'is-resistance': bin.price === distribution.resistance.price, 'is-current': bin.price === currentBin?.price, 'is-selected': selected?.price === bin.price }"
+        :class="{ 'is-support': bin.price === distribution.support?.price, 'is-resistance': bin.price === distribution.resistance?.price, 'is-current': bin.price === currentBin?.price, 'is-selected': selected?.price === bin.price }"
         :title="description(bin)"
         :aria-label="description(bin)"
         :aria-pressed="selected?.price === bin.price"

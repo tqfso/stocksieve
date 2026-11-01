@@ -195,6 +195,10 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption('--postgres', action='store_true', help='在真实PostgreSQL数据库的临时隔离schema中测试')
     parser.addoption('--postgres-url-env', default=None, help='数据库URL环境变量名；省略则读取项目数据库配置')
     parser.addoption('--http', action='store_true', help='通过真实本机HTTP请求执行接口用例')
+    parser.addoption('--browser', action='store_true', help='使用本机浏览器验证隔离数据的前后端完整流程，需--http及已构建前端')
+    parser.addoption('--deployed-base', default=None, help='正式部署的只读浏览器验收地址')
+    parser.addoption('--deployed-credentials', default=None, help='正式管理员私有凭据JSON文件路径，不在终端显示内容')
+    parser.addoption('--deployed-data', action='store_true', help='正式部署已发布真实行情时验收图表及后端模拟筹码报告')
 
 
 def pytest_report_header(config: Any) -> str:

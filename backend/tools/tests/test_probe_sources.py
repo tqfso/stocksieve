@@ -125,6 +125,7 @@ class ProbeTests(unittest.TestCase):
         record = probe.fetch(self.sample, self.guard, TARGET, opener)
         self.assertEqual(record["status"], "unverified_response")
         self.assertFalse(list(self.directory.glob("*.txt")))
+        self.assertEqual((self.directory / record["rejectedEvidence"]).read_text(), "<html>captcha</html>")
         self.assertIn("eastmoney", self.guard.state["cooldown"])
 
     def test_unexpected_json_shape_does_not_crash_run(self) -> None:
@@ -160,6 +161,96 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual({item.board for item in plan if item.group == "history"}, {"SSE_MAIN", "SZSE_MAIN", "CHINEXT", "STAR", "BSE"})
         self.assertTrue(any("BSE_CODE" in item.url for item in plan))
         self.assertFalse(any("BSE_CODE" in item.url for item in probe.make_plan(TARGET, "920001")))
+
+    def test_sina_board_catalog_requires_consistent_security_identity(self) -> None:
+        sample = probe.Probe("catalog", "sina", "catalog", "https://example.test/", "sina_catalog")
+        valid = [{"symbol": "bj920001", "code": "920001", "name": "测试证券"}]
+        result = probe.inspect_payload(sample, json.dumps(valid), TARGET)
+        self.assertEqual(result["symbols"], ["bj920001"])
+        for rows in ([{"symbol": "sh600000", "code": "000001", "name": "不一致"}], [123], []):
+            with self.assertRaises(ValueError):
+                probe.inspect_payload(sample, json.dumps(rows), TARGET)
+
+    def test_metadata_count_and_nodes_reject_empty_or_wrong_types(self) -> None:
+        count = probe.Probe("count", "sina", "metadata", "https://example.test/", "sina_count")
+        self.assertEqual(probe.inspect_payload(count, '"5576"', TARGET)["sourceTotal"], 5576)
+        for body in ('0', 'true', '1.5', '{}', '"-1"'):
+            with self.assertRaises(ValueError):
+                probe.inspect_payload(count, body, TARGET)
+        nodes = probe.Probe("nodes", "sina", "metadata", "https://example.test/", "sina_nodes")
+        for body in ('[]', '{}'):
+            with self.assertRaises(ValueError):
+                probe.inspect_payload(nodes, body, TARGET)
+
+    def test_compressed_resource_is_an_artifact_not_a_verified_business_sample(self) -> None:
+        sample = probe.Probe("history", "sina", "history", "https://example.test/", "sina_compressed")
+        response = Mock()
+        response.read.return_value = b'var KLC_KL_sh600000="ABC+/012";'
+        response.headers = Message()
+        opener = Mock()
+        opener.open.return_value = nullcontext(response)
+        result = probe.fetch(sample, self.guard, TARGET, opener)
+        self.assertEqual(result["status"], "artifact_received")
+        self.assertFalse(result["summary"]["decoded"])
+        for body in ('var a="ABC"; alert(1);', 'var a="";', 'var a="wrong data";', '<html>verify</html>'):
+            with self.assertRaises(ValueError):
+                probe.inspect_payload(sample, body, TARGET)
+
+    def test_tencent_volume_unit_diagnostics_detect_board_differences(self) -> None:
+        row = [str(TARGET), "10", "10", "10.1", "9.9", "1000", {}, "1", "100"]
+        self.assertEqual(probe.tencent_volume_candidates([row]), [100])
+        shares = [*row[:5], "100000", *row[6:]]
+        self.assertEqual(probe.tencent_volume_candidates([shares]), [1])
+        self.assertEqual(probe.tencent_volume_candidates([row, shares]), [])
+        self.assertEqual(probe.tencent_volume_candidates([row[:6]]), [])
+        with self.assertRaises(ValueError):
+            probe.tencent_volume_candidates([[*row[:5], "NaN", *row[6:]]])
+        with self.assertRaises(ValueError):
+            probe.tencent_volume_candidates([[*row[:5], "-", *row[6:]]])
+
+    def test_tencent_raw_fallback_is_not_proof_of_adjustment(self) -> None:
+        sample = probe.Probe("qfq", "tencent", "history", "https://example.test/", "tencent_history_qfq")
+        body = json.dumps({"code": 0, "data": {"sh688981": {"day": [[str(TARGET), "10", "10", "10", "10", "100"]]}}})
+        result = probe.inspect_payload(sample, body, TARGET)
+        self.assertEqual(result["quality"], "artifact_only")
+        self.assertEqual(result["adjustmentStatus"], "raw_only")
+        self.assertTrue(result["reachesTarget"])
+
+    def test_factor_parser_uses_json_of_first_assignment_without_running_scripts(self) -> None:
+        sample = probe.Probe("factor", "sina", "factors", "https://example.test/", "sina_factor")
+        body = 'var factor={"data":[["2026-10-29","1.2"]]};\nthrow new Error("must never execute");'
+        self.assertEqual(probe.inspect_payload(sample, body, TARGET)["rows"], 1)
+
+    def test_offline_recheck_never_requests_or_changes_provider_budget_and_cooldown(self) -> None:
+        opener = Mock()
+        self.guard.reserve("eastmoney")
+        self.guard.cooldown("eastmoney", 86400)
+        before = self.guard.path.read_bytes()
+        self.assertEqual(probe.fetch(self.sample, self.guard, TARGET, opener, offline=True)["status"], "deferred")
+        key = probe.hashlib.sha256(self.sample.url.encode()).hexdigest()
+        (self.directory / f"{key}.rejected").write_text('{"data":{"total":1,"diff":[{"f12":"920001","f14":"sample"}]}}')
+        result = probe.fetch(self.sample, self.guard, TARGET, opener, offline=True)
+        self.assertEqual(result["status"], "sample_received")
+        self.assertTrue(result["cached"])
+        self.assertTrue(result["offline"])
+        self.assertTrue(result["evidence"].endswith(".rejected"))
+        self.assertEqual(self.guard.path.read_bytes(), before)
+        opener.open.assert_not_called()
+        self.assertFalse((self.directory / f"{key}.txt").exists())
+
+    def test_offline_invalid_response_keeps_original_time_and_does_not_cool_source(self) -> None:
+        key = probe.hashlib.sha256(self.sample.url.encode()).hexdigest()
+        evidence = self.directory / f"{key}.rejected"
+        evidence.write_text("<html>verify</html>")
+        utime(evidence, (1234567, 1234567))
+        self.guard.reserve("eastmoney")
+        before = self.guard.path.read_bytes()
+        opener = Mock()
+        result = probe.fetch(self.sample, self.guard, TARGET, opener, offline=True)
+        self.assertEqual(result["status"], "unverified_response")
+        self.assertEqual(evidence.stat().st_mtime, 1234567)
+        self.assertEqual(self.guard.path.read_bytes(), before)
+        opener.open.assert_not_called()
 
 
 if __name__ == "__main__":

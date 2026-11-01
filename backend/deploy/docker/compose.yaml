@@ -13,9 +13,19 @@ x-app: &app
       required: false
   environment:
     STOCKSIEVE_STATE_DIR: /var/lib/stocksieve
+    STOCKSIEVE_RATE_DIR: /var/lib/stocksieve-rate
     UV_CACHE_DIR: /var/lib/stocksieve/uv-cache
   volumes:
     - backend_state:/var/lib/stocksieve
+    - type: bind
+      source: ../../.source-probe
+      target: /var/lib/stocksieve-rate
+    - type: bind
+      source: ../../.state/baostock-wire
+      target: /var/lib/stocksieve/baostock-wire
+    - type: bind
+      source: ../../.state/source-cache
+      target: /var/lib/stocksieve/source-cache
   read_only: true
   tmpfs:
     - /tmp:rw,noexec,nosuid,size=128m

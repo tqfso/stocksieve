@@ -1,208 +1,99 @@
-<!-- 本文件独立展示股票基础信息、行业题材、收盘行情三类模拟任务及其状态、进度和重试。 -->
+<!-- 本文件提交真实同步任务并展示服务器进度、来源、等待时间和持久化日志。 -->
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
-import { DATA_DATE } from '../mock/fixtures.ts';
-import { useReview, useSync } from '../stores.ts';
-import type { SyncJob } from '../types.ts';
+import { ApiError, syncLogs } from '../api.ts';
+import type { SyncJob } from '../api.ts';
+import { useMarket, useSync } from '../stores.ts';
 const sync = useSync();
-const review = useReview();
-/** 不同任务分别保留来源选择，重试时恢复原任务的来源。 */
-const sources = reactive<Record<SyncJob['kind'], SyncJob['source']>>({ initialize: 'Sina', catalog: '分类样例', daily: 'Sina' });
-const selected = ref('');
+const market = useMarket();
+const kinds: SyncJob['kind'][] = ['initialize', 'catalog', 'daily'];
+const sources = reactive<Record<SyncJob['kind'], string>>({ initialize: '', catalog: '', daily: '' });
+const labels = { initialize: '股票基础信息', catalog: '行业与题材', daily: '收盘行情与策略' };
+const descriptions = { initialize: '更新股票代码、名称、交易所及板块。', catalog: '独立更新行业、题材及股票归属。', daily: '同步行情并计算五类策略，完成后发布新快照。' };
+const statusLabels = { queued: '等待执行', running: '进行中', succeeded: '已完成', failed: '失败' };
+const target = ref('');
+const selected = ref<SyncJob>();
 const logsOpen = ref(false);
-const selectedJob = computed(() => sync.jobs.find((job) => job.id === selected.value));
-const latestDaily = computed(() => sync.jobs.find((job) => job.kind === 'daily' && job.status === 'success'));
-const statusLabels = { running: '进行中', success: '已完成', failed: '失败' };
-const kindLabels = { initialize: '股票基础信息同步', catalog: '行业与题材同步', daily: '收盘行情与策略同步' };
-sync.refresh();
-async function start(kind: SyncJob['kind'], retry = false): Promise<void> {
+const logs = ref<string[]>([]);
+const logsError = ref('');
+let logTimer: ReturnType<typeof setTimeout> | undefined;
+let logRequest = 0;
+const submissions = new Map<string, { signature: string; key: string }>();
+const latestDaily = computed(() => sync.jobs.find(job => job.kind === 'daily' && job.status === 'succeeded'));
+function choices(kind: SyncJob['kind']) { return (market.status?.sources ?? []).filter(source => source.available && source.supportedSyncKinds.includes(kind)); }
+function formatTime(value: string | null | undefined): string { return value ? new Date(value).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }) : '—'; }
+watch(() => market.status, () => {
+    for (const kind of kinds) if (!choices(kind).some(source => source.id === sources[kind])) sources[kind] = choices(kind)[0]?.id ?? '';
+    if (!target.value) target.value = market.status?.latestTradingDate ?? '';
+}, { immediate: true });
+async function start(kind: SyncJob['kind'], retry?: SyncJob): Promise<void> {
     try {
-        if (!retry && kind === 'initialize' && sync.initialized)
-            await ElMessageBox.confirm('仅模拟更新股票代码、名称、交易所、上市板块等基础信息，保留已有行业、题材关系及快照和报告。', '更新股票基础信息', { confirmButtonText: '开始更新', cancelButtonText: '取消' });
-        if (!retry && kind === 'catalog' && sync.catalogUpdatedAt)
-            await ElMessageBox.confirm('仅模拟刷新行业、题材及股票归属，保留股票基础信息和已有快照、报告。失败保留上次成功的分类状态。', '刷新行业、题材数据', { confirmButtonText: '开始刷新', cancelButtonText: '取消' });
-        if (retry)
-            review.syncFail = false;
-        sync.start(kind, review.syncFail, sources[kind]);
-        ElMessage.success('模拟任务已启动，切换页面后仍会继续。');
-    }
-    catch (cause) {
-        if (cause instanceof Error)
+        if (!retry && kind === 'initialize' && sync.initialized) await ElMessageBox.confirm('更新股票基础信息，保留已有分类、行情快照和报告。', '更新基础信息');
+        if (!retry && kind === 'catalog' && sync.catalogUpdatedAt) await ElMessageBox.confirm('刷新行业与题材归属，保留已有行情快照和报告。', '刷新分类');
+        const source = retry?.source ?? sources[kind];
+        const day = kind === 'daily' ? retry?.dataDate ?? target.value : undefined;
+        const signature = JSON.stringify([kind, source, day]);
+        const previous = submissions.get(kind);
+        const key = previous?.signature === signature ? previous.key : crypto.randomUUID();
+        submissions.set(kind, { signature, key });
+        await sync.start(kind, source, day || undefined, key);
+        submissions.delete(kind);
+        ElMessage.success('任务已受理，关闭页面后仍由服务器执行。');
+    } catch (cause) {
+        if (cause instanceof Error) {
+            if (cause instanceof ApiError && cause.status > 0 && cause.status < 500) submissions.delete(kind);
             ElMessage.error(cause.message);
+            await sync.refresh();
+        }
     }
 }
-function showLogs(job: SyncJob): void { selected.value = job.id; logsOpen.value = true; }
-function retryJob(job: SyncJob): void { sources[job.kind] = job.source; void start(job.kind, true); }
+async function loadLogs(): Promise<void> {
+    const id = ++logRequest; clearTimeout(logTimer);
+    if (!selected.value || !logsOpen.value) return;
+    try { const result = await syncLogs(selected.value.id); if (id === logRequest) { logs.value = result; logsError.value = ''; } }
+    catch (cause) { if (id === logRequest) logsError.value = (cause as Error).message; }
+    if (id === logRequest && logsOpen.value && sync.jobs.some(job => job.id === selected.value?.id && ['queued', 'running'].includes(job.status))) logTimer = setTimeout(() => { void loadLogs(); }, 3000);
+}
+function showLogs(job: SyncJob): void { selected.value = job; logs.value = []; logsOpen.value = true; void loadLogs(); }
+watch(logsOpen, (open) => { if (!open) { ++logRequest; clearTimeout(logTimer); } });
+onUnmounted(() => { ++logRequest; clearTimeout(logTimer); });
+void sync.refresh();
 </script>
 <template>
-  <div class="page-heading">
-    <div>
-      <span class="eyebrow">DATA OPERATIONS</span>
-      <h1>让研究从完整数据开始</h1>
-      <p>股票基础信息、行业题材分别按需更新，收盘行情与策略每日同步。</p>
-    </div>
-    <span class="tag">仅管理员可用</span>
-  </div>
+  <div class="page-heading"><div><span class="eyebrow">DATA OPERATIONS</span><h1>让研究从完整数据开始</h1><p>基础信息、行业题材分别按需更新，行情校验成功后发布策略结果。</p></div><el-button @click="sync.refresh">刷新状态</el-button></div>
+  <el-alert v-if="sync.error" :title="sync.error" type="error" show-icon :closable="false" />
   <div class="summary-grid">
-    <div class="summary-card">
-      <span>股票基础信息</span>
-      <strong class="summary-text">{{ sync.initialized ? '已初始化' : '等待初始化' }}</strong>
-      <p>{{ sync.stockUpdatedAt ? `最近成功 ${sync.stockUpdatedAt}` : sync.initialized ? '已初始化，暂未记录更新时间' : '先同步股票清单，再同步分类和行情' }}</p>
-      <p>沪 / 深 / 北 · 5,348只（模拟）</p>
-    </div>
-    <div class="summary-card">
-      <span>行业与题材</span>
-      <strong class="summary-text">{{ sync.catalogUpdatedAt ? '已同步' : '等待同步' }}</strong>
-      <p>{{ sync.catalogUpdatedAt ? `最近成功 ${sync.catalogUpdatedAt}` : '独立手动同步，不随股票基础信息自动更新' }}</p>
-    </div>
-    <div class="summary-card">
-      <span>最近收盘同步</span>
-      <strong class="summary-text">{{ latestDaily ? DATA_DATE : '尚未同步' }}</strong>
-      <p>{{ latestDaily ? '固定示例日期，不随当前时间变更' : '不影响机会列表的固定样例展示' }}</p>
-    </div>
+    <div class="summary-card"><span>股票基础信息</span><strong class="summary-text">{{ sync.initialized ? '已初始化' : '等待初始化' }}</strong><p>最近成功 {{ formatTime(sync.stockUpdatedAt) }}</p></div>
+    <div class="summary-card"><span>行业与题材</span><strong class="summary-text">{{ sync.catalogUpdatedAt ? '已更新' : '尚未更新' }}</strong><p>最近成功 {{ formatTime(sync.catalogUpdatedAt) }}</p></div>
+    <div class="summary-card"><span>已发布收盘行情</span><strong class="summary-text">{{ market.status?.publishedSnapshot?.dataDate ?? '尚未发布' }}</strong><p>最近任务 {{ formatTime(latestDaily?.createdAt) }}</p></div>
   </div>
-  <section class="panel data-actions-panel">
-    <div class="section-caption">
-      <strong>数据任务</strong>
-      <span class="tag tag-amber">本地模拟，不连接数据源</span>
-    </div>
-    <div class="data-action-grid">
-      <article>
-        <span class="action-icon">
-          <AppIcon name="database" :size="25" />
-        </span>
-        <div>
-          <h3>股票基础信息</h3>
-          <p>同步股票清单、代码、名称、交易所和上市板块，保留已有行业、题材关系。</p>
-          <label class="task-source">
-            股票数据源
-            <el-select v-model="sources.initialize" :disabled="!!sync.running" aria-label="股票基础信息数据源">
-              <el-option label="Sina" value="Sina" />
-              <el-option label="Baostock" value="Baostock" />
-            </el-select>
-          </label>
-          <el-button :disabled="!!sync.running" @click="start('initialize')">
-            {{ sync.initialized ? '更新股票基础信息' : '初始化股票基础信息' }}
-            <AppIcon name="arrow" :size="16" />
-          </el-button>
-          <small>首次先执行此任务，之后可单独更新股票清单。</small>
-        </div>
-      </article>
-      <article>
-        <span class="action-icon">
-          <AppIcon name="layers" :size="25" />
-        </span>
-        <div>
-          <h3>行业与题材</h3>
-          <p>同步行业、题材字典与股票归属，仅按需手动执行，保留股票基础信息。</p>
-          <label class="task-source">
-            分类数据源
-            <span class="tag">分类样例 · 本地模拟</span>
-          </label>
-          <el-button :disabled="!sync.initialized || !!sync.running" @click="start('catalog')">
-            <AppIcon name="refresh" :size="16" />
-            刷新行业、题材数据
-          </el-button>
-          <small>{{ sync.initialized ? '首次同步或后续刷新均使用此入口，失败保留上次成功数据。' : '请先初始化股票清单，再关联行业和题材。' }}</small>
-        </div>
-      </article>
-      <article>
-        <span class="action-icon">
-          <AppIcon name="refresh" :size="25" />
-        </span>
-        <div>
-          <h3>收盘行情与策略</h3>
-          <p>模拟处理 {{ DATA_DATE }} 的收盘行情与策略结果，复用已有行业、题材关系，不重新获取分类数据。</p>
-          <label class="task-source">
-            行情数据源
-            <el-select v-model="sources.daily" :disabled="!!sync.running" aria-label="收盘行情数据源">
-              <el-option label="Sina" value="Sina" />
-              <el-option label="Baostock" value="Baostock" />
-            </el-select>
-          </label>
-          <el-button type="primary" :disabled="!sync.initialized || !!sync.running" @click="start('daily')">
-            同步示例收盘数据
-            <AppIcon name="arrow" :size="16" />
-          </el-button>
-          <small v-if="!sync.initialized">请先完成基础数据初始化</small>
-          <small v-else-if="!sync.catalogUpdatedAt">分类尚未同步时标记未知，不影响行情任务运行。</small>
-        </div>
+  <section class="panel"><div class="section-caption"><strong>更新数据</strong><span class="muted">每次任务固定一个数据渠道</span></div>
+    <div class="summary-grid">
+      <article v-for="kind in kinds" :key="kind" class="summary-card"><h3>{{ labels[kind] }}</h3><p>{{ descriptions[kind] }}</p>
+        <el-select v-model="sources[kind]" :placeholder="choices(kind).length ? '选择渠道' : '暂无可用渠道'" :disabled="!!sync.running || sync.loading || !choices(kind).length" :aria-label="`${labels[kind]}数据渠道`">
+          <el-option v-for="source in choices(kind)" :key="source.id" :label="source.name" :value="source.id" />
+        </el-select>
+        <el-date-picker v-if="kind === 'daily'" v-model="target" type="date" value-format="YYYY-MM-DD" placeholder="已收盘交易日" :disabled="!!sync.running || sync.loading" style="width: 100%; margin-top: 10px" />
+        <p v-if="!choices(kind).length" class="muted">当前渠道暂不可用，请稍后刷新状态。</p>
+        <el-button type="primary" :loading="sync.loading" :disabled="!!sync.running || !sources[kind] || (kind !== 'initialize' && !sync.initialized)" style="margin-top: 12px" @click="start(kind)">{{ kind === 'initialize' && !sync.initialized ? '初始化股票' : '开始更新' }}</el-button>
       </article>
     </div>
   </section>
-  <section v-if="sync.running" class="panel running-panel">
-    <div>
-      <span class="status-dot" />
-      <strong>{{ kindLabels[sync.running.kind] }}进行中</strong>
-      <el-button text @click="showLogs(sync.running)">查看日志</el-button>
-    </div>
-    <el-progress :percentage="sync.running.progress" :stroke-width="8" />
-    <p class="muted">{{ sync.running.logs.at(-1) }} 刷新或退出账号会中断模拟任务。</p>
+  <section v-if="sync.running" class="panel"><div class="section-caption"><strong>{{ labels[sync.running.kind] }} · {{ statusLabels[sync.running.status] }}</strong><el-button text @click="showLogs(sync.running)">查看日志</el-button></div>
+    <el-progress :percentage="sync.running.progress" />
+    <p v-if="sync.running.message">{{ sync.running.message }}</p>
+    <p v-if="sync.running.nextRetryAt" class="muted">等待行情或渠道允许访问，下次执行 {{ formatTime(sync.running.nextRetryAt) }}。</p><p v-else class="muted">任务在服务器运行，刷新或退出账号不会取消已受理任务。</p>
   </section>
-  <section class="panel">
-    <div class="section-caption">
-      <strong>任务记录</strong>
-      <span class="muted">保留最近 20 次模拟任务</span>
-    </div>
-    <StatePanel v-if="!sync.jobs.length" title="还没有同步任务" description="从上方初始化基础数据开始，体验完整任务流程。" />
-    <div v-else class="table-scroll">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>任务</th>
-            <th>数据源</th>
-            <th>发起时间（北京时间）</th>
-            <th>状态</th>
-            <th>处理数量</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="job in sync.jobs" :key="job.id">
-            <td>
-              <strong>{{ kindLabels[job.kind] }}</strong>
-              <small class="cell-subtext">{{ job.id.slice(0, 8) }}</small>
-            </td>
-            <td>{{ job.source }}</td>
-            <td>{{ job.createdAt }}</td>
-            <td>
-              <span
-                class="tag"
-                :class="job.status === 'success' ? 'tag-green' : job.status === 'failed' ? 'tag-red' : 'tag-amber'"
-              >{{ statusLabels[job.status] }}{{ job.status === 'running' ? ` ${job.progress}%` : '' }}</span>
-            </td>
-            <td>{{ job.status === 'success' ? `${job.count.toLocaleString()} 条（模拟）` : '—' }}</td>
-            <td>
-              <el-button text @click="showLogs(job)">查看日志</el-button>
-              <el-button
-                v-if="job.status === 'failed'"
-                text
-                type="primary"
-                :disabled="!!sync.running"
-                @click="retryJob(job)"
-              >重试</el-button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+  <section class="panel"><div class="section-caption"><strong>任务记录</strong><span class="muted">最近100条</span></div>
+    <StatePanel v-if="!sync.jobs.length" title="还没有同步任务" description="先初始化股票基础信息，再同步收盘行情。" />
+    <div v-else class="table-scroll"><table class="data-table"><thead><tr><th>任务</th><th>渠道</th><th>发起时间（北京时间）</th><th>状态</th><th>已处理 / 总数</th><th>操作</th></tr></thead><tbody>
+      <tr v-for="job in sync.jobs" :key="job.id"><td>{{ labels[job.kind] }}<small class="cell-subtext">{{ job.dataDate ?? job.id.slice(0, 8) }}</small></td><td>{{ market.status?.sources.find(source => source.id === job.source)?.name ?? job.source }}</td><td>{{ formatTime(job.createdAt) }}</td>
+        <td><span class="tag" :class="job.status === 'succeeded' ? 'tag-green' : job.status === 'failed' ? 'tag-red' : 'tag-amber'">{{ statusLabels[job.status] }} {{ job.progress }}%</span><small v-if="job.error" class="cell-subtext">{{ job.error.message }}</small></td>
+        <td>{{ job.result ? `${job.result.processedCount} / ${job.result.totalCount}` : '—' }}</td><td><el-button text @click="showLogs(job)">查看日志</el-button><el-button v-if="job.status === 'failed'" text type="primary" :disabled="!!sync.running || sync.loading || !choices(job.kind).some(source => source.id === job.source)" @click="start(job.kind, job)">重试</el-button></td></tr>
+    </tbody></table></div>
   </section>
-  <el-dialog v-model="logsOpen" title="模拟任务日志" width="min(700px, 94vw)">
-    <template v-if="selectedJob">
-      <div class="log-heading">
-        <strong>{{ kindLabels[selectedJob.kind] }}</strong>
-        <span class="tag">{{ statusLabels[selectedJob.status] }}</span>
-      </div>
-      <div class="task-logs">
-        <p v-for="(line, index) in selectedJob.logs" :key="index">
-          <span>{{ String(index + 1).padStart(2, '0') }}</span>
-          {{ line }}
-        </p>
-      </div>
-      <p class="muted">这些日志由前端计时器生成，不表示已获取或更新真实市场数据。</p>
-    </template>
-  </el-dialog>
+  <el-dialog v-model="logsOpen" title="任务日志" width="min(700px, 94vw)"><el-alert v-if="logsError" :title="logsError" type="error" :closable="false" /><div class="task-logs"><p v-for="(line, index) in logs" :key="index"><span>{{ index + 1 }}</span>{{ line }}</p><p v-if="!logs.length">暂无日志。</p></div></el-dialog>
 </template>

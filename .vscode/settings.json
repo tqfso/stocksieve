@@ -1,0 +1,5 @@
+// 本文件让 VS Code 使用 uv 虚拟环境，并识别后端 src 目录中的 Python 包。
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
+  "python.analysis.extraPaths": ["${workspaceFolder}/backend/src"]
+}

@@ -1,10 +1,12 @@
-<!-- 本文件绘制模拟 OHLC、成交量与均线，提供周期、缩放、拖动和十字光标交互。 -->
+<!-- 本文件绘制后端返回的真实周期K线和均线，支持历史分页、缩放、拖动与十字光标。 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { aggregateCandles, generateCandles } from '../mock/market.ts';
-import { calculateMovingAverages, MA_PERIODS } from '../moving-averages.ts';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { formatNumber, getCandles } from '../api.ts';
+import type { LiveStock as Stock, ServerCandle } from '../api.ts';
+import StatePanel from './StatePanel.vue';
+import { MA_PERIODS } from '../moving-averages.ts';
 import type { MovingAveragePeriod } from '../moving-averages.ts';
-import type { Period, Stock } from '../types.ts';
+import type { Period } from '../types.ts';
 const props = defineProps<{
     stock: Stock;
 }>();
@@ -17,19 +19,34 @@ const chart = ref<SVGSVGElement>();
 const dragging = ref(false);
 let dragStart = 0;
 let dragOffset = 0;
-const daily = computed(() => generateCandles(props.stock));
-const all = computed(() => aggregateCandles(daily.value, period.value));
+const all = ref<ServerCandle[]>([]);
+const loading = ref(false);
+const error = ref('');
+const nextBefore = ref<string | null>(null);
+let requestId = 0;
+async function load(older = false): Promise<void> {
+    if (older && (loading.value || !nextBefore.value)) return;
+    const id = ++requestId; loading.value = true; error.value = '';
+    if (!older) all.value = [];
+    try {
+        const result = await getCandles(props.stock, period.value, older ? nextBefore.value ?? undefined : undefined);
+        if (id !== requestId) return;
+        all.value = older ? [...result.items, ...all.value] : result.items;
+        nextBefore.value = result.hasMore ? result.nextBefore : null;
+    } catch (cause) { if (id === requestId) error.value = (cause as Error).message; }
+    finally { if (id === requestId) loading.value = false; }
+}
 const end = computed(() => all.value.length - offset.value);
 const start = computed(() => Math.max(0, end.value - windowSize.value));
 const visible = computed(() => all.value.slice(start.value, end.value));
 const step = computed(() => 910 / Math.max(1, visible.value.length));
 const active = computed(() => visible.value[hovered.value ?? visible.value.length - 1]);
-const averageSeries = computed(() => calculateMovingAverages(all.value));
+const averageSeries = computed(() => Object.fromEntries(MA_PERIODS.map(size => [size, all.value.map(candle => candle[`ma${size}`])])) as Record<MovingAveragePeriod, (number | null)[]>);
 // 纵轴同时容纳已选均线，避免较长周期的均线被图表裁切。
 const visibleAverages = computed(() => averages.value.flatMap((size) => averageSeries.value[size].slice(start.value, end.value).filter((value): value is number => value !== null)));
-const upper = computed(() => Math.max(...visible.value.map((candle) => candle.high), ...visibleAverages.value) * 1.025);
-const lower = computed(() => Math.min(...visible.value.map((candle) => candle.low), ...visibleAverages.value) * 0.975);
-const maxVolume = computed(() => Math.max(...visible.value.map((candle) => candle.volume), 1));
+const upper = computed(() => visible.value.length ? Math.max(...visible.value.map((candle) => candle.high), ...visibleAverages.value) * 1.025 : 1);
+const lower = computed(() => visible.value.length ? Math.min(...visible.value.map((candle) => candle.low), ...visibleAverages.value) * 0.975 : 0);
+const maxVolume = computed(() => Math.max(...visible.value.map((candle) => candle.volume ?? 0), 1));
 const priceTicks = computed(() => Array.from({ length: 5 }, (_, index) => upper.value - (upper.value - lower.value) * index / 4));
 const tickIndexes = computed(() => [...new Set([0, Math.floor(visible.value.length / 3), Math.floor(visible.value.length * 2 / 3), visible.value.length - 1])]);
 const averageColors = Object.fromEntries(MA_PERIODS.map((size) => [size, `var(--ma${size})`])) as Record<MovingAveragePeriod, string>;
@@ -61,8 +78,8 @@ function beginDrag(event: PointerEvent): void { if (event.button !== 0)
 function stopDrag(): void { dragging.value = false; }
 function zoom(delta: number): void { windowSize.value = Math.max(10, Math.min(180, windowSize.value + delta)); offset.value = Math.min(offset.value, Math.max(0, all.value.length - windowSize.value)); hovered.value = null; }
 function averageLabel(size: MovingAveragePeriod): string { const value = averageSeries.value[size]?.[start.value + (hovered.value ?? visible.value.length - 1)]; return value === null || value === undefined ? '—' : value.toFixed(2); }
-watch(period, () => { offset.value = 0; hovered.value = null; windowSize.value = period.value === 'year' ? 20 : 60; });
-watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; });
+watch([period, () => props.stock.stockId, () => props.stock.snapshotId], () => { offset.value = 0; hovered.value = null; windowSize.value = period.value === 'year' ? 20 : 60; void load(); }, { immediate: true });
+onUnmounted(() => { ++requestId; });
 </script>
 <template>
   <section class="panel chart-panel">
@@ -76,6 +93,7 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
         >{{ item[1] }}</button>
       </div>
       <div class="chart-tools">
+        <el-button v-if="nextBefore" size="small" :loading="loading" @click="load(true)">加载更早历史</el-button>
         <el-button size="small" aria-label="放大 K 线" @click="zoom(-20)">＋</el-button>
         <el-button size="small" aria-label="缩小 K 线" @click="zoom(20)">－</el-button>
         <el-button size="small" @click="offset = 0; windowSize = period === 'year' ? 20 : 60; hovered = null">最近数据</el-button>
@@ -101,10 +119,13 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
       </span>
       <span>
         量
-        <b>{{ (active.volume / 10000).toFixed(1) }} 万股</b>
+        <b>{{ formatNumber(active.volume === null ? null : active.volume / 10000, 1) }} 万股</b>
       </span>
     </div>
-    <div class="ma-legend">
+    <StatePanel v-if="loading && !all.length" kind="loading" title="正在读取K线" />
+    <StatePanel v-else-if="error" kind="error" title="图表加载失败" :description="error" action="重试" @action="load()" />
+    <StatePanel v-else-if="!all.length" title="暂无可用K线" description="历史记录缺失时不补造走势。" />
+    <div v-if="all.length" class="ma-legend">
       <label v-for="size in MA_PERIODS" :key="size" :style="{ color: averageColors[size] }">
         <input v-model="averages" type="checkbox" :value="size" />
         MA
@@ -114,13 +135,14 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
       <span>均线按当前周期计算 · — 表示历史不足</span>
     </div>
     <svg
+      v-if="visible.length"
       ref="chart"
       class="candlestick-chart"
       :class="{ dragging }"
       viewBox="0 0 1000 350"
       preserveAspectRatio="none"
       role="img"
-      :aria-label="`${stock.name}模拟${period === 'day' ? '日' : period === 'week' ? '周' : '年'}K线，拖动查看历史，使用按钮缩放`"
+      :aria-label="`${stock.name}${period === 'day' ? '日' : period === 'week' ? '周' : '年'}K线，拖动查看历史，使用按钮缩放`"
       @pointermove="move"
       @pointerdown="beginDrag"
       @pointerup="stopDrag"
@@ -167,9 +189,9 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
         v-for="(candle, index) in visible"
         :key="`v${candle.time}`"
         :x="x(index) - Math.min(15, step * 0.28)"
-        :y="320 - candle.volume / maxVolume * 43"
+        :y="320 - (candle.volume ?? 0) / maxVolume * 43"
         :width="Math.min(30, step * 0.56)"
-        :height="candle.volume / maxVolume * 43"
+        :height="(candle.volume ?? 0) / maxVolume * 43"
         :fill="color(candle.open, candle.close)"
         opacity="0.58"
       />
@@ -189,7 +211,7 @@ watch(() => props.stock.code, () => { offset.value = 0; hovered.value = null; })
       </g>
     </svg>
     <div class="chart-footnote">
-      <span>前复权展示口径 · 工作日生成的虚构走势</span>
+      <span>前复权 · 均线按当前周期计算；缺失数据不补造</span>
       <span>拖动查看历史 · 滚轮或 ＋ / － 缩放</span>
     </div>
   </section>

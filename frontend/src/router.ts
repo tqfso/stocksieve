@@ -1,6 +1,7 @@
-// 本文件定义前端页面与模拟角色守卫；使用 hash 路由便于静态托管。
+// 本文件通过服务器校验会话并执行页面角色守卫；资源访问权限仍由后端强制校验。
 import { createRouter, createWebHashHistory } from 'vue-router';
-import { currentUser } from './mock/service.ts';
+import { ApiError, currentUser } from './api.ts';
+import { useSession } from './stores.ts';
 export const router = createRouter({
     history: createWebHashHistory(),
     routes: [
@@ -15,7 +16,9 @@ export const router = createRouter({
     ],
     scrollBehavior: () => ({ top: 0 }),
 });
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
+    try { if (currentUser()) await useSession().restore(); }
+    catch (error) { if (!(error instanceof ApiError && error.status === 401)) return { path: '/login', query: { unavailable: '1' } }; }
     const user = currentUser();
     if (!to.meta.public && !user)
         return { path: '/login', query: { redirect: to.fullPath } };

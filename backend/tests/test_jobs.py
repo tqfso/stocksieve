@@ -91,6 +91,22 @@ def test_waiting_task_claim_clears_queued_only_fields_and_keeps_retry_context(co
     assert result['status'] == 'succeeded' and result['retryCount'] == 1
 
 
+def test_network_recovery_is_bounded_and_keeps_the_same_job(context):
+    from stocksieve.errors import DomainError
+    async def unavailable():
+        raise DomainError('SOURCE_TIMEOUT', '测试网络故障。', 503)
+    context.source.initialize = unavailable
+    job = context.submit('initialize')
+    for _ in range(3):
+        context.run()
+        result = context.api.tasks.detail(job, 'sync')
+        assert result['status'] == 'queued' and result['waitReason'] == 'SOURCE_ACCESS_WAIT'
+        context.clock.advance(601)
+    context.run()
+    result = context.api.tasks.detail(job, 'sync')
+    assert result['status'] == 'failed' and result['error']['code'] == 'SOURCE_TIMEOUT'
+
+
 def test_closed_day_skips_without_querying_vendor(context):
     context.submit('initialize'); context.run()
     context.clock.advance(86400)

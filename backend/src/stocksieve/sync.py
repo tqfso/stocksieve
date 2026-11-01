@@ -7,13 +7,15 @@ from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import Connection
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from . import tables as t
 from .database import utc
 from .domain import BOARDS, Bar, Stock, adjusted_history
 from .errors import DomainError, MissingData
 from .market import strategy_catalog
-from .sources import Registry, Source
+from .sources import Registry, Source, progress_sink
 from .strategies import Context, SORTS, evaluate
 from .tasks import Lease, SHANGHAI, Tasks
 
@@ -41,13 +43,14 @@ class Sync:
     async def run(self, lease: Lease) -> None:
         with self.db.transaction() as connection:
             task = dict(self.tasks.assert_lease(connection, lease))
-        source = self.registry.get(task['data_source'], task['kind'])
-        if task['kind'] == 'initialize':
-            await self.initialize(lease, source)
-        elif task['kind'] == 'catalog':
-            await self.catalog(lease, source)
-        else:
-            await self.daily(lease, source, task)
+        source = self.registry.get(task['data_source'], task['kind'], self.tasks.boards(task))
+        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced)):
+            if task['kind'] == 'initialize':
+                await self.initialize(lease, source, task)
+            elif task['kind'] == 'catalog':
+                await self.catalog(lease, source)
+            else:
+                await self.daily(lease, source, task)
 
     def finish(self, connection: Connection, lease: Lease, outcome: str, total: int,
                *, snapshot_id: str | None = None, skipped: int = 0, internal: dict[str, Any] | None = None) -> None:
@@ -59,32 +62,37 @@ class Sync:
             result_json=result, result_snapshot_id=snapshot_id, finished_at=self.tasks.clock(), lease_owner=None, lease_expires_at=None, wait_reason=None))
         connection.execute(t.logs.insert().values(task_id=lease.id, time=self.tasks.clock(), level='info', message='数据任务已完成。'))
 
-    def validate_universe(self, stocks: tuple[Stock, ...]) -> None:
-        if not stocks or len({stock.stock_id for stock in stocks}) != len(stocks) or {stock.board for stock in stocks} != set(BOARDS):
-            raise DomainError('DATA_INCOMPLETE', '证券范围未完整覆盖五个上市板块或包含重复记录。', 503)
+    def validate_universe(self, stocks: tuple[Stock, ...], boards: tuple[str, ...]) -> None:
+        if not stocks or len({stock.stock_id for stock in stocks}) != len(stocks) or {stock.board for stock in stocks} != set(boards):
+            raise DomainError('DATA_INCOMPLETE', '证券范围未完整覆盖本次任务的全部上市板块或包含重复记录。', 503)
 
-    async def initialize(self, lease: Lease, source: Source) -> None:
+    async def initialize(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
         data = await source.initialize()
-        self.validate_universe(data.stocks)
-        if set(data.calendar) != {'SSE', 'SZSE', 'BSE'} or not all(data.calendar.values()):
-            raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '三个交易所的日历未准备完整。', 503)
+        boards = self.tasks.boards(task)
+        stocks = tuple(stock for stock in data.stocks if stock.board in boards)
+        self.validate_universe(stocks, boards)
+        exchanges = {BOARDS[board][1] for board in boards}
+        if not exchanges <= data.calendar.keys() or not all(data.calendar[exchange] for exchange in exchanges):
+            raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '本次任务所需交易所日历未准备完整。', 503)
         with self.db.transaction(serialized=True) as connection:
             self.tasks.assert_lease(connection, lease)
-            for stock in data.stocks:
+            for stock in stocks:
                 self.save_stock(connection, stock, source.id)
             for exchange, days in data.calendar.items():
+                if exchange not in exchanges:
+                    continue
                 for day, entry in days.items():
                     if entry.is_open is True and (entry.close_at is None or entry.close_at.tzinfo is None or entry.close_at.astimezone(SHANGHAI).date() != day):
                         raise DomainError('TRADING_CALENDAR_UNAVAILABLE', '开市日缺少明确的收盘时间。', 503)
                     upsert(connection, t.calendar, {'exchange': exchange, 'trade_date': day},
-                           {'is_open': entry.is_open, 'close_at': entry.close_at if entry.is_open else None, 'source': source.id, 'fetched_at': self.tasks.clock()})
-            self.finish(connection, lease, 'initialized', len(data.stocks))
+                           {'is_open': entry.is_open, 'close_at': entry.close_at if entry.is_open else None, 'source': source.id, 'fetched_at': data.calendar_fetched_at or self.tasks.clock()})
+            self.finish(connection, lease, 'initialized', len(stocks))
 
     def save_stock(self, connection: Connection, stock: Stock, source: str, *, insert_only: bool = False) -> None:
         old = connection.execute(select(t.stocks).where(t.stocks.c.stock_id == stock.stock_id)).mappings().first()
         if old and insert_only:
             return
-        codes = {**(old['source_codes'] if old else {}), source: stock.stock_id}
+        codes = {**(old['source_codes'] if old else {}), source: stock.source_code or stock.stock_id}
         upsert(connection, t.stocks, {'stock_id': stock.stock_id}, {'code': stock.code, 'name': stock.name,
                'exchange': stock.exchange, 'board': stock.board, 'listed_on': stock.listed_on,
                'delisted_on': stock.delisted_on, 'source_codes': codes, 'updated_at': self.tasks.clock()})
@@ -102,6 +110,7 @@ class Sync:
             self.tasks.assert_lease(connection, lease)
             previous = connection.execute(select(t.tasks.c.result_json).where(t.tasks.c.kind == 'catalog', t.tasks.c.status == 'succeeded')).scalars().all()
             revision = max((item.get('_catalogRevision', 0) for item in previous if item), default=0) + 1
+            categories: dict[str, tuple[str, dict[str, str]]] = {}
             for relation in data['stocks'].values():
                 if not isinstance(relation, dict):
                     raise DomainError('DATA_INCOMPLETE', '股票分类关联格式无效。', 503)
@@ -112,24 +121,32 @@ class Sync:
                     if category:
                         if not category.get('id') or not category.get('name'):
                             raise DomainError('DATA_INCOMPLETE', '分类ID或名称缺失。', 503)
-                        old = connection.execute(select(t.categories).where(t.categories.c.id == category['id'])).mappings().first()
-                        if old and old['kind'] != kind:
+                        if category['id'] in categories and categories[category['id']][0] != kind:
                             raise DomainError('DATA_INCOMPLETE', '同一分类ID不能同时用作行业和题材。', 503)
-                        codes = {**(old['source_codes'] if old else {}), source.id: category['id']}
-                        upsert(connection, t.categories, {'id': category['id']}, {'kind': kind, 'name': category['name'], 'source_codes': codes, 'updated_at': self.tasks.clock()})
-            self.finish(connection, lease, 'catalog_updated', len(stocks), internal={'_classifications': data['stocks'], '_catalogRevision': revision})
+                        categories[category['id']] = (kind, category)
+            # 同一分类仅写一次，避免大量股票共有标签导致长事务与重复往返。
+            for key, (kind, category) in categories.items():
+                old = connection.execute(select(t.categories).where(t.categories.c.id == key)).mappings().first()
+                if old and old['kind'] != kind:
+                    raise DomainError('DATA_INCOMPLETE', '同一分类ID不能同时用作行业和题材。', 503)
+                codes = {**(old['source_codes'] if old else {}), source.id: category.get('sourceCode', key)}
+                upsert(connection, t.categories, {'id': key}, {'kind': kind, 'name': category['name'], 'source_codes': codes, 'updated_at': self.tasks.clock()})
+            self.finish(connection, lease, 'catalog_updated', len(stocks), internal={'_classifications': data['stocks'], '_catalogRevision': revision, '_classificationProvenance': data.get('provenance', {})})
 
     async def precheck(self, lease: Lease, source: Source, task: dict[str, Any]) -> bool:
         target = task['target_date']
         retry_pending = bool(task['options_json'].get('readinessRetryPending'))
+        boards = self.tasks.boards(task)
+        exchanges = {BOARDS[board][1] for board in boards}
         with self.db.transaction() as connection:
-            calendar = {row['exchange']: row for row in connection.execute(select(t.calendar).where(t.calendar.c.trade_date == target)).mappings()}
-        if set(calendar) == {'SSE', 'SZSE', 'BSE'} and all(row['is_open'] is False for row in calendar.values()):
-            checks = [{'board': board, 'status': 'market_closed', 'latestDataDate': None, 'message': '交易日历确认休市。'} for board in BOARDS]
+            calendar = {row['exchange']: row for row in connection.execute(select(t.calendar).where(t.calendar.c.trade_date == target, t.calendar.c.exchange.in_(exchanges))).mappings()}
+        if set(calendar) == exchanges and all(row['is_open'] is False for row in calendar.values()):
+            checks = [{'board': board, 'status': 'market_closed', 'latestDataDate': None, 'message': '交易日历确认休市。'} for board in boards]
         else:
             checks = await source.precheck(target)
-        if len(checks) != 5 or {item.get('board') for item in checks} != set(BOARDS):
-            raise DomainError('DATA_INCOMPLETE', '预检没有覆盖五个上市板块。', 503)
+            checks = [item for item in checks if item.get('board') in boards]
+        if len(checks) != len(boards) or {item.get('board') for item in checks} != set(boards):
+            raise DomainError('DATA_INCOMPLETE', '预检未覆盖本次任务的全部上市板块。', 503)
         allowed = {'ready', 'pending', 'market_closed', 'unknown', 'unsupported'}
         normalized = []
         for item in checks:
@@ -153,7 +170,7 @@ class Sync:
         precheck = {'checkedAt': self.tasks.clock().isoformat(), 'boards': normalized}
         retry_count = task['retry_count'] + int(retry_pending)
         options = {**task['options_json'], 'readinessRetryPending': False}
-        self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count, 'options_json': options}, '已完成五板块就绪检查。')
+        self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count, 'options_json': options}, '已完成本次覆盖板块的就绪检查。')
         if any(item['status'] == 'unsupported' for item in normalized):
             raise DomainError('BOARD_DATA_UNSUPPORTED', '所选渠道不支持某个开市板块。', 503)
         if all(item['status'] == 'market_closed' for item in normalized):
@@ -185,8 +202,8 @@ class Sync:
         if not current['options_json'].get('buildingSnapshotId'):
             with self.db.transaction() as connection:
                 known = tuple(stock_value(row) for row in connection.execute(select(t.stocks)).mappings())
-            universe = await source.universe(task['target_date'], known)
-            self.validate_universe(universe)
+            universe = tuple(stock for stock in await source.universe(task['target_date'], known) if stock.board in self.tasks.boards(task))
+            self.validate_universe(universe, self.tasks.boards(task))
             self.begin_snapshot(lease, source, task, universe)
         # 每只股票独立形成受租约保护的批次；频控等待后从 nextIndex 恢复。
         while True:
@@ -238,22 +255,27 @@ class Sync:
                     pass
             with self.db.transaction(serialized=True) as connection:
                 latest = self.tasks.assert_lease(connection, lease)
-                for bar in packet.bars:
-                    upsert(connection, t.bars, {'snapshot_id': snapshot['id'], 'stock_id': stock_id, 'trade_date': bar.day},
-                           {'open': bar.open, 'high': bar.high, 'low': bar.low, 'close': bar.close, 'amount': bar.amount,
-                            'volume': bar.volume, 'turnover': bar.turnover, 'total_market_cap': bar.total_market_cap,
-                            'adj_factor': bar.factor, 'source': source.id, 'fetched_at': self.tasks.clock()})
+                if packet.bars:
+                    # 每只股票一批写入，避免首次全市场历史产生数百万次逐行往返。
+                    statement = (postgres_insert if self.db.engine.dialect.name == 'postgresql' else sqlite_insert)(t.bars)
+                    fields = ('open', 'high', 'low', 'close', 'amount', 'volume', 'turnover', 'total_market_cap', 'adj_factor', 'source', 'fetched_at')
+                    statement = statement.on_conflict_do_update(index_elements=['snapshot_id', 'stock_id', 'trade_date'], set_={field: getattr(statement.excluded, field) for field in fields})
+                    connection.execute(statement, [{'snapshot_id': snapshot['id'], 'stock_id': stock_id, 'trade_date': bar.day,
+                        'open': bar.open, 'high': bar.high, 'low': bar.low, 'close': bar.close, 'amount': bar.amount,
+                        'volume': bar.volume, 'turnover': bar.turnover, 'total_market_cap': bar.total_market_cap,
+                        'adj_factor': bar.factor, 'source': source.id, 'fetched_at': self.tasks.clock()} for bar in packet.bars])
                 connection.execute(update(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == snapshot['id'], t.snapshot_stocks.c.stock_id == stock_id).values(**quote))
                 connection.execute(delete(t.signals).where(t.signals.c.snapshot_id == snapshot['id'], t.signals.c.stock_id == stock_id))
                 for signal in evaluation.signals:
                     connection.execute(t.signals.insert().values(id=signal['id'], snapshot_id=snapshot['id'], stock_id=stock_id,
                         strategy_code=signal['strategy'], reason=signal['reason'], metrics_json=signal['metrics'], condition_results_json=signal['conditionResults'],
                         invalidation_json=signal['invalidation'], sort_value=Decimal(str(signal['metrics'][SORTS[signal['strategy']][0]]))))
-                options = {**latest['options_json'], 'nextIndex': index + 1}
+                options = {**latest['options_json'], 'nextIndex': index + 1,
+                           'sourceProgressMessage': f'已计算并保存{index + 1}/{len(options["stockIds"])}只股票。'}
                 start = min((bar.day for bar in data), default=task['target_date'])
                 old_start = snapshot['history_start_date']
                 connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot['id']).values(history_start_date=min(start, old_start) if old_start else start))
-                connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=min(95, 10 + int((index + 1) / len(options['stockIds']) * 85))))
+                connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=min(98, 80 + int((index + 1) / len(options['stockIds']) * 18))))
             await asyncio.sleep(0)
         self.publish(lease)
 
@@ -262,6 +284,11 @@ class Sync:
             row = self.tasks.assert_lease(connection, lease)
             base = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published').order_by(t.snapshots.c.version.desc()).limit(1)).mappings().first()
             cutoff = datetime.combine(task['target_date'], time.max, SHANGHAI)
+            exchanges = {BOARDS[board][1] for board in self.tasks.boards(task)}
+            latest_closed = connection.scalar(select(func.max(t.calendar.c.trade_date)).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.is_open.is_(True), t.calendar.c.close_at <= self.tasks.clock()))
+            # 最新收盘研究可使用构建时取得的标签，另存实际资料时间；历史回补不套用后取得分类。
+            if latest_closed == task['target_date']:
+                cutoff = self.tasks.clock()
             catalog = connection.execute(select(t.tasks).where(t.tasks.c.kind == 'catalog', t.tasks.c.status == 'succeeded', t.tasks.c.finished_at <= cutoff)
                 .order_by(func.coalesce(t.tasks.c.result_json['_catalogRevision'].as_integer(), 0).desc(), t.tasks.c.finished_at.desc()).limit(1)).mappings().first()
             classifications = (catalog['result_json'] or {}).get('_classifications', {}) if catalog else {}
@@ -280,12 +307,16 @@ class Sync:
                 connection.execute(t.snapshot_stocks.insert().values(snapshot_id=snapshot_id, stock_id=stock.stock_id,
                     code=stock.code, name=stock.name, exchange=stock.exchange, board=stock.board, listed_on=stock.listed_on,
                     industry_id=industry['id'] if industry else None, industry_name=industry['name'] if industry else None))
-                for concept in relation.get('concepts', []):
-                    connection.execute(t.concepts.insert().values(snapshot_id=snapshot_id, stock_id=stock.stock_id, concept_id=concept['id'], concept_name=concept['name']))
+                if relation.get('concepts'):
+                    connection.execute(t.concepts.insert(), [{'snapshot_id': snapshot_id, 'stock_id': stock.stock_id,
+                        'concept_id': concept['id'], 'concept_name': concept['name']} for concept in relation['concepts']])
             options = {**row['options_json'], 'buildingSnapshotId': snapshot_id,
+                       'sourceProgressMessage': '历史与补充资料准备完成，正在计算策略并保存结果。',
                        'stockIds': [stock.stock_id for stock in universe], 'nextIndex': 0, 'catalogTaskId': catalog['id'] if catalog else None,
+                       'catalogAsOfAt': utc(catalog['finished_at']).isoformat() if catalog else None,
+                       'dataProvenance': {**getattr(source, 'provenance', {}), **((catalog['result_json'] or {}).get('_classificationProvenance', {}) if catalog else {})},
                        'catalogKnownCount': sum(stock.stock_id in classifications and classifications[stock.stock_id].get('_conceptsKnown', True) for stock in universe)}
-            connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=10))
+            connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=80))
 
     def publish(self, lease: Lease) -> None:
         with self.db.transaction(serialized=True) as connection:
@@ -304,5 +335,5 @@ class Sync:
                        'totalMarketCap': coverage(sum(row['total_market_cap'] is not None for row in rows))}
             version = connection.scalar(text('SELECT nextval(CAST(:sequence AS regclass))'), {'sequence': f'{self.db.schema or "public"}.snapshot_version_seq'}) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
             connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='published', version=version,
-                published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'filters': filters, 'catalogTaskId': options['catalogTaskId']}))
+                published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {})}))
             self.finish(connection, lease, 'updated', len(rows), snapshot_id=snapshot_id, skipped=options.get('skipped', 0))

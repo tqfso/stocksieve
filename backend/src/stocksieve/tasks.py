@@ -13,6 +13,7 @@ from sqlalchemy.engine import Connection
 from . import tables as t
 from .config import Settings
 from .database import Database, utc
+from .domain import BOARDS
 from .errors import DomainError
 from .http import encode
 from .market import Market
@@ -45,10 +46,12 @@ class Tasks:
                                  'startedAt': stamp(row['started_at']), 'finishedAt': stamp(row['finished_at']),
                                  'error': {'code': row['error_code'], 'message': row['error_message']} if row['error_code'] else None}
         if row['category'] == 'sync':
+            source_wait = (row['options_json'] or {}).get('sourceWaitReason') if row['status'] == 'queued' else None
             stored = row['result_json']
             public_result = {key: stored.get(key) for key in ('outcome', 'totalCount', 'processedCount', 'successCount', 'skippedCount', 'failedCount', 'publishedSnapshotId')} if stored else None
             result.update(source=row['data_source'], trigger=row['trigger'], scheduledFor=stamp(row['scheduled_for']),
-                          waitReason=row['wait_reason'], nextRetryAt=stamp(row['run_after']) if row['wait_reason'] else None,
+                          message=(row['options_json'] or {}).get('sourceProgressMessage'),
+                          boards=list(self.boards(row)), waitReason=row['wait_reason'] or source_wait, nextRetryAt=stamp(row['run_after']) if row['wait_reason'] or source_wait else None,
                           retryDeadlineAt=stamp(row['retry_deadline_at']), retryCount=row['retry_count'], precheck=row['precheck_json'], result=public_result)
         else:
             options = row['options_json'] or {}
@@ -103,6 +106,9 @@ class Tasks:
             scheduled_for: datetime | None = None) -> Any:
         dedupe = f'sync:{kind}:{target}' if category == 'sync' else f'analysis:{user_id}:{stock_id}:{snapshot_id}:{kind}:{strategy}'
         task_id = t.identifier()
+        options = dict(options or {})
+        if category == 'sync':
+            options.setdefault('marketBoards', list(self.settings.market_boards))
         connection.execute(t.tasks.insert().values(id=task_id, category=category, kind=kind, created_by=user_id,
             trigger='scheduled' if scheduled_for else 'manual', data_source=source, target_date=target,
             stock_id=stock_id, input_snapshot_id=snapshot_id, strategy_code=strategy, status='queued', progress=0,
@@ -110,8 +116,14 @@ class Tasks:
             options_json=options or {}, attempt_no=0, created_at=self.clock()))
         return connection.execute(select(t.tasks).where(t.tasks.c.id == task_id)).mappings().one()
 
+    @staticmethod
+    def boards(row: Any) -> tuple[str, ...]:
+        """覆盖范围在受理时冻结；旧任务按原来的五板块解释，不随新配置缩减。"""
+        return tuple((row['options_json'] or {}).get('marketBoards', list(BOARDS)))
+
     def initialized(self, connection: Connection) -> bool:
-        return connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'initialize', t.tasks.c.status == 'succeeded').limit(1)).first() is not None
+        rows = connection.execute(select(t.tasks.c.options_json).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'initialize', t.tasks.c.status == 'succeeded')).scalars()
+        return any(set(self.settings.market_boards) <= set((options or {}).get('marketBoards', list(BOARDS))) for options in rows)
 
     def submit_sync(self, user: dict[str, Any], path: str, key: str | None, data: SyncInput) -> tuple[dict[str, Any], dict[str, str]]:
         def create(connection: Connection) -> Any:
@@ -128,8 +140,9 @@ class Tasks:
                 target = data.dataDate or self.clock().astimezone(SHANGHAI).date()
                 if target > self.clock().astimezone(SHANGHAI).date():
                     raise DomainError('MARKET_NOT_CLOSED', '不能同步未来日期。', 409)
-                rows = connection.execute(select(t.calendar).where(t.calendar.c.trade_date == target)).mappings().all()
-                if {row['exchange'] for row in rows} != {'SSE', 'SZSE', 'BSE'} or any(row['is_open'] is None for row in rows):
+                exchanges = {BOARDS[board][1] for board in self.settings.market_boards}
+                rows = connection.execute(select(t.calendar).where(t.calendar.c.trade_date == target, t.calendar.c.exchange.in_(exchanges))).mappings().all()
+                if {row['exchange'] for row in rows} != exchanges or any(row['is_open'] is None for row in rows):
                     raise DomainError('SERVICE_UNAVAILABLE', '目标日期的交易日历尚未确认。', 503)
                 if not any(row['is_open'] for row in rows):
                     raise DomainError('NOT_TRADING_DAY', '目标日期为确认休市日。')
@@ -258,9 +271,21 @@ class Tasks:
             self.assert_lease(connection, lease)
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(lease_expires_at=self.clock() + timedelta(seconds=self.settings.lease_seconds)))
 
+    def source_progress(self, lease: Lease, message: str, progress: int, advanced: bool) -> None:
+        """进度来自已完成的取数步骤；只有实际推进才复位连续网络故障计数，访问账本永不复位。"""
+        with self.db.transaction(serialized=True) as connection:
+            row = self.assert_lease(connection, lease)
+            options = {**row['options_json'], 'sourceProgressMessage': message}
+            if advanced:
+                options['networkRetryCount'] = 0
+            connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(progress=max(row['progress'], progress), options_json=options))
+            connection.execute(t.logs.insert().values(task_id=lease.id, time=self.clock(), level='info', message=message))
+
     def patch(self, lease: Lease, values: dict[str, Any], message: str | None = None) -> None:
         with self.db.transaction(serialized=True) as connection:
-            self.assert_lease(connection, lease)
+            row = self.assert_lease(connection, lease)
+            if 'progress' in values:
+                values = {**values, 'progress': max(row['progress'], values['progress'])}
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(**values))
             if message:
                 connection.execute(t.logs.insert().values(task_id=lease.id, time=self.clock(), level='info', message=message))

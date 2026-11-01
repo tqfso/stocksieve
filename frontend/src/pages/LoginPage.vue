@@ -1,4 +1,4 @@
-<!-- 本文件提供模拟账号登录、表单校验及角色快速填入。 -->
+<!-- 本文件通过后端验证账号并建立可撤销的登录会话。 -->
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -9,8 +9,7 @@ const router = useRouter();
 const route = useRoute();
 const form = reactive({ username: '', password: '' });
 const loading = ref(false);
-const error = ref('');
-function fill(username: string): void { form.username = username; form.password = 'demo1234'; error.value = ''; }
+const error = ref(route.query.expired ? '登录已过期，请重新登录。' : route.query.unavailable ? '后端暂不可用，请稍后重试。' : '');
 async function submit(): Promise<void> {
     error.value = '';
     if (!form.username.trim() || !form.password) {
@@ -51,7 +50,7 @@ async function submit(): Promise<void> {
           思考开始。
         </h1>
         <p>
-          从全市场的纷繁信号中，
+          从市场的纷繁信号中，
           <br />
           筛出值得进一步研究的机会。
         </p>
@@ -65,14 +64,14 @@ async function submit(): Promise<void> {
         <i v-for="n in 24" :key="n" :style="{ height: `${30 + (n * 17 % 47) + n * 4}px`, opacity: 0.25 + n / 40 }" />
       </div>
       <div class="login-story-footer">
-        全 A 股覆盖
-        <span>上海 · 深圳 · 北京</span>
+        沪深四板块
+        <span>北交所暂不可用</span>
       </div>
     </section>
     <section class="login-form-side">
       <span class="mock-label">
         <i />
-        前端模拟评审版
+        StockSieve 工作台
       </span>
       <div class="login-card">
         <span class="eyebrow">WELCOME BACK</span>
@@ -99,17 +98,9 @@ async function submit(): Promise<void> {
             <AppIcon name="arrow" :size="17" />
           </el-button>
         </el-form>
-        <div class="demo-accounts">
-          <span>快速填入演示账号</span>
-          <div>
-            <el-button @click="fill('admin')">管理员 admin</el-button>
-            <el-button @click="fill('viewer')">普通用户 viewer</el-button>
-          </div>
-          <small>初始密码均为 demo1234；新增用户也可在此登录。</small>
-        </div>
-        <p class="login-disclaimer">仅用于产品评审。账号和密码保存在当前浏览器，请使用演示信息。</p>
+        <p class="login-disclaimer">使用管理员创建的账号登录。</p>
       </div>
-      <span class="login-copyright">STOCKSIEVE / PRODUCT PREVIEW</span>
+      <span class="login-copyright">STOCKSIEVE / AFTER THE CLOSE</span>
     </section>
   </div>
 </template>

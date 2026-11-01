@@ -1,53 +1,38 @@
 # StockSieve 后端
 
-Python 3.12、aiohttp、Pydantic、SQLAlchemy；依赖和锁文件由 uv 管理，当前锁定 Linux x86_64 部署环境。生产使用现有 PostgreSQL；测试支持独立 SQLite 或 PostgreSQL 临时 schema，不会自动重建生产表。
+Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一由uv管理。当前先上线沪深四板块，北交所后续补齐；AI采用后端模拟模式。
 
 ## 当前状态
 
-| 模块 | 已实现 | 仍需完成 |
-| --- | --- | --- |
-| 账号与接口 | 登录、会话撤销、改密、用户管理、参数/权限/错误响应；真实 PostgreSQL＋HTTP 回归 | Docker 服务验收 |
-| 同步与调度 | 单源能力接口、去重/幂等、预检、持久化队列、租约、分批恢复、18点调度 | 真实免费供应商适配及覆盖验证 |
-| 策略和查询 | 五类策略、前复权、日/周/年 K 线、快照发布/冻结、筛选与汇总 | 全市场数据与容量测试 |
-| AI 分析 | 默认模拟报告、单个分析技能、资料工具、TTM/PE/筹码计算、来源/减持证据校验、报告存储和权限；已安装SDK的技能加载与协议配置测试 | 真实模型协议实测、免费检索渠道、财报采集及PDF文本读取 |
-| 部署 | Dockerfile、Compose、运行材料准备、数据库预检与HTTP验收脚本；已确认本机 ubuntu:24.04 | 实际构建并启动容器 |
+- API、worker、scheduler已通过Docker Compose在当前服务器启动，基础镜像为本机ubuntu:24.04；API同源提供编译后的真实前端。
+- 登录、会话撤销、用户管理、持久化任务、策略与快照、查询、图表、报告和权限已实现。页面不再使用浏览器模拟业务层。
+- 正式HTTP已完成初始化、行业同步和首轮发布：5223只股票，沪市主板1700、深市主板1494、创业板1411、科创板618；已保存779633条真实日线，覆盖2026-03-20至2026-10-30的150个交易日。
+- 最新快照行情日为2026-10-30，短线32、波段4、长线150、趋势埋伏0、低位筑底9条信号；全部5223只股票的当日市值均经日期与收盘价交叉核对。免费概念源暂不可用，对应筛选禁用，保留未知。
+- 正式渠道明示组合：Baostock行情/日历/行业/除权参考价，腾讯市值及新增编码的明确板块标签。价格与复权不跨上游混合；缺失资料保留未知。
+- 现有库两条旧CHECK约束已直接对齐，解决行业任务和新增策略被旧约束拒绝的问题；未删除业务数据或生成增量SQL。
 
-已通过 uv 安装并锁定 `psycopg 3.3.6`、`deepagents 0.7.32`、`langchain-openai 1.7.3`。真实 PostgreSQL 连接和现有17张表结构检查通过；智能体测试验证实际SDK构图、完整技能正文加载及双协议配置，不请求真实模型。Docker Compose 配置校验通过；按用户最新安排暂缓构建和启动容器。
+最新数据源证据见[验证记录](../docs/research/data-sources.md)，模块设计见[后端概要](../docs/design/backend.md)。报告文档导出和真实AI服务属于后续扩展。
 
-Sina、Baostock、东方财富仍为候选，未注册为生产可用适配器；配置开关不会把未验证渠道强行变为可用。模拟行情渠道只存在于测试目录，由测试显式注入，生产入口不加载模拟行情。
+## 运行与配置
 
-## 离线测试
+正式启动及维护见[Docker部署](../docs/deployment/backend.md)。服务器配置可放在`backend/.env`，数据库默认读取既有`deploy/postgres/.env`；环境变量优先。[示例](.env.example)不包含真实凭据。
 
-在项目根目录执行：
+当前`STOCKSIEVE_AI_MODE=mock`，无需模型配置，不调用真实模型或联网检索。任务和报告均返回`simulated=true`，标题与摘要明确标记；图表与参考价仍用实际输入计算。缺财报可生成说明缺失的模拟报告，缺少核心行情仍拒绝受理。未来改为`live`并填写模型参数；真实模式不可用时不自动回退模拟。
+
+当前正式源请求至少间隔10秒、全渠道每天最多400次，共用原探测账本、次数与冷却。缓存命中不重新请求；正常成功分块中断最多短退避3次，明确拒绝访问和上游等待指令继续严格执行。不要删除账本来恢复访问。
+
+## 测试
+
+在仓库根目录执行：
 
 ```bash
 uv sync --project backend --frozen
 uv run --project backend --frozen pytest backend/tests backend/tools/tests -q
-uv run --project backend --frozen python backend/run.py --help
+uv run --project backend --frozen pytest backend/tests backend/tools/tests --postgres --http --browser -q
 ```
 
-接口测试执行真实路由和中间件，无需监听端口；覆盖角色与报告归属、幂等重放、租约抢占、源等待与超时、分批恢复、快照不可变、策略边界、周期聚合、来源校验及请求限流。未用离线通过代替 PostgreSQL 或外部SDK测试。
+默认模式使用独立SQLite；`--postgres`使用现有连接，在随机`stocksieve_test_`schema中执行完整SQL约束并自动清理，不向public写模拟行情。`--http`通过本机随机端口发送真实请求；`--browser`使用隔离浏览器上下文验证真实前端，需先构建前端。供应商与模型夹具仍是测试输入，与正式数据源验收分开记录。
 
-## 真实数据库与HTTP自测
+截至2026-11-01，完整PostgreSQL/HTTP/浏览器回归106项通过，正式部署用例在该轮单独跳过；前端6组测试及生产构建通过。正式部署另行通过1项真实行情浏览器验收，覆盖登录、机会列表、详情、日周年度K线、后端模拟筹码报告、刷新恢复、用户/数据管理及退出；相关账号创建、权限和改密流程在隔离库验证。正式库保留1个管理员和真实行情，测试schema已全部清理。
 
-```bash
-uv run --project backend --frozen pytest backend/tests --postgres --http -q
-```
-
-`--postgres` 使用项目现有数据库连接，在随机的 `stocksieve_test_` schema 内运行与业务库相同的初始化 SQL 和完整约束，结束后只清理本次创建的 schema；不会修改 `public` 或在业务表写入模拟行情。也可用 `--postgres-url-env` 指定测试数据库URL的环境变量名称。
-
-`--http` 启动仅监听本机随机端口的临时测试服务，通过实际 TCP/HTTP 发送接口请求。测试中的供应商和模型仍使用测试输入，验证数据库与HTTP链路不代表真实行情源或模型已经验收；Docker正式服务的HTTP检查另见部署说明。
-
-两种模式均为显式启用，缺驱动、数据库权限或监听权限时失败，不静默退回 SQLite。
-
-2026-10-31：本地完整回归76项通过；真实 PostgreSQL＋HTTP 模式61项通过（含4项本地智能体SDK测试），覆盖默认模拟、三类报告、历史标识与模式切换。测试后核对17张业务表结构正常、临时 schema 为0；`public` 的用户、股票、任务、快照、日线、策略信号及分析结果均为0行。业务库没有模拟数据，真实股票初始化仍待免费渠道接入。
-
-## 运行与配置
-
-生产前提及单机命令见[后端部署](../docs/deployment/backend.md)。应用只读取服务器配置，接口不提供修改模型凭据或任意数据源地址的功能。开发设计见[后端概要](../docs/design/backend.md)，产品内容见 [AI 分析设计](../docs/product/ai-analysis-design.md)。
-
-AI 当前默认 `STOCKSIEVE_AI_MODE=mock`，无需模型配置，不调用模型或联网检索；三类分析复用冻结快照、实际计算及任务/历史接口，任务和报告均返回 `simulated=true`，报告标题和摘要标明模拟。缺失财报可生成模拟基本面报告，但不补造财务或减持事实；缺少核心行情仍拒绝受理。后续接入真实模型时改为 `live` 并填写[模型配置](.env.example)，真实模式配置不全会明确不可用，不自动退回模拟。
-
-部署统一使用 Docker Compose，基于已确认在本机存在的 `ubuntu:24.04`。旧 systemd 草案已移除；当前已完成配置准备，容器运行兼容性与实际构建、启动仍待验证。
-
-本轮未修改初始化 SQL 或现有业务表；真实数据库测试仅创建并清理隔离 schema。所需任务阶段与冻结资料使用已有 JSON 字段和业务表保存。后续确需调整 SQL 时，按项目约定同步直接更新现有库。
+VS Code从仓库根打开时，[工作区配置](../.vscode/settings.json)指定`backend/src`和uv解释器；旧诊断可重新选择`backend/.venv/bin/python`并执行`Developer: Reload Window`。

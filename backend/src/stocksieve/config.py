@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy.engine import URL
+from .domain import BOARDS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -14,10 +15,13 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings:
     database_url: str = field(repr=False)
     state_dir: Path = ROOT / '.state'
+    web_dir: Path = ROOT / 'web'
+    rate_dir: Path = ROOT / '.source-probe'
+    market_boards: tuple[str, ...] = tuple(BOARDS)
     enabled_sources: tuple[str, ...] = ()
     default_source: str = 'sina'
     request_interval: float = 10
-    source_daily_limit: int = 1000
+    source_daily_limit: int = 400
     retry_minutes: int = 10
     readiness_hours: int = 4
     lease_seconds: int = 120
@@ -33,8 +37,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> 'Settings':
         values: dict[str, str] = {}
-        local = ROOT / 'deploy/postgres/.env'
-        if local.exists():
+        for local in (ROOT / 'deploy/postgres/.env', ROOT / '.env'):
+            if not local.exists():
+                continue
             for line in local.read_text().splitlines():
                 if line.strip() and not line.lstrip().startswith('#') and '=' in line:
                     key, value = line.split('=', 1)
@@ -49,10 +54,13 @@ class Settings:
                              password=password, host='127.0.0.1', port=int(values.get('STOCKSIEVE_POSTGRES_PORT', '5432')),
                              database=values.get('STOCKSIEVE_POSTGRES_DB', 'stocksieve')).render_as_string(hide_password=False)
         return cls(database_url=url, state_dir=Path(values.get('STOCKSIEVE_STATE_DIR', str(ROOT / '.state'))),
+                   web_dir=Path(values.get('STOCKSIEVE_WEB_DIR', str(ROOT / 'web'))),
+                   rate_dir=Path(values.get('STOCKSIEVE_RATE_DIR', str(ROOT / '.source-probe'))),
+                   market_boards=tuple(filter(None, values.get('STOCKSIEVE_MARKET_BOARDS', ','.join(BOARDS)).split(','))),
                    enabled_sources=tuple(filter(None, values.get('STOCKSIEVE_ENABLED_SOURCES', '').split(','))),
                    default_source=values.get('STOCKSIEVE_DEFAULT_SOURCE', 'sina'),
                    request_interval=float(values.get('STOCKSIEVE_SOURCE_INTERVAL_SECONDS', '10')),
-                   source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '1000')),
+                   source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '400')),
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
                    ai_model=values.get('STOCKSIEVE_AI_MODEL'), ai_protocol=values.get('STOCKSIEVE_AI_PROTOCOL', 'chat_completions'),
                    ai_mode=values.get('STOCKSIEVE_AI_MODE', 'mock'),
@@ -71,5 +79,7 @@ class Settings:
             raise ValueError('AI 协议配置无效。')
         if self.ai_mode not in {'mock', 'live'}:
             raise ValueError('AI 运行模式需为 mock 或 live。')
+        if not self.market_boards or len(set(self.market_boards)) != len(self.market_boards) or set(self.market_boards) - BOARDS.keys():
+            raise ValueError('上市板块配置为空、重复或包含未知板块。')
         if self.lease_seconds <= 0 or not 1 <= self.ai_max_steps <= 50:
             raise ValueError('租约和分析调用上限配置无效。')

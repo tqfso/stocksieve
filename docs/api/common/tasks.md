@@ -9,7 +9,7 @@ queued → running → succeeded
    └──────────────→ failed
 ```
 
-`running` 也可进入 `failed`。`progress` 为 `0～100` 的整数；成功时为 `100`，失败保留最后进度。任务包含可空的 `startedAt`、`finishedAt`、`error`；失败时 `error` 必须包含可读原因与错误码。
+`running` 也可进入 `failed`。`progress` 为 `0～100` 的整数；成功时为 `100`，失败保留最后进度。任务包含可空的 `startedAt`、`finishedAt`、`error`；失败时 `error` 必须包含可读原因与错误码。同步任务还包含可空的 `message`，用于展示最近的准备或处理进展。
 
 收盘同步允许 `running → queued → running` 以等待板块数据就绪，仍为同一任务；字段及重试规则见[同步规则](sync-policy.md)。AI 分析不使用此等待流程。
 

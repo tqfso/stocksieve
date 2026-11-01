@@ -67,8 +67,11 @@ async def envelope(request: web.Request, handler: Any) -> web.StreamResponse:
         response = web.json_response({'error': {'code': 'HTTP_ERROR', 'message': error.reason, 'details': {}}, 'requestId': request_id}, status=error.status)
         if 'Allow' in error.headers:
             response.headers['Allow'] = error.headers['Allow']
-    except Exception:
-        logger.error('接口处理失败 requestId=%s method=%s path=%s', request_id, request.method, request.path)
+    except Exception as error:
+        # 只记录类型和约束名用于运维定位，不输出可能带口令、令牌或整行数据的异常文本。
+        diagnostic = getattr(getattr(error, 'orig', None), 'diag', None)
+        logger.error('接口处理失败 requestId=%s method=%s path=%s type=%s constraint=%s',
+                     request_id, request.method, request.path, type(error).__name__, getattr(diagnostic, 'constraint_name', None))
         response = web.json_response({'error': {'code': 'INTERNAL_ERROR', 'message': '服务暂时无法完成请求。', 'details': {}}, 'requestId': request_id}, status=500)
     response.headers['X-Request-ID'] = request_id
     response.headers['Cache-Control'] = 'no-store'
