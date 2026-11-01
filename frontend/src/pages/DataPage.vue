@@ -12,7 +12,7 @@ const market = useMarket();
 const kinds: SyncJob['kind'][] = ['initialize', 'catalog', 'daily'];
 const sources = reactive<Record<SyncJob['kind'], string>>({ initialize: '', catalog: '', daily: '' });
 const labels = { initialize: '股票基础信息', catalog: '行业与题材', daily: '收盘行情与策略' };
-const descriptions = { initialize: '更新股票代码、名称、交易所及板块。', catalog: '独立更新行业、题材及股票归属。', daily: '同步行情并计算五类策略，完成后发布新快照。' };
+const descriptions = { initialize: '更新股票代码、名称、交易所及板块。', catalog: '更新分类后，再更新收盘行情即可在筛选中使用。', daily: '同步行情并计算五类策略，完成后发布新快照。' };
 const statusLabels = { queued: '等待执行', running: '进行中', succeeded: '已完成', failed: '失败' };
 const target = ref('');
 const selected = ref<SyncJob>();
@@ -91,7 +91,7 @@ void sync.refresh();
     <StatePanel v-if="!sync.jobs.length" title="还没有同步任务" description="先初始化股票基础信息，再同步收盘行情。" />
     <div v-else class="table-scroll"><table class="data-table"><thead><tr><th>任务</th><th>渠道</th><th>发起时间（北京时间）</th><th>状态</th><th>已处理 / 总数</th><th>操作</th></tr></thead><tbody>
       <tr v-for="job in sync.jobs" :key="job.id"><td>{{ labels[job.kind] }}<small class="cell-subtext">{{ job.dataDate ?? job.id.slice(0, 8) }}</small></td><td>{{ market.status?.sources.find(source => source.id === job.source)?.name ?? job.source }}</td><td>{{ formatTime(job.createdAt) }}</td>
-        <td><span class="tag" :class="job.status === 'succeeded' ? 'tag-green' : job.status === 'failed' ? 'tag-red' : 'tag-amber'">{{ statusLabels[job.status] }} {{ job.progress }}%</span><small v-if="job.error" class="cell-subtext">{{ job.error.message }}</small></td>
+        <td><span class="tag" :class="job.status === 'succeeded' ? 'tag-green' : job.status === 'failed' ? 'tag-red' : 'tag-amber'">{{ statusLabels[job.status] }} {{ job.progress }}%</span><small v-if="job.error" class="cell-subtext">{{ job.error.message }}</small><small v-if="job.kind === 'catalog' && job.message" class="cell-subtext">{{ job.message }}</small></td>
         <td>{{ job.result ? `${job.result.processedCount} / ${job.result.totalCount}` : '—' }}</td><td><el-button text @click="showLogs(job)">查看日志</el-button><el-button v-if="job.status === 'failed'" text type="primary" :disabled="!!sync.running || sync.loading || !choices(job.kind).some(source => source.id === job.source)" @click="start(job.kind, job)">重试</el-button></td></tr>
     </tbody></table></div>
   </section>

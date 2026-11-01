@@ -140,6 +140,11 @@ async function load(): Promise<void> {
     }
 }
 function resetFilters(): void { Object.assign(query, { search: '', industry: '', concept: '', board: '', minTurnover: undefined, maxTurnover: undefined, minMarketCap: undefined, maxMarketCap: undefined, sort: 'default', descending: true }); page.value = 1; void load(); }
+/** 列表最多显示三个题材，优先保留当前选中的题材，完整归属可悬浮查看。 */
+function visibleConcepts(stock: Stock): string[] {
+    const selected = concepts.value.find(item => item.id === query.concept)?.name;
+    return (selected && stock.concepts.includes(selected) ? [selected, ...stock.concepts.filter(name => name !== selected)] : stock.concepts).slice(0, 3);
+}
 function sortBy(key: StockQuery['sort']): void { query.descending = query.sort === key ? !query.descending : true; query.sort = key; }
 function openStock(stock: Stock): void { void router.push({ path: `/stocks/${stock.stockId}`, query: { strategy: query.strategy, snapshotId: stock.snapshotId, back: route.fullPath } }); }
 restore();
@@ -245,13 +250,13 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
       </label>
       <label>
         行业
-        <el-select v-model="query.industry" :placeholder="coverage.industry === 'unavailable' ? '此快照行业未知' : '全部行业'" :disabled="coverage.industry === 'unavailable'" clearable>
+        <el-select v-model="query.industry" :placeholder="coverage.industry === 'unavailable' ? '此快照行业未知' : '全部行业（可搜索）'" :disabled="coverage.industry === 'unavailable'" clearable filterable aria-label="行业">
           <el-option v-for="industry in industries" :key="industry.id" :label="industry.name" :value="industry.id" />
         </el-select>
       </label>
       <label>
         题材 / 概念
-        <el-select v-model="query.concept" :placeholder="coverage.concepts === 'unavailable' ? '此快照题材未知' : '全部概念'" :disabled="coverage.concepts === 'unavailable'" clearable>
+        <el-select v-model="query.concept" :placeholder="coverage.concepts === 'unavailable' ? '题材尚未同步' : '全部概念（可搜索）'" :disabled="coverage.concepts === 'unavailable'" clearable filterable aria-label="题材 / 概念">
           <el-option v-for="concept in concepts" :key="concept.id" :label="concept.name" :value="concept.id" />
         </el-select>
       </label>
@@ -274,6 +279,8 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
         </el-select>
       </label>
     </div>
+    <p v-if="coverage.concepts === 'unavailable'" class="muted">题材数据尚未同步，暂不能按题材筛选。</p>
+    <p v-else-if="coverage.concepts === 'partial'" class="muted">部分股票的题材仍在补齐，筛选结果仅包含已同步的归属。</p>
     <p v-if="invalidTurnoverRange" class="field-error">最低换手率不能大于最高换手率。</p>
     <p v-if="invalidMarketCapRange" class="field-error">最低总市值不能大于最高总市值。</p>
   </section>
@@ -352,7 +359,10 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
               <td class="reason-cell">
                 <span>{{ selectionReason(stock, query.strategy) }}</span>
                 <div class="concept-tags">
-                  <span v-for="concept in stock.concepts" :key="concept">{{ concept }}</span>
+                  <span v-for="concept in visibleConcepts(stock)" :key="concept">{{ concept }}</span>
+                  <el-tooltip v-if="stock.concepts.length > 3" :content="stock.concepts.join('、')" placement="top">
+                    <span>+{{ stock.concepts.length - 3 }}</span>
+                  </el-tooltip>
                 </div>
               </td>
               <td>
@@ -379,7 +389,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
   <p class="page-footnote">
     <AppIcon name="info" :size="14" />
     信号基于所选收盘快照计算；新快照发布不会改写当前快照的历史结果。
-    <span v-if="catalogAsOfAt">行业标签获取于 {{ new Date(catalogAsOfAt).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }) }}（北京时间），可能晚于行情日期。</span>
+    <span v-if="catalogAsOfAt">分类资料获取截至 {{ new Date(catalogAsOfAt).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }) }}（北京时间），可能晚于行情日期。</span>
   </p>
   <el-dialog v-model="strategyOpen" :title="`${strategy.name}策略 · ${strategy.subtitle}`" width="min(600px, 92vw)">
     <p class="muted">观察周期：{{ strategy.period }}。真实策略需满足全部入选条件。</p>

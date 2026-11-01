@@ -60,6 +60,8 @@ uv run --project backend --frozen python backend/run.py bootstrap-data --credent
 
 正式服务已有快照后，可加`--only-kind initialize`、`catalog`或`daily`只执行单种任务。相同状态文件恢复原任务；需要新一轮更新时指定新的`--state-file`。
 
+题材更新在管理页选择“百度股市通题材”；该渠道只修改题材并保留原行业，每轮最多400只，继续更新会补齐其他股票。分类成功后再更新收盘行情，新分类才进入最新筛选。行情渠道继续选择Baostock组合。
+
 正式发布后的浏览器验收：
 
 ```bash
@@ -67,6 +69,8 @@ uv run --project backend --frozen pytest backend/tests/test_browser.py --deploye
 ```
 
 它使用隔离浏览器会话验证真实列表、详情、K线与后端模拟筹码报告；会产生一份明确标记的模拟报告，不更改行情或账号口令。隔离PostgreSQL回归命令见[后端说明](../../backend/README.md)。
+
+题材渠道验收后，可加`--deployed-concepts -k deployed_concepts -s`单独检查真实下拉选择、成员筛选和刷新恢复；该检查只读，并保存页面截图到`backend/.state/concept-filter.png`。访问历史链接仍沿用原快照，查看新分类请从“机会筛选”菜单重新进入。
 
 ## 日常维护
 
