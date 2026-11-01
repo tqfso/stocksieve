@@ -1,8 +1,8 @@
 """本文件验证同步发布、冻结分类、排序与筛选计数、失败保留及历史图表分页。"""
 
-from stocksieve import tables as t
-from stocksieve.worker import Scheduler
+import stocksieve.infrastructure.persistence.schema as t
 from sqlalchemy import select
+from stocksieve.modules.jobs.application.worker import Scheduler
 
 
 def test_snapshot_query_filter_and_pagination(context):

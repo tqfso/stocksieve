@@ -24,8 +24,8 @@ def test_partial_concept_catalog_does_not_rewrite_old_snapshot(context: Any) -> 
 
 
 def test_industry_only_refresh_keeps_verified_concepts_and_their_source(context: Any) -> None:
+    import stocksieve.infrastructure.persistence.schema as t
     from sqlalchemy import select
-    from stocksieve import tables as t
     original = context.source.catalog
     async def known(stocks: Any) -> dict[str, Any]:
         return {**await original(stocks), 'provenance': {'industry': 'fixture', 'concepts': 'fixture'}}

@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
-
-from stocksieve.errors import DomainError
-from stocksieve.sources import RateGate, SourceDeferred, SourceHTTP
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.infrastructure.http import RateGate, SourceHTTP
+from stocksieve.shared.errors import DomainError
 
 
 def test_budget_survives_restart_and_crosses_shanghai_midnight(tmp_path):

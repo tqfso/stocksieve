@@ -4,12 +4,11 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+import stocksieve.infrastructure.persistence.schema as t
 from sqlalchemy import select
-
-from stocksieve import tables as t
-from stocksieve.errors import DomainError
-from stocksieve.sources import SourceDeferred
-from stocksieve.worker import Scheduler
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.jobs.application.worker import Scheduler
+from stocksieve.shared.errors import DomainError
 
 
 def test_expired_lease_reclaimed_old_owner_cannot_write(context):
@@ -92,7 +91,7 @@ def test_waiting_task_claim_clears_queued_only_fields_and_keeps_retry_context(co
 
 
 def test_network_recovery_is_bounded_and_keeps_the_same_job(context):
-    from stocksieve.errors import DomainError
+    from stocksieve.shared.errors import DomainError
     async def unavailable():
         raise DomainError('SOURCE_TIMEOUT', '测试网络故障。', 503)
     context.source.initialize = unavailable

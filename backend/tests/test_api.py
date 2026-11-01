@@ -86,8 +86,8 @@ def test_logout_revokes_only_current_session_and_expiry_is_enforced(context):
 
 
 def test_all_documented_api_routes_are_registered(context):
-    from pathlib import Path
     import re
+    from pathlib import Path
     document = Path(__file__).resolve().parents[2] / 'docs/api/README.md'
     expected = {(method, '/api/v1' + path) for method, path in re.findall(r'\| (GET|POST|PUT) \| `([^`]+)`', document.read_text())}
     actual = {(route.method, route.resource.canonical) for route in context.api.app.router.routes()}

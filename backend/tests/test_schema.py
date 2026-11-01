@@ -2,10 +2,10 @@
 
 import re
 from pathlib import Path
-import pytest
 
-from stocksieve.database import Database
-from stocksieve.tables import metadata
+import pytest
+from stocksieve.infrastructure.persistence.database import Database
+from stocksieve.infrastructure.persistence.schema import metadata
 
 
 def test_mapping_columns_exist_in_initial_sql():

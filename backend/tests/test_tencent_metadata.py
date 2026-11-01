@@ -7,15 +7,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from stocksieve.baostock_source import security
-from stocksieve.source_policy import SourcePolicy
-from stocksieve.tencent_metadata import TencentMetadata
+from stocksieve.modules.ingestion.infrastructure.providers.baostock import security
+from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
+    TencentMetadata,
+)
+from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
 
 
 @pytest.mark.parametrize('cap,expected', [('1680.21', D('168021000000')), ('0', None), ('--', None)])
 def test_quote_metadata_requires_matching_price_date(tmp_path: Path, monkeypatch: Any, cap: str, expected: D | None) -> None:
-    import stocksieve.tencent_metadata as module
+    import stocksieve.modules.ingestion.infrastructure.providers.tencent as module
     fields = [''] * 90
     fields[2], fields[3], fields[30], fields[45], fields[61] = '302132', '62.88', '20261030150000', cap, 'GP-A-CYB'
     payload = ('v_sz302132="' + '~'.join(fields) + '";').encode('gb18030')

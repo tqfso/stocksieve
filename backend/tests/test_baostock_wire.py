@@ -9,9 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
-from stocksieve.baostock_wire import BaostockWire
-from stocksieve.sources import SourceDeferred
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.infrastructure.baostock_wire import BaostockWire
 
 
 class Socket:

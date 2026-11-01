@@ -5,10 +5,10 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal as D
 
-from stocksieve import tables as t
-from stocksieve.analysis import Analysis, AnalysisTools
-from stocksieve.sync import Sync
-from stocksieve.worker import Worker
+import stocksieve.infrastructure.persistence.schema as t
+from stocksieve.modules.analysis.application.service import Analysis, AnalysisTools
+from stocksieve.modules.ingestion.application.service import Sync
+from stocksieve.modules.jobs.application.worker import Worker
 
 
 class Runtime:

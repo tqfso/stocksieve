@@ -11,10 +11,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from stocksieve.config import Settings
-from stocksieve.errors import DomainError
-from stocksieve.source_policy import SourcePolicy
-from stocksieve.sources import SourceDeferred, SourceHTTP
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
+from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
+from stocksieve.shared.errors import DomainError
+from stocksieve.shared.settings import Settings
 
 
 def check_tdx(endpoint: str = 'sdk-default') -> None:

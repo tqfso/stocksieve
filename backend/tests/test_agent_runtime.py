@@ -10,9 +10,8 @@ import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-
-from stocksieve.agent import DeepAgentsRuntime
-from stocksieve.config import Settings
+from stocksieve.modules.analysis.infrastructure.agent import DeepAgentsRuntime
+from stocksieve.shared.settings import Settings
 
 PAYLOAD = {'overview': {'decision': {'action': 'wait', 'label': '先等待', 'reason': '这是本地SDK结构测试。'}, 'opportunities': [], 'risks': ['需进一步核实。']},
            'summary': '本地结构测试，不代表真实分析。', 'sections': [{'title': '依据', 'text': '只验证图工作流和返回解析。'}], 'sourceKeys': ['snapshot'], 'missingInformation': []}

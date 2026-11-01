@@ -9,23 +9,27 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal as D
 from typing import Any
-from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener
+from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestServer, make_mocked_request
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
-
-from stocksieve.api import API
-from stocksieve.config import Settings
-from stocksieve.database import Database
-from stocksieve.domain import BOARDS, Bar, Stock, StockState
-from stocksieve.sources import CalendarDay, DailyPacket, Initialization, Registry
-from stocksieve.sync import Sync
-from stocksieve.worker import Worker
+from stocksieve.infrastructure.persistence.database import Database
+from stocksieve.interfaces.http.api import API
+from stocksieve.modules.ingestion.application.ports import (
+    CalendarDay,
+    DailyPacket,
+    Initialization,
+)
+from stocksieve.modules.ingestion.application.registry import Registry
+from stocksieve.modules.ingestion.application.service import Sync
+from stocksieve.modules.jobs.application.worker import Worker
+from stocksieve.modules.market.domain.models import BOARDS, Bar, Stock, StockState
+from stocksieve.shared.settings import Settings
 
 
 class Clock:

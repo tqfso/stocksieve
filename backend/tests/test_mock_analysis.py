@@ -5,15 +5,17 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+import stocksieve.infrastructure.persistence.schema as t
 from sqlalchemy import select
-
-from stocksieve import tables as t
-from stocksieve.agent import DeepAgentsRuntime, create_runtime
-from stocksieve.analysis import Analysis
-from stocksieve.config import Settings
-from stocksieve.mock_analysis import MockAnalysisRuntime
-from stocksieve.sync import Sync
-from stocksieve.worker import Worker
+from stocksieve.modules.analysis.application.service import Analysis
+from stocksieve.modules.analysis.infrastructure.agent import (
+    DeepAgentsRuntime,
+    create_runtime,
+)
+from stocksieve.modules.analysis.infrastructure.mock_runtime import MockAnalysisRuntime
+from stocksieve.modules.ingestion.application.service import Sync
+from stocksieve.modules.jobs.application.worker import Worker
+from stocksieve.shared.settings import Settings
 
 
 class ForbiddenResearch:

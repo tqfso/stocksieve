@@ -3,8 +3,7 @@
 from typing import Any
 
 import pytest
-
-from stocksieve.schema_sync import normalized, sync
+from stocksieve.infrastructure.persistence.schema_sync import normalized, sync
 
 
 def test_existing_schema_constraints_are_reconciled_without_deleting_data(context: Any) -> None:

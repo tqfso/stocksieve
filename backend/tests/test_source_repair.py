@@ -2,16 +2,18 @@
 
 import hashlib
 import json
+import random
 import time
 import zlib
-import random
 from os import utime
 from pathlib import Path
 
 import pytest
-
-from stocksieve.source_policy import SourcePolicy
-from stocksieve.source_repair import reconcile_short_receive_deadline, reconcile_tencent
+from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
+from stocksieve.modules.ingestion.infrastructure.repairs import (
+    reconcile_short_receive_deadline,
+    reconcile_tencent,
+)
 
 
 def evidence(tmp_path: Path, extra_cooldown: float = 0) -> SourcePolicy:

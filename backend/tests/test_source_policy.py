@@ -5,10 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
-from stocksieve.errors import DomainError
-from stocksieve.source_policy import SourcePolicy
-from stocksieve.sources import SourceDeferred
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
+from stocksieve.shared.errors import DomainError
 
 
 def test_formal_budget_preserves_used_counts_and_existing_cooldowns(tmp_path: Path) -> None:

@@ -20,7 +20,6 @@ from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
 
-
 STATE_DIR = Path(__file__).resolve().parents[1] / ".source-probe"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MIN_INTERVAL = 10.0

@@ -8,13 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from conftest import HTTPServer
-from stocksieve.agent import create_runtime
-from stocksieve.analysis import Analysis
-from stocksieve.api import API
-from stocksieve.sync import Sync
-from stocksieve.worker import Worker
+from stocksieve.interfaces.http.api import API
+from stocksieve.modules.analysis.application.service import Analysis
+from stocksieve.modules.analysis.infrastructure.agent import create_runtime
+from stocksieve.modules.ingestion.application.service import Sync
+from stocksieve.modules.jobs.application.worker import Worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from browser_check import run_access_check, run_check, run_concept_check

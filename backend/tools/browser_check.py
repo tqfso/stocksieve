@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import parse_qs, urlencode, urlsplit

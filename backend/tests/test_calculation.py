@@ -5,12 +5,14 @@ from datetime import date, timedelta
 from decimal import Decimal as D
 
 import pytest
-
-from stocksieve.analysis_math import chip_distribution, financial_metrics
-from stocksieve.candles import candles
-from stocksieve.domain import Bar, StockState, adjusted_history
-from stocksieve.errors import MissingData
-from stocksieve.strategies import evaluate
+from stocksieve.modules.analysis.domain.calculations import (
+    chip_distribution,
+    financial_metrics,
+)
+from stocksieve.modules.market.domain.candles import candles
+from stocksieve.modules.market.domain.models import Bar, StockState, adjusted_history
+from stocksieve.modules.market.domain.strategies import evaluate
+from stocksieve.shared.errors import MissingData
 
 
 def series(prices, amounts=None):

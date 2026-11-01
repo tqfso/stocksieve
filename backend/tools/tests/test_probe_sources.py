@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
 
-
 SPEC = importlib.util.spec_from_file_location("probe_sources", Path(__file__).parents[1] / "probe_sources.py")
 assert SPEC and SPEC.loader
 probe = importlib.util.module_from_spec(SPEC)

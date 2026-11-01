@@ -8,12 +8,15 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
-from stocksieve.baidu_concepts import BaiduConcepts, parse_concepts
-from stocksieve.baostock_source import security
-from stocksieve.errors import DomainError
-from stocksieve.source_policy import SourcePolicy
-from stocksieve.sources import SourceDeferred, progress_sink
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.application.progress import progress_sink
+from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
+    BaiduConcepts,
+    parse_concepts,
+)
+from stocksieve.modules.ingestion.infrastructure.providers.baostock import security
+from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
+from stocksieve.shared.errors import DomainError
 
 
 def groups(concepts: list[dict[str, str]] | None) -> list[dict[str, Any]]:
@@ -39,7 +42,7 @@ def test_concepts_are_explicit_and_unknown_is_different_from_empty() -> None:
 
 
 def test_batches_resume_and_expand_without_repeating_known_stocks(tmp_path: Path, monkeypatch: Any) -> None:
-    import stocksieve.baidu_concepts as module
+    import stocksieve.modules.ingestion.infrastructure.providers.baidu as module
     calls: list[list[str]] = []
     captured = datetime.now(timezone.utc) - timedelta(minutes=25)
     class HTTP:
@@ -69,7 +72,7 @@ def test_batches_resume_and_expand_without_repeating_known_stocks(tmp_path: Path
 
 
 def test_frequency_wait_keeps_completed_batch_and_same_operation_budget(tmp_path: Path, monkeypatch: Any) -> None:
-    import stocksieve.baidu_concepts as module
+    import stocksieve.modules.ingestion.infrastructure.providers.baidu as module
     deferred = False
     class HTTP:
         def __init__(self, *args: Any) -> None:
@@ -97,7 +100,9 @@ def test_frequency_wait_keeps_completed_batch_and_same_operation_budget(tmp_path
 
 
 def test_concept_only_source_keeps_previous_industry_and_snapshot(context: Any) -> None:
-    from stocksieve.baidu_concepts import BaiduCatalogSource
+    from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
+        BaiduCatalogSource,
+    )
     old = context.published()
     class Provider:
         async def read(self, stocks: Any) -> dict[str, Any]:

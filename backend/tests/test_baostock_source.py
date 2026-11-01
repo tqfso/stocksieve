@@ -9,10 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from stocksieve.baostock_source import BaostockSource, security
-from stocksieve.domain import Bar, adjusted_history
-from stocksieve.errors import DomainError
+from stocksieve.modules.ingestion.infrastructure.providers.baostock import (
+    BaostockSource,
+    security,
+)
+from stocksieve.modules.market.domain.models import Bar, adjusted_history
+from stocksieve.shared.errors import DomainError
 
 
 def make_source(tmp_path: Path) -> BaostockSource:

@@ -6,9 +6,8 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, build_opener
 
 import pytest
-
 from conftest import HTTPServer
-from stocksieve.api import API
+from stocksieve.interfaces.http.api import API
 
 
 def test_compiled_frontend_is_served_without_exposing_server_files(context: Any, tmp_path: Any) -> None:

@@ -2,6 +2,8 @@
 
 Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一由uv管理。当前先上线沪深四板块，北交所后续补齐；AI采用后端模拟模式。
 
+源码按`identity`、`market`、`ingestion`、`jobs`、`analysis`业务模块分包，核心模型/规则在`domain`，用例在`application`，供应商和智能体实现在模块内`infrastructure`；HTTP入口、共享持久化及启动组装独立。结构与依赖约束见[后端概要](../docs/design/backend.md#2-模块职责)，CLI命令保持兼容。
+
 ## 当前状态
 
 - API、worker、scheduler已通过Docker Compose在当前服务器启动，基础镜像为本机ubuntu:24.04；API同源提供编译后的真实前端。
@@ -34,6 +36,6 @@ uv run --project backend --frozen pytest backend/tests backend/tools/tests --pos
 
 默认模式使用独立SQLite；`--postgres`使用现有连接，在随机`stocksieve_test_`schema中执行完整SQL约束并自动清理，不向public写模拟行情。`--http`通过本机随机端口发送真实请求；`--browser`使用隔离浏览器上下文验证真实前端，需先构建前端。供应商与模型夹具仍是测试输入，与正式数据源验收分开记录。
 
-截至2026-11-01，完整PostgreSQL/HTTP/浏览器回归112项通过，2项正式部署专用用例单独执行；前端6组测试及生产构建通过。正式题材页面已通过浏览器选择“创投”、返回4只匹配股票及刷新恢复的独立验收，截图在`backend/.state/concept-filter.png`。此前真实行情、周期K线、后端模拟报告和账号权限链路也已通过验收；正式测试不改管理员口令。
+截至2026-11-01，分包后的完整PostgreSQL/HTTP/浏览器回归115项通过，另2项正式部署浏览器验收通过；包含领域依赖、应用端口和包导入/资源路径的架构约束。正式部署已复核登录、行情/K线、模拟报告及行业/题材输入定位和刷新恢复，截图在`backend/.state/concept-filter.png`。前端6组测试及生产构建此前通过；正式测试不改管理员口令。
 
 VS Code从仓库根打开时，[工作区配置](../.vscode/settings.json)指定`backend/src`和uv解释器；旧诊断可重新选择`backend/.venv/bin/python`并执行`Developer: Reload Window`。

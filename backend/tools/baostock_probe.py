@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from probe_sources import Deferred, Guard, SHANGHAI
+from probe_sources import SHANGHAI, Deferred, Guard
 
 
 def run(target: date, directory: Path, *, execute: bool, offline: bool) -> int:
@@ -20,8 +20,8 @@ def run(target: date, directory: Path, *, execute: bool, offline: bool) -> int:
                           'maximumRequests': 8, 'queries': ['calendar', 'basic', 'bse_history', 'bse_factor', 'main_history', 'main_factor']}, ensure_ascii=False))
         return 0
     import baostock as bs
-    import baostock.common.context as context
     import baostock.common.contants as constants
+    import baostock.common.context as context
     import baostock.util.socketutil as transport
 
     directory.mkdir(exist_ok=True)

@@ -3,7 +3,7 @@
 from dataclasses import replace
 from typing import Any
 
-from stocksieve.domain import BOARDS
+from stocksieve.modules.market.domain.models import BOARDS
 
 
 def four_boards(context: Any) -> None:
