@@ -2,6 +2,7 @@
 
 | 方法 | 路径 | 文档 |
 | --- | --- | --- |
+| GET | `/stocks` | [股票搜索](search.md) |
 | GET | `/stocks/{stockId}/candles` | [K 线](candles.md) |
 | GET | `/catalog/filters` | [筛选选项](filters.md) |
 | GET | `/opportunities` | [机会列表](opportunities.md) |

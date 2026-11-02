@@ -10,6 +10,8 @@ import type { Period } from '../types.ts';
 const props = defineProps<{
     stock: Stock;
 }>();
+/** 图表默认展开；收起仅隐藏内容，保留周期、均线和历史浏览位置。 */
+const expanded = ref(true);
 const period = ref<Period>('day');
 const windowSize = ref(60);
 const offset = ref(0);
@@ -83,6 +85,11 @@ onUnmounted(() => { ++requestId; });
 </script>
 <template>
   <section class="panel chart-panel">
+    <div class="chart-heading">
+      <div><strong>K 线走势</strong><span class="muted">行情截至 {{ stock.dataDate }}</span></div>
+      <el-button text size="small" :aria-expanded="expanded" :aria-controls="`stock-chart-${stock.stockId}`" @click="expanded = !expanded">{{ expanded ? '收起 K 线' : '展开 K 线' }}</el-button>
+    </div>
+    <div v-show="expanded" :id="`stock-chart-${stock.stockId}`">
     <div class="chart-toolbar">
       <div class="segment-control">
         <button
@@ -214,5 +221,10 @@ onUnmounted(() => { ++requestId; });
       <span>前复权 · 均线按当前周期计算；缺失数据不补造</span>
       <span>拖动查看历史 · 滚轮或 ＋ / － 缩放</span>
     </div>
+    </div>
   </section>
 </template>
+<style scoped>
+.chart-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.chart-heading > div { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+</style>

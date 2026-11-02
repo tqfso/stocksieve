@@ -85,3 +85,13 @@ test('旧账号的迟到401不会清除新账号会话', async () => {
     await old;
     assert.equal(api.currentUser()?.id, 'new-user');
 });
+
+test('通用买卖建议不发送伪策略，历史只读取通用模式', async () => {
+    const stock = api.mapStock(fixture(), snapshot);
+    replies.push({ status: 200, body: { data: { items: [] } } }, { status: 202, body: { data: { id: 'general-task', strategy: null } } });
+    await api.analysesFor(stock, 'trade', 'general');
+    assert.equal(new URL(calls[0]!.url, 'http://test.invalid').searchParams.get('strategy'), 'general');
+    await api.startAnalysis(stock, 'trade', 'general', 'general-submit-key');
+    const body = JSON.parse(String(calls[1]!.options.body));
+    assert.equal(body.kind, 'trade'); assert.equal('strategy' in body, false);
+});

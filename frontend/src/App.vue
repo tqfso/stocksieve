@@ -38,10 +38,14 @@ watch(() => session.user?.id, (id) => { market.status = null; if (id) void marke
       </router-link>
       <div class="nav-label">投资工作台</div>
       <nav aria-label="主导航">
-        <router-link to="/opportunities" :class="{ 'router-link-active': route.path.startsWith('/stocks/') }">
+        <router-link to="/opportunities" :class="{ 'router-link-active': route.path.startsWith('/stocks/') && route.query.entry !== 'analysis' }">
           <AppIcon name="grid" />
           机会筛选
           <span class="nav-dot" />
+        </router-link>
+        <router-link to="/analysis" :class="{ 'router-link-active': route.path.startsWith('/stocks/') && route.query.entry === 'analysis' }">
+          <AppIcon name="spark" />
+          个股分析
         </router-link>
         <template v-if="session.isAdmin">
           <div class="nav-label">管理中心</div>

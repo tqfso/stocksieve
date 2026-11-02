@@ -17,12 +17,12 @@ class MockAnalysisRuntime:
         reasons = {
             'fundamental': '本次为模拟分析，经营情况与股东减持风险尚未核验。',
             'chips': '本次为模拟分析，成本分布仅为历史量价估算。',
-            'trade': '本次为模拟分析，先观察策略参考价与条件。',
+            'trade': '本次为模拟分析，先观察技术参考价与条件。',
         }
         explanations = {
             'fundamental': '已同步的行情可供后续分析参考；未核验的经营机遇、公告和减持情况不作结论。已有财务指标按实际资料展示，缺失时不补造。',
             'chips': '图形采用后端基于当前快照计算的成本分布，不能当作真实股东持仓；当前解释文字由模板生成。',
-            'trade': '买入与退出参考来自所选快照中已入选的策略，条件未确认时继续等待；当前解释文字由模板生成。',
+            'trade': '参考价采用所选快照中实际计算的通用观察方法或已入选策略；条件未确认时继续等待，当前文字由模板生成。',
         }
         keys = [key for key in ('snapshot', 'financial', 'chips')
                 if tools.seen.get(key, {}).get('status') == 'available']

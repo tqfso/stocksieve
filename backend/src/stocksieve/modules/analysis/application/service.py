@@ -21,6 +21,8 @@ from stocksieve.modules.analysis.domain.calculations import (
     chip_distribution,
     financial_metrics,
 )
+from stocksieve.modules.analysis.domain.trade import general_trade
+from stocksieve.modules.market.domain.models import StockState
 from stocksieve.modules.ingestion.application.ports import (
     PublicHTTPClient,
     SourceDeferred,
@@ -115,6 +117,15 @@ class AnalysisTools:
         record['signals'] = [self.tasks.market.signal_view(row, detail=True) for row in self.record['signalRows'].values()]
         result = self.save('snapshot', 'market', '已同步行情与策略快照', record, published_at=utc(self.snapshot['published_at']))
         self.facts['snapshot'] = record
+        if self.task['kind'] == 'trade' and self.task['strategy_code'] is None:
+            with self.db.transaction() as connection:
+                row = connection.execute(select(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == self.snapshot['id'], t.snapshot_stocks.c.stock_id == self.task['stock_id'])).mappings().one()
+            days = [datetime.fromisoformat(day).date() for day, opened in self.snapshot['calendar_json'][self.record['stock']['exchange']].items() if opened is True]
+            technical = general_trade(self.history, days, self.snapshot['data_date'], StockState(row['trade_status'], row['is_st'], row['is_delisting']))
+            self.facts['generalTrade'] = technical
+            self.save('general_trade', 'market', '通用技术观察计算 v1（模拟规则）', technical)
+            for index, missing in enumerate(technical['missing']):
+                self.save(f'general_missing_{index}', 'market', '通用技术资料', missing=missing)
         if self.task['kind'] == 'chips':
             try:
                 distribution = chip_distribution(self.history, self.snapshot['data_date'])
@@ -260,7 +271,7 @@ class Analysis:
             raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '没有足够的经营或财务资料，无法生成基本面分析。', 503)
         tools.stage('writing', 85)
         overview = draft.overview.model_dump()
-        missing = list(dict.fromkeys(draft.missingInformation + [value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available']))
+        missing = list(dict.fromkeys([value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available'] + draft.missingInformation))
         if tools.task['kind'] == 'fundamental' and not tools.reduction_verified:
             text = '股东减持计划及实际进展未核验。'
             missing = list(dict.fromkeys([text, *missing]))
@@ -274,8 +285,13 @@ class Analysis:
                 value = financial[field]
                 metrics.append({'label': label, 'value': '—' if value is None else f'{value / 100000000:.2f}亿元' if field != 'peTtm' else f'{value:.2f}倍', 'detail': financial['periodEnd']})
         if tools.task['kind'] == 'trade':
-            overview['pricePlan'] = self.price_plan(tools)
-            if overview['pricePlan']['waiting']:
+            technical = tools.facts.get('generalTrade')
+            overview['pricePlan'] = technical['plan'] if technical else self.price_plan(tools)
+            if technical:
+                overview['decision'] = {key: technical[key] for key in ('action', 'label', 'reason')}
+                metrics.extend({'label': label, 'value': f"{technical['metrics'][field]:.2f} 元", 'detail': '同一快照前复权口径'}
+                    for label, field in [('20日均价', 'ma20'), ('60日均价', 'ma60'), ('此前20日低点', 'support20'), ('此前20日高点', 'resistance20')] if field in technical['metrics'])
+            elif overview['pricePlan']['waiting']:
                 overview['decision'] = {'action': 'wait', 'label': '等待突破', 'reason': '当前还未确认突破，先不买入。'}
         # 引用地址与时间只采用后端保存记录，不能接受模型自己编写的URL。
         used_keys = set(draft.sourceKeys)
@@ -283,6 +299,8 @@ class Analysis:
             used_keys.update(key for key, value in available.items() if value['material_kind'] == 'financial')
         if 'chips' in available:
             used_keys.add('chips')
+        if 'general_trade' in available:
+            used_keys.add('general_trade')
         if tools.reduction_verified:
             used_keys.add('reduction_review')
             used_keys.update(record['sourceKey'] for record in tools.facts['reductions'])

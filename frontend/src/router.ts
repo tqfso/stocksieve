@@ -8,6 +8,7 @@ export const router = createRouter({
         { path: '/', redirect: '/opportunities' },
         { path: '/login', component: () => import('./pages/LoginPage.vue'), meta: { public: true, title: '登录' } },
         { path: '/opportunities', component: () => import('./pages/OpportunitiesPage.vue'), meta: { title: '机会筛选' } },
+        { path: '/analysis', component: () => import('./pages/AnalysisSearchPage.vue'), meta: { title: '个股分析' } },
         { path: '/stocks/:code', component: () => import('./pages/StockPage.vue'), meta: { title: '个股详情' } },
         { path: '/admin/data', component: () => import('./pages/DataPage.vue'), meta: { admin: true, title: '数据管理' } },
         { path: '/admin/users', component: () => import('./pages/UsersPage.vue'), meta: { admin: true, title: '用户管理' } },

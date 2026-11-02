@@ -14,9 +14,11 @@ from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.infrastructure.agent import create_runtime
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
+from sqlalchemy import delete
+from stocksieve.infrastructure.persistence import schema as t
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check
+from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check, run_research_check
 
 
 def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
@@ -42,6 +44,9 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
         assert '/auth/login' in result['apiPaths'] and '/auth/logout' in result['apiPaths']
         assert run_concept_check(server.base_url, 'admin', 'testpass123')['matchedStocks'] > 0
         assert run_strategy_check(server.base_url, 'admin', 'testpass123')['filterResetChecked']
+        with context.api.db.transaction() as connection:
+            connection.execute(delete(t.signals).where(t.signals.c.stock_id == context.source.universe_stocks[1].stock_id))
+        assert run_research_check(server.base_url, 'admin', 'testpass123')['unselectedStockAnalyzed']
         run_access_check(server.base_url, 'admin', 'testpass123')
     finally:
         future.cancel()
@@ -84,4 +89,17 @@ def test_browser_against_deployed_strategies(request: Any) -> None:
     credentials = json.loads(Path(file).read_text())
     result = run_strategy_check(base, credentials['username'], credentials['password'])
     assert result['filterResetChecked']
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def test_browser_against_deployed_research(request: Any) -> None:
+    if not request.config.getoption('--deployed-research'):
+        pytest.skip('正式个股模拟分析验收需显式--deployed-research，会保存模拟报告。')
+    base = request.config.getoption('--deployed-base')
+    file = request.config.getoption('--deployed-credentials')
+    if not base or not file:
+        pytest.fail('请指定正式地址与私有凭据文件。')
+    credentials = json.loads(Path(file).read_text())
+    result = run_research_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/stock-research-mobile.png')
+    assert result['unselectedStockAnalyzed']
     print(json.dumps(result, ensure_ascii=False))

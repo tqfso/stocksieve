@@ -4,7 +4,7 @@ export type Role = 'admin' | 'user';
 export type Period = 'day' | 'week' | 'year';
 export type AnalysisKind = 'fundamental' | 'chips' | 'trade';
 export type AnalysisScenario = 'normal' | 'partial' | 'failed';
-export type AnalysisStage = 'queued' | 'researching' | 'analyzing' | 'writing' | 'completed';
+export type AnalysisStage = 'queued' | 'preparing' | 'researching' | 'analyzing' | 'writing' | 'completed';
 export type Scenario = 'normal' | 'empty' | 'error';
 export type Board = 'SSE_MAIN' | 'SZSE_MAIN' | 'CHINEXT' | 'STAR' | 'BSE';
 export interface User {

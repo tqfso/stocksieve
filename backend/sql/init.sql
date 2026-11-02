@@ -185,7 +185,7 @@ CREATE TABLE public.tasks (
         OR (category = 'analysis' AND kind IN ('fundamental', 'chips', 'trade')
             AND stock_id IS NOT NULL AND input_snapshot_id IS NOT NULL AND target_date IS NOT NULL
             AND data_source IS NULL AND result_snapshot_id IS NULL AND result_json IS NULL
-            AND ((kind = 'trade' AND strategy_code IS NOT NULL AND strategy_code IN ('short', 'swing', 'long', 'trend_wait', 'base_wait'))
+            AND ((kind = 'trade' AND (strategy_code IS NULL OR strategy_code IN ('short', 'swing', 'long', 'trend_wait', 'base_wait')))
                 OR (kind <> 'trade' AND strategy_code IS NULL)))
     ),
     CONSTRAINT tasks_trigger_check CHECK (
@@ -231,7 +231,7 @@ COMMENT ON COLUMN public.tasks.data_source IS '同步来源，映射 API 的 sou
 COMMENT ON COLUMN public.tasks.target_date IS '固定目标日期；股票基础信息、行业题材任务为 NULL';
 COMMENT ON COLUMN public.tasks.stock_id IS '分析股票';
 COMMENT ON COLUMN public.tasks.input_snapshot_id IS '分析输入快照';
-COMMENT ON COLUMN public.tasks.strategy_code IS '买卖条件分析使用的策略';
+COMMENT ON COLUMN public.tasks.strategy_code IS '买卖建议使用的入选策略；NULL表示通用分析';
 COMMENT ON COLUMN public.tasks.status IS 'queued / running / succeeded / failed，默认queued';
 COMMENT ON COLUMN public.tasks.progress IS '0～100，默认0';
 COMMENT ON COLUMN public.tasks.dedupe_key IS '非终态任务去重键';

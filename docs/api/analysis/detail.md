@@ -15,6 +15,7 @@
 | stage | 展示 | 对应 status |
 | --- | --- | --- |
 | queued | 排队中 | queued |
+| preparing | 准备本地资料 | queued / running |
 | researching | 获取资料 | running |
 | analyzing | 分析研判 | running |
 | writing | 整理报告 | running |
@@ -64,7 +65,7 @@
 - 任务和报告的 `simulated=true` 表示模拟结果，标题和摘要包含“模拟”。模拟报告不调用真实模型或联网查询，不能作为真实 AI 分析展示；即使财报不足也可返回说明缺失的模拟基本面报告，`dataQuality=partial`。筹码图、财务指标及参考价只使用实际取得的输入和计算结果。
 - `title` 为报告标题，`metrics` 为关键指标卡片，含 `label`、`value`、`detail`；没有可展示的已核实指标时返回空数组，不填造数值。上述数据仅为虚构接口示例。
 - `overview` 为默认展示的精简结果：`decision` 含 `action`（`consider` / `wait` / `avoid`）、明确的建议 `label` 及一句 `reason`；`opportunities`、`risks` 为短句数组，默认各展示一条。详细正文及来源按需展开。
-- 买卖建议可附 `overview.pricePlan`，含 `waiting`、`entryLabel`、`entryPrice`、`entryCondition`、`exitPrice`、`exitCondition`、`considerIf`、`avoidIf`。价位字段为含单位的展示文本，条件与适合/暂不适合的情况在详细依据中查看；价位缺乏依据时省略计划，并在当前建议说明等待或暂不买。
+- 买卖建议可附 `overview.pricePlan`，含 `waiting`、`entryLabel`、`entryPrice`、`entryCondition`、`exitPrice`、`exitCondition`、`considerIf`、`avoidIf`。价位字段为展示文本，条件在详细依据中查看；缺乏依据时省略计划或显示“暂无可靠参考”，当前建议说明等待或暂不买。`strategy=null`表示通用分析。
 - 基本面指标明确标注营业收入（TTM）、归母净利润（TTM）及 PE（TTM）。TTM 为最近四个季度的滚动12个月；PE采用同币种、同单位总市值除以归母净利润（TTM）。盈利为零、为负或数据缺失时显示无有效倍数，不以零或负 PE 误导估值判断。
 - `dataQuality` 为 `complete` 或 `partial`，按该类分析所需资料判断。资料不足但仍可提供有限结论时成功并标记 `partial`，`missingInformation` 必须非空；完全无法分析时任务失败并说明缺失原因。
 - 基本面、筹码和买卖建议共用该报告结构。来源、资料缺失和规则信号分别展示，避免把估算或 AI 文本当作确定事实。

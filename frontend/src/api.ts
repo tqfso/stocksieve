@@ -21,6 +21,9 @@ export interface LiveStock {
     price: number | null; change: number | null; turnover: number | null; amount: number | null; totalMarketCap: number | null;
 }
 export interface Filters { snapshotId: string; boards: { id: Board; name: string; exchange: string }[]; industries: { id: string; name: string }[]; concepts: { id: string; name: string }[]; coverage: Record<string, string> }
+export type AnalysisMode = Strategy | 'general';
+export interface StockMatch { stockId: string; code: string; name: string; exchange: string; board: Board; dataStatus: 'ready' | 'pending'; dataDate: string | null }
+export interface StockSearchPage { items: StockMatch[]; total: number; page: number; pageSize: number }
 export interface OpportunityPage { snapshot: Snapshot; items: LiveStock[]; total: number; page: number; pageSize: number; summary: { industryCount: number; strategyCounts: Record<Strategy, number> } }
 export interface SyncJob {
     id: string; kind: 'initialize' | 'catalog' | 'daily'; source: string; status: 'queued' | 'running' | 'succeeded' | 'failed';
@@ -122,6 +125,7 @@ export async function changePassword(oldPassword: string, newPassword: string): 
 export async function listUsers(): Promise<User[]> { return (await request<{ items: User[] }>('/admin/users?pageSize=100')).items; }
 export function addUser(username: string, name: string, password: string): Promise<User> { return request('/admin/users', 'POST', { username, name, password }); }
 export function marketStatus(): Promise<MarketStatus> { return request('/market/status'); }
+export function searchStocks(search: string, page = 1): Promise<StockSearchPage> { return request('/stocks' + params({ search, page, pageSize: 20 })); }
 export function filters(snapshotId: string): Promise<Filters> { return request('/catalog/filters' + params({ snapshotId })); }
 
 /** 价格以元、成交额/市值以亿元展示；空值保持null，分类未知明确显示。 */
@@ -160,10 +164,10 @@ export async function syncLogs(id: string): Promise<string[]> {
     } while (after && output.length < 1000);
     return output;
 }
-export async function analysesFor(stock: LiveStock, kind: AnalysisKind, strategy: Strategy): Promise<AnalysisTask[]> { return (await request<{ items: AnalysisTask[] }>('/analyses' + params({ stockId: stock.stockId, kind, strategy: kind === 'trade' ? strategy : undefined, pageSize: 100 }))).items; }
+export async function analysesFor(stock: LiveStock, kind: AnalysisKind, strategy: AnalysisMode): Promise<AnalysisTask[]> { return (await request<{ items: AnalysisTask[] }>('/analyses' + params({ stockId: stock.stockId, kind, strategy: kind === 'trade' ? strategy : undefined, pageSize: 100 }))).items; }
 export function getAnalysis(id: string): Promise<AnalysisTask> { return request('/analyses/' + encodeURIComponent(id)); }
-export async function startAnalysis(stock: LiveStock, kind: AnalysisKind, strategy: Strategy, key: string): Promise<AnalysisTask> {
-    try { return await request('/stocks/' + encodeURIComponent(stock.stockId) + '/analyses', 'POST', { kind, snapshotId: stock.snapshotId, ...(kind === 'trade' ? { strategy } : {}) }, key); }
+export async function startAnalysis(stock: LiveStock, kind: AnalysisKind, strategy: AnalysisMode, key: string): Promise<AnalysisTask> {
+    try { return await request('/stocks/' + encodeURIComponent(stock.stockId) + '/analyses', 'POST', { kind, snapshotId: stock.snapshotId, ...(kind === 'trade' && strategy !== 'general' ? { strategy } : {}) }, key); }
     catch (error) { if (error instanceof ApiError && error.code === 'ANALYSIS_IN_PROGRESS' && typeof error.details.analysisId === 'string') return getAnalysis(error.details.analysisId); throw error; }
 }
 export function formatNumber(value: number | null | undefined, digits = 2): string { return value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits); }

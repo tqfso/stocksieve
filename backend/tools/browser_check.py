@@ -210,7 +210,7 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
                 const results = {};
                 for (const strategy of ['short','swing','long','trend_wait','base_wait']) {
                     const result = await get('/opportunities?strategy='+strategy+'&pageSize=6&snapshotId='+id);
-                    results[strategy] = {total:result.total, counts:result.summary.strategyCounts};
+                    results[strategy] = {total:result.total, counts:result.summary.strategyCounts, stockId:result.items[0]?.stock.stockId};
                 }
                 return {snapshotId:id, strategies:results};
             }""")
@@ -246,6 +246,40 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
             expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
             expect(page.get_by_placeholder('股票名称或代码', exact=True)).to_have_value('')
             assert 'search' not in parse_qs(urlsplit(page.url.split('#', 1)[-1]).query)
+            stage = '共用K线、收起和页签切换'
+            stock_id = next((result.get('stockId') for result in results['strategies'].values() if result.get('stockId')), None)
+            if stock_id:
+                page.goto(base.rstrip('/') + '/#/stocks/' + stock_id + '?' + urlencode({'entry': 'analysis', 'tab': 'ai', 'snapshotId': results['snapshotId']}), wait_until='networkidle')
+                chart = page.locator('.candlestick-chart')
+                expect(chart).to_be_visible()
+                expect(page.locator('.chart-panel')).to_have_count(1)
+                expect(page.locator('.chart-heading')).to_contain_text('行情截至')
+                page.get_by_role('button', name='周 K', exact=True).click()
+                expect(chart).to_have_attribute('aria-label', re.compile('周K线'))
+                average = page.locator('.ma-legend input').nth(2)
+                average.uncheck()
+                # 用当前SVG节点确认切页签和收起均没有卸载或重建图表。
+                chart.evaluate("element => element.dataset.browserCheck = 'shared-chart'")
+                for name in ('规则筛选结果', 'AI 分析报告'):
+                    page.get_by_role('button', name=name, exact=name == '规则筛选结果').click()
+                    expect(chart).to_be_visible()
+                    expect(chart).to_have_attribute('data-browser-check', 'shared-chart')
+                    expect(page.get_by_role('button', name='周 K', exact=True)).to_have_class(re.compile('active'))
+                    expect(average).not_to_be_checked()
+                page.get_by_role('button', name='收起 K 线', exact=True).click()
+                expect(chart).not_to_be_visible()
+                expect(page.get_by_role('button', name='展开 K 线', exact=True)).to_have_attribute('aria-expanded', 'false')
+                page.get_by_role('button', name='规则筛选结果', exact=True).click()
+                expect(chart).not_to_be_visible()
+                page.get_by_role('button', name='展开 K 线', exact=True).click()
+                expect(chart).to_be_visible()
+                expect(chart).to_have_attribute('data-browser-check', 'shared-chart')
+                expect(average).not_to_be_checked()
+                page.set_viewport_size({'width': 390, 'height': 844})
+                page.get_by_role('button', name='AI 分析报告', exact=False).click()
+                expect(chart).to_be_visible()
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                page.set_viewport_size({'width': 1440, 'height': 1000})
             stage = '历史回补期间日常更新入口'
             page.get_by_role('link', name='数据管理', exact=True).click()
             expect(page.get_by_role('heading', name='让研究从完整数据开始')).to_be_visible()
@@ -264,9 +298,134 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
                     expect(controls.nth(index)).to_be_enabled()
             page.locator('.sidebar-user').click()
             page.wait_for_url('**/#/login*')
-            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill}
+            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill, 'sharedChartChecked': bool(stock_id)}
     except Exception:
         raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
+
+
+def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
+    """搜索真实未入选股票并生成明确标记的模拟报告，验证通用分析、刷新历史及移动布局。"""
+    __tracebackhide__ = True
+    stage = '登录个股分析'
+    try:
+        with browser_page() as page:
+            failures: list[str] = []
+            page.on('pageerror', lambda error: failures.append(type(error).__name__))
+            page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+            page.get_by_placeholder('请输入账号', exact=True).fill(username)
+            page.get_by_placeholder('请输入密码', exact=True).fill(password)
+            page.get_by_role('button', name='登录工作台', exact=True).click()
+            page.wait_for_url('**/#/opportunities*')
+            choice = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const get = async path => {
+                    const response = await fetch('/api/v1'+path, {headers:{Authorization:'Bearer '+token}});
+                    if (!response.ok) throw new Error('接口未成功');
+                    return (await response.json()).data;
+                };
+                const directory = await get('/stocks?pageSize=100');
+                for (const stock of directory.items.filter(row => row.dataStatus === 'ready')) {
+                    const detail = await get('/stocks/'+stock.stockId);
+                    if (!detail.signals.length && detail.quote?.price != null) return stock;
+                }
+                throw new Error('测试需要一只未入选策略的股票');
+            }""")
+            page.get_by_role('link', name='个股分析', exact=True).click()
+            expect(page.get_by_role('heading', name='分析你关注的股票')).to_be_visible()
+            search = page.get_by_placeholder('输入股票名称或代码，如浦发银行、600000', exact=True)
+            stage = '名称与代码搜索、空状态和刷新'
+            search.fill('__no_stock_matches__')
+            expect(page.get_by_text('没有找到这只股票', exact=True)).to_be_visible()
+            stage = '名称搜索'
+            search.fill(choice['name'])
+            expect(page.locator('.research-match').filter(has_text=choice['code'])).to_be_visible()
+            search.fill(choice['code'])
+            expect(page.locator('.research-match')).to_have_count(1)
+            stage = '刷新保留搜索'
+            page.reload(wait_until='networkidle')
+            expect(search).to_have_value(choice['code'])
+            stage = '打开个股分析页'
+            page.locator('.research-match').get_by_role('button', name='查看分析', exact=True).click()
+            expect(page.locator('.stock-heading h1')).to_have_text(choice['name'])
+            expect(page.locator('.analysis-types button').filter(has_text='买卖建议')).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('.analysis-panel .el-select').first).to_contain_text('通用分析')
+            stage = '未入选股票的通用模拟报告'
+            with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/analyses')) as received:
+                page.get_by_role('button', name=re.compile(r'^(生成分析|重新生成)$')).click()
+            result = received.value.json()['data']
+            assert result['strategy'] is None and result['simulated'] and result['stockId'] == choice['stockId']
+            page.wait_for_function("""async id => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const response = await fetch('/api/v1/analyses/'+id, {headers:{Authorization:'Bearer '+token}});
+                return response.ok && (await response.json()).data.status === 'succeeded';
+            }""", arg=result['id'], timeout=30000)
+            expect(page.get_by_role('button', name='重新生成', exact=True)).to_be_enabled(timeout=30000)
+            expect(page.locator('.report-heading h2')).to_contain_text('模拟', timeout=30000)
+            expect(page.locator('.report-context')).to_contain_text('通用分析')
+            expect(page.locator('.report-price-plan')).to_be_visible()
+            expect(page.locator('.report-details').first).not_to_have_attribute('open', '')
+            if screenshot:
+                screenshot.parent.mkdir(parents=True, exist_ok=True)
+                page.locator('#ai-panel').screenshot(path=str(screenshot.with_name('stock-research-report.png')))
+            page.reload(wait_until='networkidle')
+            expect(page.locator('.report-heading h2')).to_contain_text('模拟')
+            expect(page.locator('.report-context')).to_contain_text('通用分析')
+            stage = '基本面模拟报告和减持未核验'
+            page.locator('.analysis-types button').filter(has_text='基本面').click()
+            page.get_by_role('button', name=re.compile(r'^(生成分析|重新生成)$')).click()
+            expect(page.locator('.report-heading h2')).to_contain_text('机会与风险', timeout=30000)
+            expect(page.locator('.overview-risks')).to_contain_text('减持')
+            page.reload(wait_until='networkidle')
+            expect(page.locator('.report-heading h2')).to_contain_text('机会与风险')
+            stage = '移动视口和返回搜索'
+            page.set_viewport_size({'width': 390, 'height': 844})
+            expect(page.locator('.report-decision')).to_be_visible()
+            page.get_by_role('link', name='返回个股搜索', exact=True).click()
+            expect(search).to_have_value(choice['code'])
+            expect(page.locator('.research-match')).to_have_count(1)
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            if screenshot:
+                screenshot.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(screenshot), full_page=True)
+            stage = '已入选股票切换通用与策略分析'
+            page.set_viewport_size({'width': 1440, 'height': 1000})
+            matched = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                for (const strategy of ['short','swing','long','trend_wait','base_wait']) {
+                    const response = await fetch('/api/v1/opportunities?strategy='+strategy+'&pageSize=1', {headers:{Authorization:'Bearer '+token}});
+                    if (!response.ok) throw new Error('策略接口未成功');
+                    const result = (await response.json()).data;
+                    if (result.items.length) return {stockId:result.items[0].stock.stockId, strategy};
+                }
+                return null;
+            }""")
+            if matched:
+                page.goto(base.rstrip('/') + '/#/stocks/' + matched['stockId'] + '?entry=analysis&tab=ai', wait_until='networkidle')
+                mode = page.locator('.analysis-mode .el-select')
+                expect(mode).to_contain_text('通用分析')
+                mode.click()
+                label = {'short': '短线', 'swing': '波段', 'long': '长线', 'trend_wait': '趋势埋伏', 'base_wait': '低位筑底'}[matched['strategy']] + '策略'
+                with page.expect_response(lambda response: '/api/v1/analyses?' in response.url and parse_qs(urlsplit(response.url).query).get('strategy') == [matched['strategy']]):
+                    page.get_by_role('option', name=label, exact=True).click()
+                expect(mode).to_contain_text(label)
+                assert mode.locator('.el-select__wrapper').bounding_box()['width'] >= 180
+                page.reload(wait_until='networkidle')
+                expect(mode).to_contain_text(label)
+                mode.click()
+                with page.expect_response(lambda response: '/api/v1/analyses?' in response.url and parse_qs(urlsplit(response.url).query).get('strategy') == ['general']):
+                    page.get_by_role('option', name='通用分析', exact=True).click()
+                expect(mode).to_contain_text('通用分析')
+                page.reload(wait_until='networkidle')
+                expect(mode).to_contain_text('通用分析')
+            assert not failures
+            # 移动端侧栏默认折叠，通过账号菜单退出本次隔离会话。
+            page.get_by_role('button', name='账号菜单', exact=True).click()
+            page.get_by_text('退出登录', exact=True).click()
+            page.wait_for_url('**/#/login*')
+            return {'stockId': choice['stockId'], 'name': choice['name'], 'unselectedStockAnalyzed': True,
+                'generalReportId': result['id'], 'refreshRestored': True, 'mobileChecked': True, 'pageErrors': len(failures)}
+    except Exception:
+        raise RuntimeError('个股分析浏览器验收未通过，阶段：' + stage + '。') from None
 
 
 def run_access_check(base: str, username: str, password: str) -> None:

@@ -13,7 +13,7 @@
 | quote | 对象或 null | 与[机会列表](opportunities.md)相同；该日无可展示行情时为 null |
 | signals | 数组 | 同一快照下全部入选策略的信号；没有入选时为空数组 |
 
-基础信息和分类同样取自所选快照。股票不在该快照覆盖范围时返回 `404 STOCK_NOT_FOUND`；覆盖范围内仅当日行情不可用时，返回 `quote: null`。
+基础信息和分类同样取自所选快照。股票不在目录时返回`404 STOCK_NOT_FOUND`，目录中存在但尚未被行情覆盖时返回`409 STOCK_DATA_NOT_READY`；覆盖范围内仅当日行情不可用时返回`quote: null`。未入选策略的股票仍可查看和分析，`signals=[]`。
 
 `stock.board` 用于上市板块标签和筛选，`stock.exchange` 取 `SSE`（上海）、`SZSE`（深圳）、`BSE`（北京）。板块标识见[筛选选项](filters.md)。
 

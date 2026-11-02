@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.engine import Connection
 
 import stocksieve.infrastructure.persistence.schema as t
@@ -70,6 +70,30 @@ class Market:
 
     def __init__(self, database: Database) -> None:
         self.db = database
+
+    def search_stocks(self, query: dict[str, str], boards: tuple[str, ...]) -> dict[str, Any]:
+        """搜索证券目录而非策略候选，输入仅作为参数，结果以稳定股票ID确认身份。"""
+        text = query.get('search', '').strip()
+        if len(text) > 50:
+            raise invalid('search', '股票名称或代码不能超过50字。')
+        page, size = integer(query, 'page', 1), integer(query, 'pageSize', 20, maximum=100)
+        conditions = [t.stocks.c.board.in_(boards), t.stocks.c.delisted_on.is_(None)]
+        code = text.upper().replace('SH.', '').replace('SZ.', '').removeprefix('SH').removeprefix('SZ')
+        if text:
+            conditions.append(or_(t.stocks.c.name.icontains(text, autoescape=True),
+                t.stocks.c.code.icontains(code or text, autoescape=True), func.upper(t.stocks.c.stock_id) == text.upper()))
+        with self.db.transaction() as connection:
+            total = connection.scalar(select(func.count()).select_from(t.stocks).where(*conditions))
+            snapshot = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published')
+                .order_by(t.snapshots.c.data_date.desc(), t.snapshots.c.version.desc()).limit(1)).mappings().first()
+            statement = select(t.stocks).where(*conditions).order_by(case((t.stocks.c.code == code, 0), (t.stocks.c.name == text, 1), else_=2), t.stocks.c.code, t.stocks.c.stock_id)
+            rows = connection.execute(statement.offset((page - 1) * size).limit(size)).mappings().all()
+            available = set(connection.scalars(select(t.snapshot_stocks.c.stock_id).where(t.snapshot_stocks.c.snapshot_id == snapshot['id'], t.snapshot_stocks.c.quote_price.is_not(None)))) if snapshot else set()
+        return {
+            'items': [{'stockId': row['stock_id'], 'code': row['code'], 'name': row['name'], 'exchange': row['exchange'], 'board': row['board'],
+                'dataStatus': 'ready' if row['stock_id'] in available else 'pending',
+                'dataDate': snapshot['data_date'] if snapshot and row['stock_id'] in available else None} for row in rows],
+            'total': total, 'page': page, 'pageSize': size}
 
     def snapshot(self, connection: Connection, snapshot_id: str | None = None) -> Any:
         query = select(t.snapshots).where(t.snapshots.c.status == 'published')
@@ -202,7 +226,9 @@ class Market:
             snapshot = self.snapshot(connection, snapshot_id)
             found = next((row for row in self.records(connection, snapshot) if row['stock']['stockId'] == stock_id), None)
         if not found:
-            raise DomainError('STOCK_NOT_FOUND', '股票不在该快照覆盖范围内。', 404)
+            with self.db.transaction() as connection:
+                exists = connection.scalar(select(t.stocks.c.stock_id).where(t.stocks.c.stock_id == stock_id))
+            raise DomainError('STOCK_DATA_NOT_READY' if exists else 'STOCK_NOT_FOUND', '这只股票的收盘资料尚未同步，请等待行情更新后重试。' if exists else '股票不存在或不在支持范围内。', 409 if exists else 404)
         return {'snapshot': self.snapshot_view(snapshot), 'stock': found['stock'], 'quote': found['quote'],
                 'signals': [self.signal_view(found['signalRows'][key], detail=True) for key in NAMES if key in found['signalRows']]}
 

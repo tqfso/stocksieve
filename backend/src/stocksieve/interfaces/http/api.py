@@ -50,6 +50,7 @@ class API:
             web.get('/api/v1/admin/users', self.users), web.post('/api/v1/admin/users', self.create_user),
             web.get('/api/v1/market/status', self.status), web.get('/api/v1/catalog/filters', self.filters),
             web.get('/api/v1/strategies', self.strategies), web.get('/api/v1/opportunities', self.opportunities),
+            web.get('/api/v1/stocks', self.search_stocks),
             web.get('/api/v1/stocks/{stockId}', self.stock), web.get('/api/v1/stocks/{stockId}/candles', self.candles),
             web.post('/api/v1/admin/sync-jobs', self.submit_sync), web.get('/api/v1/admin/sync-jobs', self.sync_list),
             web.get('/api/v1/admin/sync-jobs/{jobId}', self.sync_detail), web.get('/api/v1/admin/sync-jobs/{jobId}/logs', self.sync_logs),
@@ -157,6 +158,10 @@ class API:
     async def stock(self, request: web.Request) -> web.Response:
         query = known_query(request.query, {'snapshotId'})
         return success(request, self.market.stock(request.match_info['stockId'], query.get('snapshotId')))
+
+    async def search_stocks(self, request: web.Request) -> web.Response:
+        query = known_query(request.query, {'search', 'page', 'pageSize'})
+        return success(request, self.market.search_stocks(query, self.settings.market_boards))
 
     async def candles(self, request: web.Request) -> web.Response:
         query = known_query(request.query, {'snapshotId', 'period', 'before', 'limit'})
