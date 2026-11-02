@@ -1,4 +1,5 @@
 // 本文件集中提供异步模拟业务和浏览器持久化；页面不直接访问存储或网络。
+import { randomId } from '../ids.ts';
 import type { AnalysisKind, AnalysisScenario, AnalysisTask, Report, Role, Scenario, Stock, StockQuery, Strategy, SyncJob, User } from '../types.ts';
 import { DATA_DATE, STOCKS } from './fixtures.ts';
 import { filterStocks } from './market.ts';
@@ -148,7 +149,7 @@ export async function addUser(username: string, name: string, password: string):
         throw new Error('密码需为 6～32 位。');
     if (db().accounts.some((item) => item.username.toLowerCase() === username.toLowerCase()))
         throw new Error('该账号已存在，请使用其他账号。');
-    const account: Account = { id: crypto.randomUUID(), username, name: name.trim(), password, role: 'user', createdAt: timeLabel() };
+    const account: Account = { id: randomId(), username, name: name.trim(), password, role: 'user', createdAt: timeLabel() };
     db().accounts.push(account);
     save();
     return publicUser(account);
@@ -178,7 +179,7 @@ export function startAnalysis(stock: Stock, kind: AnalysisKind, options: {
     const strategy = kind === 'trade' ? options.strategy ?? stock.strategies[0]! : null;
     if (!STOCKS.some((item) => item.code === stock.code) || (strategy && !stock.strategies.includes(strategy)))
         throw new Error('当前股票或策略不支持指定分析。');
-    const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
+    const idempotencyKey = options.idempotencyKey ?? randomId();
     if (idempotencyKey.length < 8 || idempotencyKey.length > 128)
         throw new Error('提交标识需为 8～128 位。');
     const data = db();
@@ -192,7 +193,7 @@ export function startAnalysis(stock: Stock, kind: AnalysisKind, options: {
     const active = data.analyses.find((task) => task.userId === user.id && task.code === stock.code && task.kind === kind && task.strategy === strategy && (task.status === 'queued' || task.status === 'running'));
     if (active) return publicAnalysis(active);
     const task: StoredAnalysis = {
-        id: crypto.randomUUID(), userId: user.id, code: stock.code, kind, strategy,
+        id: randomId(), userId: user.id, code: stock.code, kind, strategy,
         snapshotId: `snapshot_demo_${DATA_DATE}`, dataDate: DATA_DATE,
         status: 'queued', stage: 'queued', progress: 0, createdAt: new Date().toISOString(),
         startedAt: null, finishedAt: null, error: null, reportId: null,
@@ -244,7 +245,7 @@ export function startSync(kind: SyncJob['kind'], source?: SyncJob['source']): Sy
         catalog: '任务范围：仅同步行业、题材字典及股票归属，不刷新股票基础信息或收盘行情。',
         daily: '任务范围：模拟同步收盘行情与策略结果，复用已有分类关系，不请求行业、题材数据源。',
     };
-    const job: SyncJob = { id: crypto.randomUUID(), source: selectedSource, kind, status: 'running', progress: 0, createdAt: timeLabel(), count: 0, logs: [`模拟任务已创建，选择 ${selectedSource} 作为示例数据源。`, scopes[kind]] };
+    const job: SyncJob = { id: randomId(), source: selectedSource, kind, status: 'running', progress: 0, createdAt: timeLabel(), count: 0, logs: [`模拟任务已创建，选择 ${selectedSource} 作为示例数据源。`, scopes[kind]] };
     db().jobs.unshift(job);
     db().jobs = db().jobs.slice(0, 20);
     save();

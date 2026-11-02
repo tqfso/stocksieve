@@ -58,4 +58,4 @@ uv run --project backend --frozen python backend/tools/probe_sources.py --date 2
 uv run --project backend --frozen python backend/tools/probe_sources.py --date 2026-10-30 --source tencent --group history --offline
 ```
 
-正式取数后不要并行运行其他采集器叠加访问。维护入口`check-source`、`check-tencent-metadata`同样使用正式共享账本；其成功不替代正式发布验收。Schema审计、部署及完整HTTP流程见[部署说明](../deployment/backend.md)。
+正式取数后不要并行运行其他采集器叠加访问。维护入口`check-source`、`check-tencent-metadata`同样使用正式共享账本；其成功不替代正式发布验收。Schema审计、部署及完整HTTP流程见[线上环境部署](../deployment/production.md)。

@@ -1,4 +1,5 @@
 // 本文件通过真实HTTP接口提供会话、行情、后台任务与分析报告，不生成浏览器业务数据。
+import { randomId } from './ids.ts';
 import type { AnalysisKind, AnalysisStage, Board, Candle, ChipBin, Period, ReportOverview, ReportSource, StockQuery, Strategy, User } from './types.ts';
 
 export interface Snapshot { id: string; dataDate: string; publishedAt: string; adjustment: string; strategyVersion: string; boards?: Board[]; catalogAsOfAt?: string | null }
@@ -78,7 +79,7 @@ export function params(values: Record<string, unknown>): string {
 
 /** 统一处理响应、超时与401，不对失败请求自动重试或自动生成数据。 */
 export async function request<T>(path: string, method = 'GET', body?: unknown, key?: string): Promise<T> {
-    const headers: Record<string, string> = { 'X-Request-ID': 'web_' + crypto.randomUUID() };
+    const headers: Record<string, string> = { 'X-Request-ID': 'web_' + randomId() };
     const token = readSession()?.accessToken;
     if (token) headers.Authorization = 'Bearer ' + token;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -154,7 +155,7 @@ export async function getStock(stockId: string, snapshotId?: string): Promise<Li
 }
 export function getCandles(stock: LiveStock, period: Period, before?: string): Promise<CandlePage> { return request('/stocks/' + encodeURIComponent(stock.stockId) + '/candles' + params({ snapshotId: stock.snapshotId, period, before, limit: 1000 })); }
 export async function syncJobs(): Promise<SyncJob[]> { return (await request<{ items: SyncJob[] }>('/admin/sync-jobs?pageSize=100')).items; }
-export function startSync(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = crypto.randomUUID()): Promise<SyncJob> { return request('/admin/sync-jobs', 'POST', { kind, source, ...(dataDate ? { dataDate } : {}) }, key); }
+export function startSync(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = randomId()): Promise<SyncJob> { return request('/admin/sync-jobs', 'POST', { kind, source, ...(dataDate ? { dataDate } : {}) }, key); }
 export async function syncLogs(id: string): Promise<string[]> {
     let after: string | undefined; const output: string[] = [];
     do {

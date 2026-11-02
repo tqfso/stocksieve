@@ -194,6 +194,9 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
     try:
         with browser_page() as page:
             page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+            crypto_capabilities = page.evaluate("""() => ({secureContext:window.isSecureContext,
+                randomUUID:typeof globalThis.crypto?.randomUUID === 'function',
+                getRandomValues:typeof globalThis.crypto?.getRandomValues === 'function'})""")
             page.get_by_placeholder('请输入账号', exact=True).fill(username)
             page.get_by_placeholder('请输入密码', exact=True).fill(password)
             page.get_by_role('button', name='登录工作台', exact=True).click()
@@ -298,7 +301,7 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
                     expect(controls.nth(index)).to_be_enabled()
             page.locator('.sidebar-user').click()
             page.wait_for_url('**/#/login*')
-            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill, 'sharedChartChecked': bool(stock_id)}
+            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill, 'sharedChartChecked': bool(stock_id), 'browserCrypto': crypto_capabilities}
     except Exception:
         raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
 

@@ -1,5 +1,6 @@
 <!-- 本文件通过后端受理和查询模拟分析任务，不在浏览器生成报告、来源或图形数值。 -->
 <script setup lang="ts">
+import { randomId } from '../ids.ts';
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import AppIcon from './AppIcon.vue';
@@ -57,7 +58,7 @@ async function loadReport(): Promise<void> {
 async function generate(): Promise<void> {
     if (running.value || submitting.value) return;
     const version = contextVersion; submitting.value = true; error.value = '';
-    submissionKey ||= crypto.randomUUID();
+    submissionKey ||= randomId();
     try {
         await startAnalysis(props.stock, kind.value, mode.value, submissionKey);
         if (version === contextVersion) { submissionKey = ''; await refresh(); }

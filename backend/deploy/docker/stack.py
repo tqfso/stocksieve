@@ -54,7 +54,7 @@ def prepare_env(root: Path = ROOT) -> dict[str, str]:
             additions[key] = value
     merged = {**existing, **additions}
     for key, value in {'STOCKSIEVE_POSTGRES_USER': 'stocksieve_admin', 'STOCKSIEVE_POSTGRES_DB': 'stocksieve',
-                       'STOCKSIEVE_POSTGRES_PORT': '5432', 'STOCKSIEVE_HISTORY_TRADING_DAYS': '150',
+                       'STOCKSIEVE_POSTGRES_PORT': '5432', 'STOCKSIEVE_API_PORT': '24048', 'STOCKSIEVE_HISTORY_TRADING_DAYS': '150',
                        'STOCKSIEVE_HISTORY_MAX_TRADING_DAYS': '0'}.items():
         if key not in merged:
             additions[key] = value

@@ -1,4 +1,5 @@
 // 本文件保存服务器会话、行情状态和后台任务列表，页面切换不会中断已受理任务。
+import { randomId } from './ids.ts';
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import * as api from './api.ts';
@@ -46,7 +47,7 @@ export const useSync = defineStore('sync', () => {
         })();
         return refreshing;
     }
-    async function start(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = crypto.randomUUID()): Promise<void> {
+    async function start(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = randomId()): Promise<void> {
         loading.value = true;
         try { await api.startSync(kind, source, dataDate, key); await refresh(); }
         finally { loading.value = false; }

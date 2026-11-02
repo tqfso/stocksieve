@@ -133,6 +133,24 @@ def reuse_price_cache(archive: Path) -> None:
     print(f'已复用{copied}份成功的公开行情缓存；未改写当前缓存或源频控账本。')
 
 
+def check_service_networks(stack: Stack, port: str) -> None:
+    """核对四个服务实际使用共同的Compose网络，并确认API的宿主机端口映射。"""
+    networks: list[set[str]] = []
+    for service in ('postgres', 'api', 'worker', 'scheduler'):
+        identifier = command([*stack.compose, 'ps', '-q', service], capture=True, env=stack.env).stdout.strip()
+        info = stack.inspect('container', identifier) if identifier else None
+        if info is None or info['HostConfig']['NetworkMode'] == 'host':
+            raise RuntimeError(f'{service}未使用预期的Compose内部网络。')
+        networks.append(set(info['NetworkSettings']['Networks']))
+        if service == 'api':
+            bindings = info['NetworkSettings']['Ports'].get('8000/tcp') or []
+            if not any(item.get('HostIp') == '0.0.0.0' and item.get('HostPort') == port for item in bindings):
+                raise RuntimeError('API宿主机端口映射未生效。')
+    if not set.intersection(*networks):
+        raise RuntimeError('应用与PostgreSQL没有共同的Compose网络。')
+    print(f'四个服务已使用共同的Compose内部网络，API映射为0.0.0.0:{port}→8000。')
+
+
 def local_base(image: str, record: dict[str, str]) -> str:
     """只检查本机镜像，并离线验证 Ubuntu、运行架构及复制的 uv/Python。"""
     explicit = '@' in image or ':' in image.rsplit('/', 1)[-1]
@@ -234,9 +252,12 @@ def main() -> int:
         running = set(command([*compose, 'ps', '--status', 'running', '--services'], capture=True, env=env).stdout.splitlines())
         if not {'postgres', 'api', 'worker', 'scheduler'} <= running:
             raise RuntimeError('后端进程未全部处于运行状态。')
-        port = env.get('STOCKSIEVE_API_PORT', '8000')
+        port = env.get('STOCKSIEVE_API_PORT', '24048')
+        check_service_networks(stack, port)
+        # 容器内固定使用8000，宿主机通过映射端口验证同一服务。
         command([*compose, 'exec', '-T', 'api', '/usr/local/bin/uv', 'run', '--frozen', '--no-dev', '--no-sync',
-                 'python', 'http_check.py', '--base-url', f'http://127.0.0.1:{port}'], env=env)
+                 'python', 'http_check.py', '--base-url', 'http://127.0.0.1:8000'], env=env)
+        command([sys.executable, str(ROOT / 'deploy/docker/http_check.py'), '--base-url', f'http://127.0.0.1:{port}'], env=env)
         command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', 'run.py', 'check-config'], env=env)
         overridden = command([*compose, 'run', '--rm', '--no-deps', '--env', 'STOCKSIEVE_HISTORY_TRADING_DAYS=250',
             '--env', 'STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=500', 'api', 'check-config'], capture=True, env=env)

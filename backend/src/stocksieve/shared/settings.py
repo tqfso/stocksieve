@@ -57,7 +57,7 @@ class Settings:
             if not password:
                 raise RuntimeError('请配置 STOCKSIEVE_DATABASE_URL 或既有 PostgreSQL 的 .env。')
             url = URL.create('postgresql+psycopg', username=values.get('STOCKSIEVE_POSTGRES_USER', 'stocksieve_admin'),
-                             password=password, host='127.0.0.1', port=int(values.get('STOCKSIEVE_POSTGRES_PORT', '5432')),
+                             password=password, host=values.get('STOCKSIEVE_POSTGRES_HOST', '127.0.0.1'), port=int(values.get('STOCKSIEVE_POSTGRES_PORT', '5432')),
                              database=values.get('STOCKSIEVE_POSTGRES_DB', 'stocksieve')).render_as_string(hide_password=False)
         return cls(database_url=url, state_dir=Path(values.get('STOCKSIEVE_STATE_DIR', str(ROOT / '.state'))),
                    web_dir=Path(values.get('STOCKSIEVE_WEB_DIR', str(ROOT / 'web'))),

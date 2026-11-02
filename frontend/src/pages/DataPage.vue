@@ -1,5 +1,6 @@
 <!-- 本文件提交真实同步任务并展示服务器进度、来源、等待时间和持久化日志。 -->
 <script setup lang="ts">
+import { randomId } from '../ids.ts';
 import { computed, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import AppIcon from '../components/AppIcon.vue';
@@ -38,7 +39,7 @@ async function start(kind: SyncJob['kind'], retry?: SyncJob): Promise<void> {
         const day = kind === 'daily' ? retry?.dataDate ?? target.value : undefined;
         const signature = JSON.stringify([kind, source, day]);
         const previous = submissions.get(kind);
-        const key = previous?.signature === signature ? previous.key : crypto.randomUUID();
+        const key = previous?.signature === signature ? previous.key : randomId();
         submissions.set(kind, { signature, key });
         await sync.start(kind, source, day || undefined, key);
         submissions.delete(kind);

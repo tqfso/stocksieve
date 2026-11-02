@@ -6,7 +6,7 @@ Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一�
 
 ## 当前状态
 
-- PostgreSQL、API、worker、scheduler统一由backend/compose.yaml管理；后端基础镜像为本机ubuntu:24.04，API同源提供编译后的真实前端。
+- PostgreSQL、API、worker、scheduler统一由backend/compose.yaml管理，使用bridge网络；应用通过postgres服务名访问数据库，API内部8000映射到服务器24048，对外访问http://172.21.21.98:24048。后端基础镜像为本机ubuntu:24.04，API同源提供前端。
 - 登录、会话撤销、用户管理、持久化任务、策略与快照、查询、图表、报告和权限已实现。页面不再使用浏览器模拟业务层。
 - 独立个股分析已支持完整目录按名称/代码搜索；未入选策略也可生成基本面、筹码与通用买卖建议模拟报告。通用与策略模式分别保存任务和历史；缺核心数据时保留等待或明确拒绝，不补造财报、筹码图或参考价。
 - 2026-11-01按用户要求清理了旧容器、数据库和状态卷，并从空库重新部署；旧库与缓存已归档到私有备份目录，仅恢复原管理员账号，源频控账本完整保留。
@@ -19,7 +19,7 @@ Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一�
 
 ## 运行与配置
 
-正式启动及维护见[Docker部署](../docs/deployment/backend.md)。服务器与数据库配置统一放在`backend/.env`，环境变量优先。[示例](.env.example)不包含真实凭据。
+正式启动及维护见[线上环境部署](../docs/deployment/production.md)。服务器与数据库配置统一放在`backend/.env`，环境变量优先。[示例](.env.example)不包含真实凭据。
 
 当前`STOCKSIEVE_AI_MODE=mock`，无需模型配置，不调用真实模型或联网检索。任务和报告均返回`simulated=true`，标题与摘要明确标记；图表与参考价仍用实际输入计算。缺财报可生成说明缺失的模拟报告，缺少核心行情仍拒绝受理。未来改为`live`并填写模型参数；真实模式不可用时不自动回退模拟。
 

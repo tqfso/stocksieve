@@ -1,4 +1,4 @@
-# 前后端 Docker 部署
+# 线上环境部署（前端、后端与数据库）
 
 使用本机ubuntu:24.04构建应用镜像、PostgreSQL15保存数据，Python依赖由uv锁定。PostgreSQL、API、worker、scheduler统一在`backend/compose.yaml`中，前端由API同源提供。当前覆盖沪深四板块，AI保持模拟。
 
@@ -28,13 +28,9 @@ uv run --project backend --frozen python backend/deploy/docker/deploy.py --reset
 
 此入口先核对项目独占资源、保存并校验数据库备份，然后移除本项目容器及两只数据卷，归档旧缓存和任务状态，创建空库并复用`backend/.state/initial-admin.json`中的管理员账号。恢复资料在`backend/.state/backups/`；私有env与源频控账本保留。日常部署不加此参数。
 
-API默认监听服务器`127.0.0.1:8000`，使用主机网络连接现有PG。客户端可通过已有反代或SSH转发访问：
+所有服务使用Compose默认的bridge网络，应用容器通过`postgres:5432`访问数据库。API在容器内监听`0.0.0.0:8000`，映射到服务器`0.0.0.0:24048`，同时提供前端页面与`/api/v1`接口。
 
-```bash
-ssh -N -L 8000:127.0.0.1:8000 root@172.21.21.98
-```
-
-随后浏览器访问`http://127.0.0.1:8000`。
+浏览器直接访问`http://172.21.21.98:24048`。服务器映射端口由`backend/.env`中的`STOCKSIEVE_API_PORT=24048`控制，容器内部端口和健康检查固定为8000。API、worker、scheduler在容器中自动使用服务名连接PG；宿主机CLI仍使用本机数据库端口，连接参数无需改成容器服务名。
 
 ## 配置与凭据
 
@@ -47,6 +43,26 @@ uv run --project backend --frozen python backend/run.py create-admin --username 
 ```
 
 镜像不包含凭据、宿主虚拟环境或业务数据库。公开源账本及成功响应缓存单独挂载，保留已有次数、间隔、冷却和原保存时间；管理员凭据不在这些挂载目录内。应用以非root用户运行，根文件系统只读。
+
+## 数据库管理与备份
+
+完整部署会自动准备数据库；如仅准备数据库，可在项目根执行`uv run --project backend --frozen python backend/deploy/docker/deploy.py --database-only`。连接配置见`backend/.env`；修改其中的密码不会自动修改已初始化的数据库角色密码。
+
+进入数据库控制台后，可用`\dt public.*`查看业务表：
+
+```bash
+docker compose -f backend/compose.yaml exec postgres sh -eu -c 'exec psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+手工备份使用带时间戳的私有文件：
+
+```bash
+umask 077
+mkdir -p backend/.state/backups
+docker compose -f backend/compose.yaml exec -T postgres sh -eu -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "backend/.state/backups/manual-$(date +%Y%m%d-%H%M%S).dump"
+```
+
+恢复时另建空库并核对结果，保留当前业务库。
 
 ## 历史范围配置
 
@@ -97,7 +113,7 @@ uv run --project backend --frozen python backend/run.py bootstrap-data --credent
 正式发布后的浏览器验收：
 
 ```bash
-uv run --project backend --frozen pytest backend/tests/test_browser.py --deployed-base http://127.0.0.1:8000 --deployed-credentials backend/.state/initial-admin.json --deployed-data -q
+uv run --project backend --frozen pytest backend/tests/test_browser.py --deployed-base http://172.21.21.98:24048 --deployed-credentials backend/.state/initial-admin.json --deployed-data -q
 ```
 
 它使用隔离浏览器会话验证真实列表、详情、K线与后端模拟筹码报告；会产生一份明确标记的模拟报告，不更改行情或账号口令。隔离PostgreSQL回归命令见[后端说明](../../backend/README.md)。

@@ -4,10 +4,13 @@ name: stocksieve-backend
 x-app: &app
   image: ${STOCKSIEVE_BACKEND_IMAGE:-stocksieve-backend:local}
   pull_policy: never
-  network_mode: host
   restart: unless-stopped
   env_file: [.env]
   environment:
+    # 容器间通过Compose服务名连接，覆盖宿主机开发环境的本地数据库地址。
+    STOCKSIEVE_DATABASE_URL: ""
+    STOCKSIEVE_POSTGRES_HOST: postgres
+    STOCKSIEVE_POSTGRES_PORT: "5432"
     STOCKSIEVE_STATE_DIR: /var/lib/stocksieve
     STOCKSIEVE_RATE_DIR: /var/lib/stocksieve-rate
     UV_CACHE_DIR: /var/lib/stocksieve/uv-cache
@@ -55,9 +58,11 @@ services:
     stop_grace_period: 60s
   api:
     <<: *app
-    command: [api, --host, 127.0.0.1, --port, "${STOCKSIEVE_API_PORT:-8000}"]
+    command: [api, --host, 0.0.0.0, --port, "8000"]
+    ports:
+      - "0.0.0.0:${STOCKSIEVE_API_PORT:-24048}:8000"
     healthcheck:
-      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${STOCKSIEVE_API_PORT:-8000}/health/ready', timeout=5).close()"]
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).close()"]
       interval: 10s
       timeout: 6s
       retries: 6

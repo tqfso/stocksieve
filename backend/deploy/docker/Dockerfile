@@ -33,4 +33,5 @@ COPY deploy/docker/http_check.py ./http_check.py
 RUN mkdir -p /var/lib/stocksieve && chown 10001:10001 /var/lib/stocksieve
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/uv", "run", "--frozen", "--no-dev", "--no-sync", "python", "run.py"]
-CMD ["api", "--host", "127.0.0.1", "--port", "8000"]
+EXPOSE 8000
+CMD ["api", "--host", "0.0.0.0", "--port", "8000"]

@@ -2,7 +2,7 @@
 
 面向股票入门用户的收盘后选股项目。管理员初始化和更新股票数据，用户可浏览五类策略机会，也可从“个股分析”按名称或代码搜索任意已覆盖股票，查看行情并发起基本面、筹码或通用买卖建议模拟分析。
 
-前后端已通过真实HTTP接口对接，并使用本机ubuntu:24.04通过Docker Compose部署到当前服务器。当前上线沪深四板块，北交所后续补充；AI暂用后端模拟，其他业务数据由服务器管理。真实数据准备与验收状态见[后端指南](backend/README.md)，访问方法见[部署说明](docs/deployment/backend.md)。
+前后端已通过真实HTTP接口对接，并使用本机ubuntu:24.04通过Docker Compose部署到当前服务器。当前上线沪深四板块，北交所后续补充；AI暂用后端模拟，其他业务数据由服务器管理。真实数据准备与验收状态见[后端指南](backend/README.md)，访问方法见[线上部署说明](docs/deployment/production.md)。
 
 ## 代码目录
 
@@ -19,7 +19,6 @@
 - [AI 分析设计](docs/product/ai-analysis-design.md)
 - [后端 API 接口文档（V1）](docs/api/README.md)
 - [数据库初始化 SQL](backend/sql/init.sql)
-- [PostgreSQL 单机部署](docs/deployment/postgresql.md)
-- [前后端 Docker 部署](docs/deployment/backend.md)
+- [线上环境部署（前端、后端与数据库）](docs/deployment/production.md)
 - [前端启动与联调指南](frontend/README.md)
 - [后端运行与测试指南](backend/README.md)

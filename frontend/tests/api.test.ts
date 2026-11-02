@@ -95,3 +95,17 @@ test('通用买卖建议不发送伪策略，历史只读取通用模式', async
     const body = JSON.parse(String(calls[1]!.options.body));
     assert.equal(body.kind, 'trade'); assert.equal('strategy' in body, false);
 });
+
+test('局域网HTTP中缺少randomUUID仍可登录并提交带默认幂等编号的同步请求', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto')!;
+    const native = globalThis.crypto;
+    try {
+        Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: native.getRandomValues.bind(native) } });
+        replies.push({ status: 200, body: { data: { accessToken: 'http-token-for-client', user } } }, { status: 202, body: { data: { id: 'http-sync-job' } } });
+        await api.login('admin', 'test-password');
+        await api.startSync('daily', 'baostock', '2026-10-30');
+        for (const call of calls) assert.match((call.options.headers as Record<string, string>)['X-Request-ID']!, /^web_[0-9a-f-]{36}$/);
+        assert.match((calls[1]!.options.headers as Record<string, string>)['Idempotency-Key']!, /^[0-9a-f-]{36}$/);
+        assert.equal(api.currentUser()?.id, user.id);
+    } finally { Object.defineProperty(globalThis, 'crypto', original); }
+});

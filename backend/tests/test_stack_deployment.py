@@ -38,6 +38,7 @@ def test_merge_env_preserves_private_credentials_and_other_settings(tmp_path: Pa
     assert values['STOCKSIEVE_POSTGRES_PASSWORD'] == 'test-only'
     assert values['STOCKSIEVE_AI_MODE'] == 'mock' and values['STOCKSIEVE_HISTORY_TRADING_DAYS'] == '250'
     assert values['STOCKSIEVE_HISTORY_MAX_TRADING_DAYS'] == '0'
+    assert values['STOCKSIEVE_API_PORT'] == '24048'
     assert target.stat().st_mode & 0o777 == 0o600
     original = target.read_text()
     (legacy / '.env').write_text('STOCKSIEVE_POSTGRES_PASSWORD=different\n')
