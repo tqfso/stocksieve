@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
 from stocksieve.shared.errors import DomainError
 
@@ -48,3 +49,21 @@ def test_partial_stream_retries_are_persistent_bounded_and_keep_peer_wait(tmp_pa
     policy.complete_stream('daily:2026-10-30')
     assert SourcePolicy(tmp_path).retry_partial_stream('baostock', 'daily:2026-10-30') is not None
     assert json.loads((tmp_path / 'state.json').read_text())['cooldown']['baostock'] >= before
+
+
+def test_one_second_shared_interval_and_daily_budget_reserved_for_regular_updates(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc).timestamp()
+    policy = SourcePolicy(tmp_path, 1, 8)
+    with progress_sink(lambda *args: None, background=True):
+        for offset in range(6):
+            policy.reserve('baostock', now + offset)
+        with pytest.raises(SourceDeferred):
+            policy.reserve('baostock', now + 6)
+    policy.reserve('tencent', now + 6)
+    with pytest.raises(SourceDeferred):
+        policy.reserve('baidu', now + 6.5)
+    policy.reserve('baidu', now + 7)
+    with pytest.raises(SourceDeferred):
+        policy.reserve('baostock', now + 8)
+    saved = json.loads((tmp_path / 'state.json').read_text())
+    assert sum(saved['daily']['2026-10-31'].values()) == 8

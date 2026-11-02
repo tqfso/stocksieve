@@ -52,6 +52,13 @@ class HistorySource(Protocol):
     async def history_calendar(self, target: date) -> tuple[dict[str, dict[date, CalendarDay]], datetime]: ...
 
 
+@runtime_checkable
+class CalendarCacheSource(Protocol):
+    """可复用已持久化真实日历的渠道能力，减少相同日历的重复取数。"""
+
+    def use_calendar(self, calendar: dict[str, dict[date, CalendarDay]], fetched_at: datetime) -> None: ...
+
+
 class CatalogOnlySource:
     """分类适配器的能力基类，其他任务在注册表和直接调用时均明确拒绝。"""
 
@@ -73,9 +80,10 @@ class CatalogOnlySource:
 class SourceDeferred(Exception):
     """频控等待由持久化任务重新调度，不能在持有执行租约时睡眠。"""
 
-    def __init__(self, until: datetime, message: str) -> None:
+    def __init__(self, until: datetime, message: str, *, reason: str = 'SOURCE_ACCESS_WAIT') -> None:
         super().__init__(message)
         self.until = until
+        self.reason = reason
 
 
 class RatePolicy(Protocol):

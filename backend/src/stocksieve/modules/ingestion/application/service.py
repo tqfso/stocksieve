@@ -15,6 +15,8 @@ from sqlalchemy.engine import Connection
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import utc
 from stocksieve.modules.ingestion.application.ports import (
+    CalendarCacheSource,
+    CalendarDay,
     HistorySource,
     Source,
 )
@@ -51,7 +53,7 @@ class Sync:
         policy = HistoryPolicy(task['options_json'].get('historyDays', 150), task['options_json'].get('historyMaxDays', 0))
         if isinstance(source, HistorySource):
             source = source.for_history(policy)
-        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id):
+        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id, background=task['options_json'].get('historyBackfill', False)):
             if task['kind'] == 'initialize':
                 await self.initialize(lease, source, task)
             elif task['kind'] == 'catalog':
@@ -238,6 +240,14 @@ class Sync:
             present = set(connection.scalars(select(t.calendar.c.exchange).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.trade_date == target)))
         start = policy.calendar_start(target)
         if present == exchanges and all(earliest.get(exchange) is not None and earliest[exchange] <= start for exchange in exchanges):
+            if isinstance(source, CalendarCacheSource):
+                with self.db.transaction() as connection:
+                    rows = connection.execute(select(t.calendar).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.source == source.id)).mappings().all()
+                calendar: dict[str, dict[date, CalendarDay]] = {exchange: {} for exchange in exchanges}
+                for row in rows:
+                    calendar[row['exchange']][row['trade_date']] = CalendarDay(row['is_open'], utc(row['close_at']) if row['close_at'] else None)
+                if rows:
+                    source.use_calendar(calendar, min(utc(row['fetched_at']) for row in rows))
             return
         calendar, fetched = await source.history_calendar(target)
         if not exchanges <= set(calendar) or any(not calendar[exchange] or min(calendar[exchange]) > start or target not in calendar[exchange] for exchange in exchanges):
@@ -258,7 +268,7 @@ class Sync:
         with self.db.transaction() as connection:
             current = dict(self.tasks.assert_lease(connection, lease))
             existing = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published', t.snapshots.c.data_date == task['target_date'], t.snapshots.c.source == source.id).order_by(t.snapshots.c.version.desc()).limit(1)).mappings().first()
-        if task['trigger'] == 'scheduled' and existing:
+        if task['trigger'] == 'scheduled' and existing and not task['options_json'].get('historyBackfill'):
             with self.db.transaction(serialized=True) as connection:
                 self.finish(connection, lease, 'already_synced', 0, snapshot_id=existing['id'])
             return
@@ -266,6 +276,8 @@ class Sync:
             with self.db.transaction() as connection:
                 known = tuple(stock_value(row) for row in connection.execute(select(t.stocks)).mappings())
             universe = tuple(stock for stock in await source.universe(task['target_date'], known) if stock.board in self.tasks.boards(task))
+            if task['options_json'].get('historyBackfill'):
+                self.tasks.yield_to_foreground(lease)
             self.validate_universe(universe, self.tasks.boards(task))
             self.begin_snapshot(lease, source, task, universe)
         # 每只股票独立形成受租约保护的批次；频控等待后从 nextIndex 恢复。
@@ -344,6 +356,8 @@ class Sync:
                 old_start = snapshot['history_start_date']
                 connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot['id']).values(history_start_date=min(start, old_start) if old_start else start))
                 connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=min(98, 80 + int((index + 1) / len(options['stockIds']) * 18))))
+            if task['options_json'].get('historyBackfill'):
+                self.tasks.yield_to_foreground(lease)
             await asyncio.sleep(0)
         self.publish(lease)
 
@@ -351,6 +365,15 @@ class Sync:
         with self.db.transaction(serialized=True) as connection:
             row = self.tasks.assert_lease(connection, lease)
             base = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published').order_by(t.snapshots.c.version.desc()).limit(1)).mappings().first()
+            frozen_universe = None
+            if row['options_json'].get('historyBackfill'):
+                base = connection.execute(select(t.snapshots).where(t.snapshots.c.id == row['options_json']['strategySnapshotId'],
+                    t.snapshots.c.status == 'published', t.snapshots.c.source == source.id, t.snapshots.c.data_date == task['target_date'])).mappings().one()
+                frozen_universe = tuple(stock_value(item) for item in connection.execute(select(t.snapshot_stocks)
+                    .where(t.snapshot_stocks.c.snapshot_id == base['id'])).mappings())
+                if {stock.stock_id for stock in frozen_universe} != {stock.stock_id for stock in universe}:
+                    raise DomainError('DATA_INCOMPLETE', '历史回补的证券范围与原策略快照不一致。', 503)
+                universe = frozen_universe
             cutoff = datetime.combine(task['target_date'], time.max, SHANGHAI)
             exchanges = {BOARDS[board][1] for board in self.tasks.boards(task)}
             latest_closed = connection.scalar(select(func.max(t.calendar.c.trade_date)).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.is_open.is_(True), t.calendar.c.close_at <= self.tasks.clock()))
@@ -359,6 +382,10 @@ class Sync:
                 cutoff = self.tasks.clock()
             catalog = connection.execute(select(t.tasks).where(t.tasks.c.kind == 'catalog', t.tasks.c.status == 'succeeded', t.tasks.c.finished_at <= cutoff)
                 .order_by(func.coalesce(t.tasks.c.result_json['_catalogRevision'].as_integer(), 0).desc(), t.tasks.c.finished_at.desc()).limit(1)).mappings().first()
+            if frozen_universe is not None:
+                # 跨日回补沿用原策略快照已取得的分类，不因后来获取资料而抹去或替换标签。
+                catalog_id = (base['coverage_json'] or {}).get('catalogTaskId')
+                catalog = connection.execute(select(t.tasks).where(t.tasks.c.id == catalog_id)).mappings().first() if catalog_id else None
             classifications = (catalog['result_json'] or {}).get('_classifications', {}) if catalog else {}
             calendar: dict[str, dict[str, bool | None]] = {key: {} for key in ('SSE', 'SZSE', 'BSE')}
             for entry in connection.execute(select(t.calendar)).mappings():
@@ -415,3 +442,24 @@ class Sync:
                 published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {}),
                     'historyPolicy': {'initialDays': options.get('historyDays', 150), 'maxDays': options.get('historyMaxDays', 0)}}))
             self.finish(connection, lease, 'updated', len(rows), snapshot_id=snapshot_id, skipped=options.get('skipped', 0))
+            self.schedule_backfill(connection, task, snapshot_id)
+
+    def schedule_backfill(self, connection: Connection, task: Any, snapshot_id: str) -> None:
+        """近期策略先发布，较早历史作为后续任务补齐；完成过的相同窗口不重复安排。"""
+        options = task['options_json']
+        initial, maximum = options.get('historyDays', 150), options.get('historyMaxDays', 0)
+        source = self.registry.get(task['data_source'], 'daily', self.tasks.boards(task))
+        if maximum <= initial or options.get('historyBackfill') or not isinstance(source, HistorySource):
+            return
+        previous = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'daily',
+            t.tasks.c.data_source == task['data_source'], t.tasks.c.status.in_(['queued', 'running', 'succeeded']),
+            t.tasks.c.options_json['historyBackfill'].as_boolean().is_(True),
+            t.tasks.c.options_json['historyMaxDays'].as_integer() >= maximum)).first()
+        if previous:
+            return
+        self.tasks.new(connection, category='sync', kind='daily', user_id=task['created_by'],
+            target=task['target_date'], source=task['data_source'], scheduled_for=task['scheduled_for'], options={
+                'marketBoards': list(self.tasks.boards(task)), 'historyDays': maximum, 'historyMaxDays': maximum,
+                'historyBackfill': True, 'strategySnapshotId': snapshot_id,
+                'sourceProgressMessage': f'近期策略已发布，后台继续补齐最多{maximum}个交易日的历史行情。',
+                'retryMinutes': options['retryMinutes'], 'readinessHours': options['readinessHours']})

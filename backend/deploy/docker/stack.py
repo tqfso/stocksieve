@@ -1,8 +1,9 @@
-"""本文件准备统一Compose配置并备份、迁移旧数据库容器，保持数据卷和口令不变。"""
+"""本文件管理统一Compose，提供保留数据的迁移和显式备份后清空重建流程。"""
 
 import json
 import os
 import secrets
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,6 +159,58 @@ class Stack:
             raise RuntimeError('数据库备份未完成，未开始迁移。') from None
         print(f'已保存并校验数据库备份：{path}（权限600）')
         return path
+
+    def reset(self) -> None:
+        """仅供明确要求清空重建时调用：核对项目归属，备份后删除本项目两只卷。"""
+        # 1. 清理前核对容器、数据库和卷的独占归属，不能波及同机其他项目。
+        self.prepare()
+        info = self.inspect('container', POSTGRES)
+        if info is None or validate_postgres(info, self.env) != PROJECT:
+            raise RuntimeError('清空重建只支持已完成统一Compose部署的本项目数据库。')
+        databases = set(self.sql('SELECT datname FROM pg_database WHERE NOT datistemplate').splitlines())
+        if databases - {'postgres', self.env['STOCKSIEVE_POSTGRES_DB']}:
+            raise RuntimeError('PostgreSQL卷还包含其他数据库，未执行清理。')
+        other_tables = self.run(['docker', 'exec', POSTGRES, 'sh', '-eu', '-c',
+            'exec psql -X -At -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c "$1"', 'sh',
+            "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"], capture=True).stdout.strip()
+        if other_tables != '0':
+            raise RuntimeError('默认postgres数据库包含其他表，未执行清理。')
+        for volume in (PG_VOLUME, STATE_VOLUME):
+            containers = self.run(['docker', 'ps', '-aq', '--filter', f'volume={volume}'], capture=True).stdout.splitlines()
+            for identifier in containers:
+                consumer = self.inspect('container', identifier)
+                labels = (consumer or {}).get('Config', {}).get('Labels') or {}
+                if labels.get('com.docker.compose.project') != PROJECT or labels.get('com.docker.compose.service') not in {'postgres', 'api', 'worker', 'scheduler'}:
+                    raise RuntimeError('持久化卷被其他容器引用，未执行清理。')
+        state = ROOT / '.state'
+        if state.is_symlink() or any(path.is_symlink() for path in state.iterdir()):
+            raise RuntimeError('状态目录包含符号链接，未执行清理。')
+        # 2. 停止应用写入；保存已校验的数据库备份和原配置，管理员凭据仍可复用。
+        self.run([*self.compose, 'stop', 'api', 'worker', 'scheduler'], env=self.env)
+        self.apps_stopped = True
+        baseline = self.counts()
+        backup = self.backup()
+        archive = state / 'backups' / ('reset-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f'))
+        archive.mkdir(mode=0o700)
+        shutil.copy2(ROOT / '.env', archive / 'server.env')
+        (archive / 'server.env').chmod(0o600)
+        # 3. 移除本项目容器和数据卷；源频控账本独立保留，不能因重建重置额度或冷却。
+        self.run([*self.compose, 'down', '--timeout', '60'], env=self.env)
+        self.apps_stopped = False
+        for volume in (PG_VOLUME, STATE_VOLUME):
+            self.run(['docker', 'volume', 'rm', volume])
+        for path in list(state.iterdir()):
+            if path.name not in {'backups', 'initial-admin.json'}:
+                path.rename(archive / path.name)
+        for name in ('baostock-wire', 'source-cache'):
+            path = state / name
+            path.mkdir()
+            os.chown(path, 10001, 10001)
+        manifest = archive / 'manifest.json'
+        manifest.write_text(json.dumps({'databaseBackup': str(backup), 'previousCounts': baseline,
+            'removedVolumes': [PG_VOLUME, STATE_VOLUME], 'rateLedgerPreserved': True}, ensure_ascii=False, indent=2) + '\n')
+        manifest.chmod(0o600)
+        print(f'本项目容器和数据卷已清理；恢复资料位于：{archive}。频控账本与管理员私有凭据保留。')
 
     def start_database(self, migrate: bool, *, database_only: bool = False) -> None:
         # 1. 旧项目迁移前固定数据状态，保留旧容器作为失败恢复入口。

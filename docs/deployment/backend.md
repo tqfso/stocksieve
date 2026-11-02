@@ -2,9 +2,9 @@
 
 使用本机ubuntu:24.04构建应用镜像、PostgreSQL15保存数据，Python依赖由uv锁定。PostgreSQL、API、worker、scheduler统一在`backend/compose.yaml`中，前端由API同源提供。当前覆盖沪深四板块，AI保持模拟。
 
-当前部署已完成首次真实数据发布和有数据的浏览器验收，数量与测试结果统一记录在[后端指南](../../backend/README.md)。
+当前部署已完成空库重建、管理员登录和空库浏览器验收，正在重新补齐十年历史行情；同步与测试状态统一记录在[后端指南](../../backend/README.md)。
 
-现有数据库已迁移至统一Compose，原数据卷与口令沿用，迁移前后业务行数核对一致。历史配置当前保持150/0，临时容器250/500覆盖检查及迁移后的正式浏览器验收均通过。
+PostgreSQL、API、worker和scheduler统一由Compose管理。历史统一按交易日配置；先发布近期策略，再补齐较早历史，遇到访问间隔、预算或冷却会保留进度后续跑。完整回补状态以数据管理中的任务结果为准。
 
 ## 构建与启动
 
@@ -19,6 +19,14 @@ uv run --project backend --frozen python backend/deploy/docker/deploy.py
 ```
 
 部署脚本核实本机镜像、构建应用、校验统一配置，按依赖顺序等待PG和API健康。首次合并旧部署会先停止应用写入并保存权限600的数据库备份，再将旧PG容器停止、改名并用原卷启动统一服务；业务行数一致且全部检查通过后才移除旧容器。失败时可恢复原容器，数据卷不删除。已有数据库仅审计和直接对齐约束，完全空库才执行初始化SQL。
+
+明确需要清空项目数据并重建时使用：
+
+```bash
+uv run --project backend --frozen python backend/deploy/docker/deploy.py --reset-data
+```
+
+此入口先核对项目独占资源、保存并校验数据库备份，然后移除本项目容器及两只数据卷，归档旧缓存和任务状态，创建空库并复用`backend/.state/initial-admin.json`中的管理员账号。恢复资料在`backend/.state/backups/`；私有env与源频控账本保留。日常部署不加此参数。
 
 API默认监听服务器`127.0.0.1:8000`，使用主机网络连接现有PG。客户端可通过已有反代或SSH转发访问：
 
@@ -42,14 +50,16 @@ uv run --project backend --frozen python backend/run.py create-admin --username 
 
 ## 历史范围配置
 
-在`backend/.env`设置，单位均为交易日：
+在`backend/.env`设置：
 
 ```dotenv
 STOCKSIEVE_HISTORY_TRADING_DAYS=150
-STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=0
+STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=2500
 ```
 
-补齐天数至少140，约一年可设250；上限0表示不限制最新快照窗口，非0时须不小于补齐天数。例如250/500表示补齐250天，随后累积到最新窗口最多500天。上限作用于新快照的计算、K线和新写入范围；旧快照及报告引用的日线保留，数据库物理行数不按此参数删除。
+`TRADING_DAYS`是首次发布策略需要补齐的近期窗口，至少140；`MAX_TRADING_DAYS`是后续回补及最新窗口上限，0表示不限制，非0须不小于前者。150/2500表示先用最近150个交易日发布策略，再由独立后台任务补齐最多2500个交易日，约十年；后续日常更新继续使用已取得的历史。
+
+日期使用真实交易日历，上市较晚的股票从实际可得行情开始，不补造数据。日线按快照差异保存，策略只计算各自所需窗口；旧快照及报告引用的原始日线保留。
 
 修改后运行部署命令重建应用容器，再提交新的收盘更新。任务受理时固定配置，进行中的任务及旧快照不受之后改动影响。扩大范围会补真实日历和缺失行情，继续遵守原频控。可只读核对生效值：
 
@@ -78,6 +88,8 @@ uv run --project backend --frozen python backend/run.py bootstrap-data --credent
 
 日期需改为已确认收盘的交易日。该流程不写模拟行情，任务受理后由服务器执行；网络失败、冷却和预算等待按原任务恢复，完整校验后发布。首轮按配置补齐历史比后续增量慢；进度、等待时间和日志可在数据管理查看。
 
+长期回补允许分多日完成。基础初始化和行业同步成功后，可用`--only-kind daily --submit-only`仅提交收盘任务并返回；任务由worker跨日执行，不需要终端持续连接。近期策略发布后页面即可使用，日常更新优先于较早历史回补；停止或重建应用容器不会清空已保存进度。
+
 正式服务已有快照后，可加`--only-kind initialize`、`catalog`或`daily`只执行单种任务。相同状态文件恢复原任务；需要新一轮更新时指定新的`--state-file`。
 
 题材更新在管理页选择“百度股市通题材”；该渠道只修改题材并保留原行业，每轮最多400只，继续更新会补齐其他股票。分类成功后再更新收盘行情，新分类才进入最新筛选。行情渠道继续选择Baostock组合。
@@ -99,4 +111,6 @@ docker compose -f backend/compose.yaml ps
 docker compose -f backend/compose.yaml logs --tail=100 api worker scheduler
 ```
 
-数据库卷和后端状态卷均为external，统一Compose停止或移除容器仍保留数据。首次迁移备份位于`backend/.state/backups/compose-*.dump`。重启不取消已受理任务，不删除频控持久账本或成功缓存。默认正式预算为400次/日、全渠道至少间隔10秒，实际可执行时间由已消耗次数及上游冷却共同确定。
+数据库卷和后端状态卷均为external，统一Compose停止或移除容器仍保留数据。首次迁移备份位于`backend/.state/backups/compose-*.dump`。重启不取消已受理任务，不删除频控账本或成功缓存。
+
+`STOCKSIEVE_SOURCE_INTERVAL_SECONDS=1`和`STOCKSIEVE_SOURCE_DAILY_LIMIT=1000`控制共享请求间隔与本项目日预算，不是上游公布的限额。回补预留最多100次给日常更新；更小的预算预留约四分之一。日常更新可在历史回补期间提交并优先执行；403/429及其他真实冷却仍会暂停对应渠道。

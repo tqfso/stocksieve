@@ -216,6 +216,10 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
             }""")
             counts = {key: result['total'] for key, result in results['strategies'].items()}
             assert all(result['counts'] == counts for result in results['strategies'].values())
+            stage = '已清理的快照链接恢复'
+            page.goto(base.rstrip('/') + '/#/opportunities?strategy=short&snapshotId=11111111-1111-4111-8111-111111111111', wait_until='networkidle')
+            expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
+            expect(page).to_have_url(re.compile(re.escape(results['snapshotId'])))
             page.goto(base.rstrip('/') + '/#/opportunities?' + urlencode({'strategy': 'short', 'snapshotId': results['snapshotId']}), wait_until='networkidle')
             tabs = page.get_by_role('tab')
             for index, (key, count) in enumerate(counts.items()):
@@ -242,9 +246,25 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
             expect(page.locator('.strategy-tabs b')).to_have_text([str(value) for value in counts.values()])
             expect(page.get_by_placeholder('股票名称或代码', exact=True)).to_have_value('')
             assert 'search' not in parse_qs(urlsplit(page.url.split('#', 1)[-1]).query)
+            stage = '历史回补期间日常更新入口'
+            page.get_by_role('link', name='数据管理', exact=True).click()
+            expect(page.get_by_role('heading', name='让研究从完整数据开始')).to_be_visible()
+            only_backfill = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const response = await fetch('/api/v1/admin/sync-jobs', {headers:{Authorization:'Bearer '+token}});
+                if (!response.ok) throw new Error('任务接口未成功');
+                const active = (await response.json()).data.items.filter(job => ['queued','running'].includes(job.status));
+                return active.length > 0 && active.every(job => job.historyBackfill);
+            }""")
+            if only_backfill:
+                expect(page.locator('.data-table')).to_contain_text('历史行情回补')
+                controls = page.get_by_role('button', name='开始更新', exact=True)
+                expect(controls).to_have_count(3)
+                for index in range(3):
+                    expect(controls.nth(index)).to_be_enabled()
             page.locator('.sidebar-user').click()
             page.wait_for_url('**/#/login*')
-            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True}
+            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill}
     except Exception:
         raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
 

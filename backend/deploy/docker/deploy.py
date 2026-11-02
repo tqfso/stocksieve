@@ -107,6 +107,32 @@ def check_production_dependencies() -> None:
         raise RuntimeError('PostgreSQL 驱动尚未通过 uv 声明和锁定；需先补齐 psycopg[binary]，不能部署为可用服务。')
 
 
+def reuse_price_cache(archive: Path) -> None:
+    """仅从本项目备份复用成功的公开行情响应，保留当前缓存和完整频控账本。"""
+    folder = archive.resolve()
+    if not folder.is_relative_to((ROOT / '.state/backups').resolve()) or not folder.is_dir():
+        raise RuntimeError('只允许复用本项目备份目录中的公开行情缓存。')
+    destination = ROOT / '.state/baostock-wire'
+    destination.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for path in (folder / 'baostock-wire').glob('*.json'):
+        if path.is_symlink() or not re.fullmatch(r'[a-f0-9]{64}\.json', path.name):
+            continue
+        saved = json.loads(path.read_text())
+        fields = saved.get('reply', '')[21:].split('\x01', 3)
+        if len(fields) < 3 or fields[:3] != ['0', 'success', 'query_daily_history_k_AStock']:
+            continue
+        target = destination / path.name
+        if target.exists():
+            continue
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(saved, stream)
+        os.chown(target, 10001, 10001)
+        copied += 1
+    print(f'已复用{copied}份成功的公开行情缓存；未改写当前缓存或源频控账本。')
+
+
 def local_base(image: str, record: dict[str, str]) -> str:
     """只检查本机镜像，并离线验证 Ubuntu、运行架构及复制的 uv/Python。"""
     explicit = '@' in image or ':' in image.rsplit('/', 1)[-1]
@@ -144,13 +170,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-image', default=os.environ.get('STOCKSIEVE_BASE_IMAGE', DEFAULT_BASE))
     parser.add_argument('--image', default='stocksieve-backend:local')
+    parser.add_argument('--reuse-price-cache-from', type=Path, help='从项目私有备份复用成功的公开行情响应，避免重复取数')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare-only', action='store_true')
     modes.add_argument('--build-only', action='store_true')
     modes.add_argument('--database-only', action='store_true', help='首次仅准备统一配置、数据库及结构')
     modes.add_argument('--validate-stack', action='store_true', help='准备统一配置并检查资源接续计划，不停止服务')
+    modes.add_argument('--reset-data', action='store_true', help='明确清空重建：备份后删除本项目容器、数据库和状态卷，再部署空库')
     args = parser.parse_args()
     stack = None
+    credentials = None
     try:
         if args.validate_stack:
             env = prepare_env()
@@ -171,6 +200,8 @@ def main() -> int:
             print('数据库已在backend/compose.yaml下就绪，私有配置位于backend/.env。')
             return 0
         record = prepare()
+        if args.reuse_price_cache_from:
+            reuse_price_cache(args.reuse_price_cache_from)
         if args.prepare_only:
             return 0
         base_image = local_base(args.base_image, record)
@@ -182,10 +213,19 @@ def main() -> int:
         env = {**prepare_env(), 'STOCKSIEVE_BACKEND_IMAGE': args.image}
         command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
         stack = Stack(command, env)
+        if args.reset_data:
+            credentials = json.loads((ROOT / '.state/initial-admin.json').read_text())
+            if not isinstance(credentials.get('username'), str) or not isinstance(credentials.get('password'), str) or not credentials['password']:
+                raise RuntimeError('重建所需的管理员私有凭据不完整，未清理。')
+            stack.reset()
         migrate = stack.prepare()
         stack.start_database(migrate)
         # PG健康后直接对齐项目SQL约束；既有数据只审计、校验，不重新初始化。
         command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
+        if credentials:
+            command([sys.executable, str(ROOT / 'run.py'), 'create-admin', '--username', credentials['username'],
+                     '--password-env', 'STOCKSIEVE_RESET_ADMIN_PASSWORD'],
+                    env={**env, 'STOCKSIEVE_RESET_ADMIN_PASSWORD': credentials['password']})
         compose = stack.compose
         command([*compose, 'run', '--rm', '--no-deps', 'api', 'check-db'], env=env)
         command([*compose, 'up', '-d', '--no-build', '--pull', 'never', 'api', 'worker', 'scheduler'], env=env)

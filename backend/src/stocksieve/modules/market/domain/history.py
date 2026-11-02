@@ -9,7 +9,7 @@ from stocksieve.shared.errors import MissingData
 
 @dataclass(frozen=True)
 class HistoryPolicy:
-    """按交易日配置历史窗口；0表示最新快照不设上限，最少140天满足现有策略。"""
+    """首次补齐用于策略的近期窗口，最大窗口供后续回补；均按真实交易日计数。"""
 
     initial_days: int = 150
     max_days: int = 0
@@ -22,12 +22,14 @@ class HistoryPolicy:
 
     def calendar_start(self, target: date) -> date:
         """为交易日选择准备足够自然日历，最早覆盖到A股市场建立年份。"""
-        days = max(730, max(self.initial_days, self.max_days) * 2 + 60)
-        return max(date(1990, 1, 1), target - timedelta(days=min(days, target.toordinal() - 1)))
+        days = max(730, self.initial_days * 2 + 60)
+        start = target - timedelta(days=min(days, target.toordinal() - 1))
+        return max(date(1990, 1, 1), start)
 
     def initial_dates(self, days: Iterable[date], target: date) -> list[date]:
         """只接受已确认开市且不晚于目标日的日期，不以工作日推算。"""
-        selected = sorted({day for day in days if day <= target})[-self.initial_days:]
+        known = sorted({day for day in days if day <= target})
+        selected = known[-self.initial_days:]
         if len(selected) < self.initial_days:
             raise MissingData(f'历史交易日不足配置要求的{self.initial_days}天。')
         return selected

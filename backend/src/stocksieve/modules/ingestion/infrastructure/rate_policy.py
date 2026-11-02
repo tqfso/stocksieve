@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.application.progress import is_background_sync
 from stocksieve.shared.errors import DomainError
 from stocksieve.shared.time import SHANGHAI
 
@@ -18,8 +19,8 @@ from stocksieve.shared.time import SHANGHAI
 class SourcePolicy:
     """正式阶段使用配置的每日预算；探测工具仍使用更小预算，共用同一账本与锁。"""
 
-    def __init__(self, directory: Path, interval: float = 10, daily_limit: int = 400) -> None:
-        if not math.isfinite(interval) or interval < 10 or daily_limit < 1:
+    def __init__(self, directory: Path, interval: float = 1, daily_limit: int = 1000) -> None:
+        if not math.isfinite(interval) or interval < 1 or daily_limit < 1:
             raise ValueError('请求间隔和预算无效。')
         directory.mkdir(parents=True, exist_ok=True)
         self.directory, self.interval, self.daily_limit = directory, interval, daily_limit
@@ -43,13 +44,21 @@ class SourcePolicy:
             temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n')
             temporary.replace(path)
 
+    @property
+    def foreground_reserve(self) -> int:
+        """为日常更新保留最多100次请求，小预算时预留约四分之一。"""
+        return min(100, max(1, self.daily_limit // 4))
+
     def reserve(self, vendor: str, now: float | None = None) -> None:
         instant = time.time() if now is None else now
         day = datetime.fromtimestamp(instant, SHANGHAI).date()
         with self.transaction() as state:
             counts = state.setdefault('daily', {}).setdefault(day.isoformat(), {})
             until = max(state.get('next_at', 0), state.get('cooldown', {}).get(vendor, 0))
-            if counts.get(vendor, 0) >= self.daily_limit or sum(counts.values()) >= self.daily_limit:
+            # 回补最多使用扣除预留后的额度，日常更新仍可使用完整预算；已有次数始终计入。
+            reserved = self.foreground_reserve if is_background_sync() else 0
+            budget = self.daily_limit - reserved
+            if counts.get(vendor, 0) >= self.daily_limit or sum(counts.values()) >= budget:
                 until = max(until, datetime.combine(day + timedelta(days=1), datetime.min.time(), SHANGHAI).timestamp())
             if until > instant:
                 raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), '遵守渠道间隔、预算或冷却，等待下次执行。')

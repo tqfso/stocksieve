@@ -66,3 +66,31 @@ def test_missing_suspended_volume_and_amount_remain_unknown(tmp_path: Path) -> N
     packet = asyncio.run(source.daily(security('sh.600000', '测试股票'), date(2026, 10, 30), ()))
     assert packet.bars[0].amount is None and packet.bars[0].volume is None
     assert packet.state.trade_status == 'suspended'
+
+
+def test_history_requires_only_boards_already_listed_at_that_date(tmp_path: Path) -> None:
+    source = make_source(tmp_path)
+    source.directory = lambda: [
+        {'type': '1', 'code': code, 'code_name': code, 'ipoDate': listed, 'outDate': ''}
+        for code, listed in [('sh.600000', '1999-11-10'), ('sz.000001', '1991-04-03'),
+                             ('sz.300001', '2009-10-30'), ('sh.688001', '2019-07-22')]]
+    rows = [{**quote('2016-10-31', '10', '10'), 'code': code}
+            for code in ('sh.600000', 'sz.000001', 'sz.300001')]
+    source.wire.sdk = SimpleNamespace(query_daily_history_k_AStock=lambda day: rows)
+    source.read = lambda result: result
+    assert source.expected_boards(date(2016, 10, 31)) == {'SSE_MAIN', 'SZSE_MAIN', 'CHINEXT'}
+    assert len(source.load_day(date(2016, 10, 31))) == 3
+    rows[:] = [{**row, 'date': '2026-10-30'} for row in rows]
+    with pytest.raises(DomainError):
+        source.load_day(date(2026, 10, 30))
+
+
+def test_historical_backfill_keeps_verified_market_cap_when_live_quote_is_unavailable(tmp_path: Path) -> None:
+    source = make_source(tmp_path)
+    source.metadata = SimpleNamespace(cap=lambda *args: None)
+    row = quote('2026-10-30', '10', '10')
+    with sqlite3.connect(source.cache) as connection:
+        connection.execute('INSERT INTO raw VALUES (?,?,?)', ('sh.600000', row['date'], json.dumps(row)))
+    prior = Bar(date(2026, 10, 30), D(10), D(11), D(9), D(10), D(1000), 100, D(1), D(1000000000), D(1))
+    packet = asyncio.run(source.daily(security('sh.600000', '测试股票'), date(2026, 10, 30), (prior,)))
+    assert packet.bars == ()

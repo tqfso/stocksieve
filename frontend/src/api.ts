@@ -27,6 +27,7 @@ export interface SyncJob {
     progress: number; dataDate: string | null; createdAt: string; waitReason: string | null; nextRetryAt: string | null;
     error: { code: string; message: string } | null; result: { totalCount: number; processedCount: number; publishedSnapshotId: string | null } | null;
     message?: string | null;
+    historyBackfill?: boolean;
 }
 export interface AnalysisTask {
     id: string; stockId: string; kind: AnalysisKind; strategy: Strategy | null; snapshotId: string; dataDate: string;

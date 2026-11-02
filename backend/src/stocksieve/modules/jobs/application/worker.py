@@ -60,8 +60,8 @@ class Worker:
                 else:
                     retry = min(deferred.until, deadline) if deadline else deferred.until
                     self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': retry,
-                                            'options_json': {**task['options_json'], 'sourceWaitReason': 'SOURCE_ACCESS_WAIT'}},
-                                     f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
+                                            'options_json': {**task['options_json'], 'sourceWaitReason': deferred.reason}},
+                                     str(deferred) if deferred.reason == 'FOREGROUND_SYNC_PENDING' else f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
             else:
                 self.fail_if_owned(lease, DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '资料渠道暂处于频控等待，请稍后重新发起分析。', 503))
         except DomainError as error:

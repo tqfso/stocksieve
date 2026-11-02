@@ -253,7 +253,7 @@ COMMENT ON COLUMN public.tasks.created_at IS '创建时间';
 COMMENT ON COLUMN public.tasks.started_at IS '首次执行、终态时间';
 COMMENT ON COLUMN public.tasks.finished_at IS '首次执行、终态时间';
 CREATE UNIQUE INDEX tasks_active_dedupe_uq ON public.tasks (dedupe_key) WHERE status IN ('queued', 'running');
-CREATE UNIQUE INDEX tasks_active_sync_scope_uq ON public.tasks (kind, (COALESCE(target_date, DATE '0001-01-01'))) WHERE category = 'sync' AND status IN ('queued', 'running');
+CREATE UNIQUE INDEX tasks_active_sync_scope_uq ON public.tasks (kind, (COALESCE(target_date, DATE '0001-01-01')), (COALESCE(options_json->>'historyBackfill', 'false'))) WHERE category = 'sync' AND status IN ('queued', 'running');
 CREATE UNIQUE INDEX tasks_active_analysis_scope_uq ON public.tasks (created_by, stock_id, input_snapshot_id, kind, (COALESCE(strategy_code, ''))) WHERE category = 'analysis' AND status IN ('queued', 'running');
 CREATE UNIQUE INDEX tasks_one_running_sync_uq ON public.tasks (category) WHERE category = 'sync' AND status = 'running';
 CREATE INDEX tasks_ready_idx ON public.tasks (status, run_after);

@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import Database, utc
 from stocksieve.modules.ingestion.application.registry import Registry
+from stocksieve.modules.ingestion.application.ports import SourceDeferred
 from stocksieve.modules.jobs.application.commands import AnalysisInput, SyncInput
 from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.application.queries import Market
@@ -42,6 +43,7 @@ class Tasks:
             stored = row['result_json']
             public_result = {key: stored.get(key) for key in ('outcome', 'totalCount', 'processedCount', 'successCount', 'skippedCount', 'failedCount', 'publishedSnapshotId')} if stored else None
             result.update(source=row['data_source'], trigger=row['trigger'], scheduledFor=stamp(row['scheduled_for']),
+                          historyBackfill=bool((row['options_json'] or {}).get('historyBackfill')),
                           message=(row['options_json'] or {}).get('sourceProgressMessage'),
                           boards=list(self.boards(row)), waitReason=row['wait_reason'] or source_wait, nextRetryAt=stamp(row['run_after']) if row['wait_reason'] or source_wait else None,
                           retryDeadlineAt=stamp(row['retry_deadline_at']), retryCount=row['retry_count'], precheck=row['precheck_json'], result=public_result)
@@ -103,6 +105,8 @@ class Tasks:
             options.setdefault('marketBoards', list(self.settings.market_boards))
             options.setdefault('historyDays', self.settings.history_trading_days)
             options.setdefault('historyMaxDays', self.settings.history_max_trading_days)
+            if options.get('historyBackfill'):
+                dedupe += ':history'
         connection.execute(t.tasks.insert().values(id=task_id, category=category, kind=kind, created_by=user_id,
             trigger='scheduled' if scheduled_for else 'manual', data_source=source, target_date=target,
             stock_id=stock_id, input_snapshot_id=snapshot_id, strategy_code=strategy, status='queued', progress=0,
@@ -119,6 +123,42 @@ class Tasks:
         rows = connection.execute(select(t.tasks.c.options_json).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'initialize', t.tasks.c.status == 'succeeded')).scalars()
         return any(set(self.settings.market_boards) <= set((options or {}).get('marketBoards', list(BOARDS))) for options in rows)
 
+    def recover_history_bootstrap(self, *, apply: bool = False) -> dict[str, Any]:
+        """修复旧自然年配置留下的首次排队任务，近期发布后再按当前最大窗口回补。"""
+        with self.db.transaction(serialized=True) as connection:
+            normalized = []
+            backfills = connection.execute(select(t.tasks).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'daily',
+                t.tasks.c.status.in_(['queued', 'running']), t.tasks.c.options_json['historyBackfill'].as_boolean().is_(True))).mappings().all()
+            for row in backfills:
+                key = f'sync:daily:{row["target_date"]}:history'
+                if row['dedupe_key'] != key:
+                    normalized.append(row['id'])
+                    if apply:
+                        values = {'dedupe_key': key}
+                        if row['status'] == 'queued':
+                            values['run_after'] = self.clock()
+                        connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(**values))
+            if connection.scalar(select(t.snapshots.c.id).where(t.snapshots.c.status == 'published').limit(1)):
+                return {'applied': apply and bool(normalized), 'taskIds': [], 'normalizedBackfillIds': normalized}
+            rows = connection.execute(select(t.tasks).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'daily',
+                t.tasks.c.status == 'queued')).mappings().all()
+            changed = []
+            for row in rows:
+                options = dict(row['options_json'])
+                if not options.get('historyYears') or options.get('buildingSnapshotId'):
+                    continue
+                changed.append(row['id'])
+                if apply:
+                    options.pop('historyYears')
+                    options.pop('sourceWaitReason', None)
+                    options.update(historyDays=self.settings.history_trading_days, historyMaxDays=self.settings.history_max_trading_days,
+                        sourceProgressMessage='先准备近期行情并发布策略，较早历史随后回补。')
+                    connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(options_json=options,
+                        progress=0, run_after=self.clock()))
+                    connection.execute(t.logs.insert().values(task_id=row['id'], time=self.clock(), level='info',
+                        message='已改为先发布近期策略、后补齐历史；真实渠道预算与冷却保持。'))
+            return {'applied': apply, 'taskIds': changed, 'normalizedBackfillIds': normalized}
+
     def submit_sync(self, user: dict[str, Any], path: str, key: str | None, data: SyncInput) -> tuple[dict[str, Any], dict[str, str]]:
         def create(connection: Connection) -> Any:
             self.registry.get(data.source, data.kind)
@@ -126,7 +166,8 @@ class Tasks:
                 raise invalid('dataDate', '该任务不接受数据日期。')
             if data.kind != 'initialize' and not self.initialized(connection):
                 raise DomainError('DATA_NOT_INITIALIZED', '请先初始化股票基础信息。', 409)
-            active = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.status.in_(['queued', 'running']))).first()
+            active = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.status.in_(['queued', 'running']),
+                func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False).is_(False))).first()
             if active:
                 raise DomainError('SYNC_IN_PROGRESS', '已有未完成的数据任务。', 409, {'jobId': active.id})
             target = None
@@ -244,7 +285,7 @@ class Tasks:
             if connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == category, t.tasks.c.status == 'running')).first():
                 return None
             row = connection.execute(select(t.tasks).where(t.tasks.c.category == category, t.tasks.c.status == 'queued', t.tasks.c.run_after <= now)
-                                     .order_by(t.tasks.c.created_at, t.tasks.c.id).with_for_update(skip_locked=True).limit(1)).mappings().first()
+                                     .order_by(func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False), t.tasks.c.created_at, t.tasks.c.id).with_for_update(skip_locked=True).limit(1)).mappings().first()
             if not row:
                 return None
             attempt = row['attempt_no'] + 1
@@ -274,6 +315,18 @@ class Tasks:
                 options['networkRetryCount'] = 0
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(progress=max(row['progress'], progress), options_json=options))
             connection.execute(t.logs.insert().values(task_id=lease.id, time=self.clock(), level='info', message=message))
+        if options.get('historyBackfill'):
+            self.yield_to_foreground(lease)
+
+    def yield_to_foreground(self, lease: Lease) -> None:
+        """回补在已提交的批次边界让位，缓存和股票游标已保存，不中断进行中的网络响应。"""
+        with self.db.transaction() as connection:
+            row = self.assert_lease(connection, lease)
+            pending = row['options_json'].get('historyBackfill') and connection.execute(select(t.tasks.c.id).where(
+                t.tasks.c.category == 'sync', t.tasks.c.status == 'queued', t.tasks.c.run_after <= self.clock(),
+                func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False).is_(False)).limit(1)).first()
+        if pending:
+            raise SourceDeferred(self.clock() + timedelta(seconds=2), '历史回补已保存进度，优先执行日常更新。', reason='FOREGROUND_SYNC_PENDING')
 
     def patch(self, lease: Lease, values: dict[str, Any], message: str | None = None) -> None:
         with self.db.transaction(serialized=True) as connection:

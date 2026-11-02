@@ -134,6 +134,13 @@ async function load(): Promise<void> {
     }
     catch (cause) {
         if (id === requestId) {
+            if (cause instanceof ApiError && cause.code === 'SNAPSHOT_NOT_FOUND' && snapshotId.value) {
+                // 清库后的旧链接自动读取最新快照，避免持续请求已不存在的数据。
+                snapshotId.value = '';
+                loadedFilters = '';
+                await load();
+                return;
+            }
             error.value = (cause as Error).message;
             needsData.value = cause instanceof ApiError && ['DATA_NOT_READY', 'DATA_NOT_INITIALIZED'].includes(cause.code);
         }
@@ -217,7 +224,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <div class="summary-card">
       <span>筛选结果</span>
       <strong>
-        {{ loading ? '—' : total }}
+        {{ loading || error ? '—' : total }}
         <small>只股票</small>
       </strong>
       <p>同一股票可符合多个策略</p>
@@ -225,7 +232,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
     <div class="summary-card">
       <span>覆盖行业</span>
       <strong>
-        {{ loading ? '—' : industryCount }}
+        {{ loading || error ? '—' : industryCount }}
         <small>个行业</small>
       </strong>
       <p>按行业进一步缩小研究范围</p>

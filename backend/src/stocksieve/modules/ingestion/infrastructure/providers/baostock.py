@@ -94,6 +94,12 @@ class BaostockSource:
         assert self._calendar_fetched_at is not None
         return {exchange: days for exchange in ('SSE', 'SZSE')}, self._calendar_fetched_at
 
+    def use_calendar(self, calendar: dict[str, dict[date, CalendarDay]], fetched_at: datetime) -> None:
+        """复用同源且一致的沪深真实日历，仍由calendar检查范围和资料日期。"""
+        if calendar.get('SSE') and calendar.get('SSE') == calendar.get('SZSE'):
+            self._days = dict(calendar['SSE'])
+            self._calendar_fetched_at = fetched_at.astimezone(SHANGHAI)
+
     def directory(self) -> list[dict[str, str]]:
         if self._directory is None or time.time() - self._directory_at > 600:
             self._directory = self.read(self.wire.sdk.query_stock_basic())
@@ -164,9 +170,25 @@ class BaostockSource:
                 asyncio.run(self.metadata.fetch([row['code'].replace('.', '')]))
                 stock = security(row['code'], row['code_name'], row['ipoDate'], row['outDate'], self.metadata.board(row['code']))
             result.append(stock)
-        if {stock.board for stock in result} != self.boards or len({stock.stock_id for stock in result}) != len(result):
+        if {stock.board for stock in result} != self.expected_boards(target) or len({stock.stock_id for stock in result}) != len(result):
             raise DomainError('DATA_INCOMPLETE', '证券目录分页或四板块覆盖不完整。', 503)
         return tuple(result)
+
+    def expected_boards(self, target: date) -> frozenset[str]:
+        """按独立证券目录的上市日期核对历史板块，早期行情不要求当时尚未开市的板块。"""
+        starts: dict[str, date] = {}
+        for row in self.directory():
+            if row['type'] != '1' or not row['ipoDate']:
+                continue
+            try:
+                stock = security(row['code'], row['code_name'], row['ipoDate'], row['outDate'], self.metadata.board(row['code']) if self.metadata else None)
+            except DomainError:
+                continue
+            assert stock.board and stock.listed_on
+            starts[stock.board] = min(starts.get(stock.board, stock.listed_on), stock.listed_on)
+        if not self.boards <= starts.keys():
+            raise DomainError('DATA_INCOMPLETE', '证券目录缺少完整板块的上市日期，不能核对历史覆盖。', 503)
+        return frozenset(board for board, first in starts.items() if first <= target)
 
     async def initialize(self) -> Initialization:
         def load() -> Initialization:
@@ -200,7 +222,7 @@ class BaostockSource:
             except DomainError:
                 # 原始历史中可能有不在当前目录的旧证券；不为其猜测板块，不纳入当前范围。
                 continue
-        if not self.boards <= seen_boards:
+        if not self.expected_boards(target) <= seen_boards:
             raise DomainError('DATA_INCOMPLETE', '批量行情未覆盖四板块。', 503)
         with sqlite3.connect(self.cache) as connection:
             connection.execute('DELETE FROM raw WHERE day=?', (str(target),))
@@ -297,7 +319,11 @@ class BaostockSource:
             packet = []
             for bar in bars:
                 prior = old.get(bar.day)
-                cap = self.metadata.cap(stock, target, bar.close) if self.metadata and bar.day == target else prior.total_market_cap if prior else None
+                cap = prior.total_market_cap if prior and prior.close == bar.close else None
+                if self.metadata and bar.day == target:
+                    latest_cap = self.metadata.cap(stock, target, bar.close)
+                    if latest_cap is not None:
+                        cap = latest_cap
                 normalized = Bar(bar.day, bar.open, bar.high, bar.low, bar.close, bar.amount, bar.volume, bar.turnover, cap, (bar.factor * scale).quantize(Decimal('.000000000001')))
                 same = prior and all(getattr(prior, field) == getattr(normalized, field) for field in ('open', 'high', 'low', 'close', 'amount', 'volume', 'turnover', 'total_market_cap')) and prior.factor is not None and abs(prior.factor - normalized.factor) < Decimal('.0000000001')
                 if not same:

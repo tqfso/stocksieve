@@ -26,7 +26,9 @@ export const useSync = defineStore('sync', () => {
     const jobs = ref<SyncJob[]>([]);
     const error = ref('');
     const loading = ref(false);
-    const running = computed(() => jobs.value.find(job => job.status === 'queued' || job.status === 'running'));
+    const active = computed(() => jobs.value.filter(job => job.status === 'queued' || job.status === 'running'));
+    const busy = computed(() => active.value.some(job => !job.historyBackfill));
+    const running = computed(() => active.value.find(job => !job.historyBackfill) ?? active.value[0]);
     const initialized = computed(() => market.status?.initialized ?? false);
     const stockUpdatedAt = computed(() => market.status?.stockUpdatedAt ?? null);
     const catalogUpdatedAt = computed(() => market.status?.catalogUpdatedAt ?? null);
@@ -50,5 +52,5 @@ export const useSync = defineStore('sync', () => {
         finally { loading.value = false; }
     }
     if (typeof window !== 'undefined') window.addEventListener('stocksieve:session-expired', () => { clearTimeout(timer); jobs.value = []; market.status = null; });
-    return { initialized, stockUpdatedAt, catalogUpdatedAt, jobs, running, loading, error, refresh, start };
+    return { initialized, stockUpdatedAt, catalogUpdatedAt, jobs, running, busy, loading, error, refresh, start };
 });

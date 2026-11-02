@@ -108,3 +108,54 @@ def test_migration_backs_up_then_reuses_volume_and_never_reinitializes_existing_
     assert backup.stat().st_mode & 0o777 == 0o600
     service.finish()
     assert calls[-1][:3] == ['docker', 'container', 'rm'] and '-v' not in calls[-1]
+
+
+def test_explicit_reset_backs_up_before_removing_only_project_volumes(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(stack, 'ROOT', tmp_path)
+    monkeypatch.setattr(stack.os, 'chown', lambda *args: None)
+    state = tmp_path / '.state'
+    state.mkdir()
+    (state / 'source-cache').mkdir()
+    (state / 'initial-admin.json').write_text('private-test-only')
+    (state / 'old-pipeline.json').write_text('{}')
+    (tmp_path / '.env').write_text('private-test-only')
+    ledger = tmp_path / '.source-probe'
+    ledger.mkdir()
+    (ledger / 'state.json').write_text('{"daily":{"2026-11-01":{"baostock":99}}}')
+    calls: list[list[str]] = []
+    def runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, '0' if args[-1].startswith('SELECT count(*)') else '', '')
+    service = stack.Stack(runner, VALUES)
+    service.prepare = lambda: False
+    service.inspect = lambda kind, name: postgres_info(stack.PROJECT)
+    service.sql = lambda sql: 'postgres\ndb'
+    service.counts = lambda: {'stocks': 5223}
+    def backup() -> Path:
+        calls.append(['verified-backup'])
+        path = state / 'backups' / 'before-reset.dump'
+        path.parent.mkdir()
+        path.write_bytes(b'test-only')
+        return path
+    service.backup = backup
+    service.reset()
+    removals = [call for call in calls if call[:3] == ['docker', 'volume', 'rm']]
+    assert removals == [['docker', 'volume', 'rm', stack.PG_VOLUME], ['docker', 'volume', 'rm', stack.STATE_VOLUME]]
+    assert calls.index(['verified-backup']) < next(index for index, call in enumerate(calls) if 'down' in call) < calls.index(removals[0])
+    assert (ledger / 'state.json').read_text().endswith('99}}}')
+    assert (state / 'initial-admin.json').read_text() == 'private-test-only'
+    assert not (state / 'old-pipeline.json').exists()
+    archive = next((state / 'backups').glob('reset-*'))
+    assert (archive / 'old-pipeline.json').exists() and (state / 'source-cache').is_dir()
+    assert (archive / 'server.env').stat().st_mode & 0o777 == 0o600
+
+
+def test_explicit_reset_refuses_database_volume_shared_with_another_database(monkeypatch: Any) -> None:
+    calls: list[list[str]] = []
+    service = stack.Stack(lambda args, **kwargs: calls.append(args), VALUES)
+    service.prepare = lambda: False
+    service.inspect = lambda kind, name: postgres_info(stack.PROJECT)
+    service.sql = lambda sql: 'postgres\ndb\nanother_project'
+    with pytest.raises(RuntimeError, match='其他数据库'):
+        service.reset()
+    assert not calls

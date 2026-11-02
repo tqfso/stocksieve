@@ -19,7 +19,9 @@ class PipelineFailure(RuntimeError):
         self.code, self.details = code, details
 
 
-async def bootstrap(base: str, credentials_file: Path, state_file: Path, source: str, target: date | None = None, retry_failed: bool = False, skip_initialize: bool = False, only_kind: str | None = None) -> None:
+async def bootstrap(base: str, credentials_file: Path, state_file: Path, source: str, target: date | None = None, retry_failed: bool = False, skip_initialize: bool = False, only_kind: str | None = None, submit_only: bool = False) -> None:
+    if submit_only and not only_kind:
+        raise RuntimeError('仅提交后台任务需同时指定--only-kind。')
     credentials = json.loads(credentials_file.read_text())
     state = json.loads(state_file.read_text()) if state_file.exists() else {'source': source, 'jobs': {}, 'keys': {}}
     if state.get('source') != source:
@@ -78,6 +80,11 @@ async def bootstrap(base: str, credentials_file: Path, state_file: Path, source:
                             await asyncio.sleep(5)
                     state['jobs'][kind] = job['id']
                     save()
+                if submit_only:
+                    # 多日回补完全由服务器执行，不依赖验收客户端或其登录会话持续存活。
+                    print(json.dumps({'jobSubmitted': True, 'kind': kind, 'id': job['id'], 'status': job['status'],
+                                      'progress': job['progress'], 'stateFile': str(state_file)}, ensure_ascii=False), flush=True)
+                    return
                 previous = None
                 failures = 0
                 deadline = time.monotonic() + 6 * 3600
@@ -102,6 +109,10 @@ async def bootstrap(base: str, credentials_file: Path, state_file: Path, source:
                 print(json.dumps({'kind': kind, 'id': job['id'], 'status': job['status'], 'result': job.get('result'), 'error': job.get('error')}, ensure_ascii=False), flush=True)
                 if job['status'] != 'succeeded':
                     raise RuntimeError('真实数据任务未完成：' + job['error']['message'])
+            if only_kind in {'initialize', 'catalog'}:
+                # 单独验收基础信息或分类时，空库尚无行情快照是正常阶段。
+                print(json.dumps({'taskCompleted': True, 'kind': only_kind, 'id': job['id']}, ensure_ascii=False), flush=True)
+                return
             status = await call('GET', '/market/status')
             snapshot = status['publishedSnapshot']
             if not snapshot:

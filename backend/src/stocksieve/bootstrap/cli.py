@@ -44,6 +44,8 @@ def main() -> int:
     schema = sub.add_parser('sync-schema', help='审计或直接对齐现有库与当前初始化SQL的约束，不重建业务表')
     schema.add_argument('--apply', action='store_true')
     schema.add_argument('--details', action='store_true')
+    recovery = sub.add_parser('recover-history-bootstrap', help='将旧自然年配置的首次排队任务恢复为近期发布、历史回补')
+    recovery.add_argument('--apply', action='store_true')
     source_check = sub.add_parser('check-source', help='通过正式限频账本验证免费批量渠道，不写业务表')
     source_check.add_argument('--date', required=True, type=date.fromisoformat)
     source_check.add_argument('--adjustment', action='store_true', help='交叉核对四板块除权参考价推导的相对因子与渠道前复权行情')
@@ -63,6 +65,7 @@ def main() -> int:
     pipeline.add_argument('--source', default='baostock')
     pipeline.add_argument('--date', type=date.fromisoformat)
     pipeline.add_argument('--retry-failed', action='store_true')
+    pipeline.add_argument('--submit-only', action='store_true', help='配合--only-kind，仅提交并保存后台任务，不等待多年历史完成')
     scope = pipeline.add_mutually_exclusive_group()
     scope.add_argument('--skip-initialize', action='store_true', help='只刷新分类并重新发布，不重复基础初始化')
     scope.add_argument('--only-kind', choices=('initialize', 'catalog', 'daily'), help='仅验收一种任务，不重复其他已完成步骤')
@@ -108,6 +111,7 @@ def main() -> int:
         service = API(database, settings, registry, runtime)
         if args.command == 'check-config':
             print(json.dumps({'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
+                              'sourceIntervalSeconds': settings.request_interval, 'sourceDailyLimit': settings.source_daily_limit, 'sourceForegroundReserve': policy.foreground_reserve,
                               'marketBoards': list(settings.market_boards), 'aiMode': settings.ai_mode}, ensure_ascii=False))
         elif args.command == 'check-db':
             inspector = inspect(database.engine)
@@ -131,7 +135,7 @@ def main() -> int:
             print(json.dumps(sync(database, apply=args.apply, details=args.details), ensure_ascii=False, indent=2))
         elif args.command == 'bootstrap-data':
             from stocksieve.operations.live_pipeline import bootstrap
-            asyncio.run(bootstrap(args.base_url, args.credentials_file, args.state_file, args.source, args.date, args.retry_failed, args.skip_initialize, args.only_kind))
+            asyncio.run(bootstrap(args.base_url, args.credentials_file, args.state_file, args.source, args.date, args.retry_failed, args.skip_initialize, args.only_kind, args.submit_only))
         elif args.command == 'reconcile-slow-response':
             from datetime import datetime, timezone
 
@@ -286,6 +290,8 @@ def main() -> int:
                         raise RuntimeError('目录与批量日线覆盖不一致，不能启用。')
             finally:
                 client.close()
+        elif args.command == 'recover-history-bootstrap':
+            print(json.dumps(service.tasks.recover_history_bootstrap(apply=args.apply), ensure_ascii=False))
         elif args.command == 'create-admin':
             generated = args.generate_password_file
             password = secrets.token_urlsafe(18) if generated else os.environ.get(args.password_env) if args.password_env else getpass.getpass('管理员密码：')

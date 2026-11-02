@@ -13,6 +13,7 @@ const kinds: SyncJob['kind'][] = ['initialize', 'catalog', 'daily'];
 const sources = reactive<Record<SyncJob['kind'], string>>({ initialize: '', catalog: '', daily: '' });
 const labels = { initialize: '股票基础信息', catalog: '行业与题材', daily: '收盘行情与策略' };
 const descriptions = { initialize: '更新股票代码、名称、交易所及板块。', catalog: '更新分类后，再更新收盘行情即可在筛选中使用。', daily: '同步行情并计算五类策略，完成后发布新快照。' };
+function taskLabel(job: SyncJob): string { return job.historyBackfill ? '历史行情回补' : labels[job.kind]; }
 const statusLabels = { queued: '等待执行', running: '进行中', succeeded: '已完成', failed: '失败' };
 const target = ref('');
 const selected = ref<SyncJob>();
@@ -73,26 +74,26 @@ void sync.refresh();
   <section class="panel"><div class="section-caption"><strong>更新数据</strong><span class="muted">每次任务固定一个数据渠道</span></div>
     <div class="summary-grid">
       <article v-for="kind in kinds" :key="kind" class="summary-card"><h3>{{ labels[kind] }}</h3><p>{{ descriptions[kind] }}</p>
-        <el-select v-model="sources[kind]" :placeholder="choices(kind).length ? '选择渠道' : '暂无可用渠道'" :disabled="!!sync.running || sync.loading || !choices(kind).length" :aria-label="`${labels[kind]}数据渠道`">
+        <el-select v-model="sources[kind]" :placeholder="choices(kind).length ? '选择渠道' : '暂无可用渠道'" :disabled="sync.busy || sync.loading || !choices(kind).length" :aria-label="`${labels[kind]}数据渠道`">
           <el-option v-for="source in choices(kind)" :key="source.id" :label="source.name" :value="source.id" />
         </el-select>
-        <el-date-picker v-if="kind === 'daily'" v-model="target" type="date" value-format="YYYY-MM-DD" placeholder="已收盘交易日" :disabled="!!sync.running || sync.loading" style="width: 100%; margin-top: 10px" />
+        <el-date-picker v-if="kind === 'daily'" v-model="target" type="date" value-format="YYYY-MM-DD" placeholder="已收盘交易日" :disabled="sync.busy || sync.loading" style="width: 100%; margin-top: 10px" />
         <p v-if="!choices(kind).length" class="muted">当前渠道暂不可用，请稍后刷新状态。</p>
-        <el-button type="primary" :loading="sync.loading" :disabled="!!sync.running || !sources[kind] || (kind !== 'initialize' && !sync.initialized)" style="margin-top: 12px" @click="start(kind)">{{ kind === 'initialize' && !sync.initialized ? '初始化股票' : '开始更新' }}</el-button>
+        <el-button type="primary" :loading="sync.loading" :disabled="sync.busy || !sources[kind] || (kind !== 'initialize' && !sync.initialized)" style="margin-top: 12px" @click="start(kind)">{{ kind === 'initialize' && !sync.initialized ? '初始化股票' : '开始更新' }}</el-button>
       </article>
     </div>
   </section>
-  <section v-if="sync.running" class="panel"><div class="section-caption"><strong>{{ labels[sync.running.kind] }} · {{ statusLabels[sync.running.status] }}</strong><el-button text @click="showLogs(sync.running)">查看日志</el-button></div>
+  <section v-if="sync.running" class="panel"><div class="section-caption"><strong>{{ taskLabel(sync.running) }} · {{ statusLabels[sync.running.status] }}</strong><el-button text @click="showLogs(sync.running)">查看日志</el-button></div>
     <el-progress :percentage="sync.running.progress" />
     <p v-if="sync.running.message">{{ sync.running.message }}</p>
-    <p v-if="sync.running.nextRetryAt" class="muted">等待行情或渠道允许访问，下次执行 {{ formatTime(sync.running.nextRetryAt) }}。</p><p v-else class="muted">任务在服务器运行，刷新或退出账号不会取消已受理任务。</p>
+    <p v-if="sync.running.waitReason === 'FOREGROUND_SYNC_PENDING'" class="muted">历史回补已保存进度，等待日常更新完成后继续。</p><p v-else-if="sync.running.nextRetryAt" class="muted">等待行情或渠道允许访问，下次执行 {{ formatTime(sync.running.nextRetryAt) }}。</p><p v-else class="muted">任务在服务器运行，刷新或退出账号不会取消已受理任务。</p>
   </section>
   <section class="panel"><div class="section-caption"><strong>任务记录</strong><span class="muted">最近100条</span></div>
     <StatePanel v-if="!sync.jobs.length" title="还没有同步任务" description="先初始化股票基础信息，再同步收盘行情。" />
     <div v-else class="table-scroll"><table class="data-table"><thead><tr><th>任务</th><th>渠道</th><th>发起时间（北京时间）</th><th>状态</th><th>已处理 / 总数</th><th>操作</th></tr></thead><tbody>
-      <tr v-for="job in sync.jobs" :key="job.id"><td>{{ labels[job.kind] }}<small class="cell-subtext">{{ job.dataDate ?? job.id.slice(0, 8) }}</small></td><td>{{ market.status?.sources.find(source => source.id === job.source)?.name ?? job.source }}</td><td>{{ formatTime(job.createdAt) }}</td>
+      <tr v-for="job in sync.jobs" :key="job.id"><td>{{ taskLabel(job) }}<small class="cell-subtext">{{ job.dataDate ?? job.id.slice(0, 8) }}</small></td><td>{{ market.status?.sources.find(source => source.id === job.source)?.name ?? job.source }}</td><td>{{ formatTime(job.createdAt) }}</td>
         <td><span class="tag" :class="job.status === 'succeeded' ? 'tag-green' : job.status === 'failed' ? 'tag-red' : 'tag-amber'">{{ statusLabels[job.status] }} {{ job.progress }}%</span><small v-if="job.error" class="cell-subtext">{{ job.error.message }}</small><small v-if="job.kind === 'catalog' && job.message" class="cell-subtext">{{ job.message }}</small></td>
-        <td>{{ job.result ? `${job.result.processedCount} / ${job.result.totalCount}` : '—' }}</td><td><el-button text @click="showLogs(job)">查看日志</el-button><el-button v-if="job.status === 'failed'" text type="primary" :disabled="!!sync.running || sync.loading || !choices(job.kind).some(source => source.id === job.source)" @click="start(job.kind, job)">重试</el-button></td></tr>
+        <td>{{ job.result ? `${job.result.processedCount} / ${job.result.totalCount}` : '—' }}</td><td><el-button text @click="showLogs(job)">查看日志</el-button><el-button v-if="job.status === 'failed'" text type="primary" :disabled="sync.busy || sync.loading || !choices(job.kind).some(source => source.id === job.source)" @click="start(job.kind, job)">重试</el-button></td></tr>
     </tbody></table></div>
   </section>
   <el-dialog v-model="logsOpen" title="任务日志" width="min(700px, 94vw)"><el-alert v-if="logsError" :title="logsError" type="error" :closable="false" /><div class="task-logs"><p v-for="(line, index) in logs" :key="index"><span>{{ index + 1 }}</span>{{ line }}</p><p v-if="!logs.length">暂无日志。</p></div></el-dialog>
