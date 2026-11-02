@@ -32,6 +32,9 @@ export interface SyncJob {
     error: { code: string; message: string } | null; result: { totalCount: number; processedCount: number; publishedSnapshotId: string | null } | null;
     message?: string | null;
     historyBackfill?: boolean;
+    phase?: 'checking' | 'waiting_data' | 'syncing' | 'calculating' | null;
+    waitMessage?: string | null;
+    precheck?: { checkedAt: string; boards: { board: Board; status: 'ready' | 'pending' | 'market_closed' | 'unknown' | 'unsupported'; latestDataDate: string | null; message: string | null }[] } | null;
 }
 export interface AnalysisTask {
     id: string; stockId: string; kind: AnalysisKind; strategy: Strategy | null; snapshotId: string; dataDate: string;

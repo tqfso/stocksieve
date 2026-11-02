@@ -198,49 +198,107 @@ class BaostockSource:
             return Initialization(stocks, {exchange: days for exchange in ('SSE', 'SZSE')}, self._calendar_fetched_at)
         return await asyncio.to_thread(load)
 
-    def load_day(self, target: date) -> dict[str, dict[str, str]]:
+    def _read_day(self, target: date) -> tuple[dict[str, dict[str, str]], bool]:
+        """读取有效缓存或目标日批量响应；尚未齐备的响应由预检判定，不提前标记成功。"""
         today = datetime.now(SHANGHAI).date()
         age = 600 if (today - target).days < 7 else 30 * 86400
         with sqlite3.connect(self.cache) as connection:
             saved = connection.execute('SELECT fetched FROM days WHERE day=?', (str(target),)).fetchone()
             if saved and 0 <= time.time() - saved[0] < age:
-                return {code: json.loads(value) for code, value in connection.execute('SELECT code,payload FROM raw WHERE day=?', (str(target),))}
+                return {code: json.loads(value) for code, value in connection.execute('SELECT code,payload FROM raw WHERE day=?', (str(target),))}, True
         rows = self.read(self.wire.sdk.query_daily_history_k_AStock(str(target)))
         if not rows:
-            raise DomainError('DATA_NOT_AVAILABLE', '目标日批量收盘数据尚未提供。', 503)
+            raise DomainError('DATA_NOT_AVAILABLE', '目标日期收盘数据暂未就绪。', 503)
         result = {}
         for row in rows:
-            if row['date'] != str(target) or row['adjustflag'] != '3' or row['code'] in result:
+            try:
+                actual = date.fromisoformat(row['date'])
+            except (KeyError, ValueError):
+                raise DomainError('DATA_INCOMPLETE', '批量行情日期格式不正确。', 503) from None
+            if actual > target or row.get('adjustflag') != '3' or row['code'] in result:
                 raise DomainError('DATA_INCOMPLETE', '批量行情日期、原价口径或唯一性不正确。', 503)
-            if row['tradestatus'] not in {'0', '1'} or row['isST'] not in {'0', '1'}:
+            if row.get('tradestatus') not in {'0', '1'} or row.get('isST') not in {'0', '1'}:
                 raise DomainError('DATA_INCOMPLETE', '交易或ST状态未确认。', 503)
             result[row['code']] = row
-        seen_boards = set()
-        for code in result:
-            try:
-                seen_boards.add(security(code, code, board_override=self.metadata.board(code) if self.metadata else None).board)
-            except DomainError:
-                # 原始历史中可能有不在当前目录的旧证券；不为其猜测板块，不纳入当前范围。
-                continue
-        if not self.expected_boards(target) <= seen_boards:
-            raise DomainError('DATA_INCOMPLETE', '批量行情未覆盖四板块。', 503)
+        return result, False
+
+    def _save_day(self, target: date, rows: dict[str, dict[str, str]]) -> None:
+        """完整验证后才保存可复用日期标记，避免不完整批次阻止之后重新取数。"""
         with sqlite3.connect(self.cache) as connection:
             connection.execute('DELETE FROM raw WHERE day=?', (str(target),))
-            connection.executemany('INSERT INTO raw VALUES (?,?,?)', [(code, str(target), json.dumps(row)) for code, row in result.items()])
-            connection.execute('INSERT INTO days VALUES (?,?,?) ON CONFLICT(day) DO UPDATE SET fetched=excluded.fetched,count=excluded.count', (str(target), time.time(), len(result)))
+            connection.executemany('INSERT INTO raw VALUES (?,?,?)', [(code, str(target), json.dumps(row)) for code, row in rows.items()])
+            connection.execute('INSERT INTO days VALUES (?,?,?) ON CONFLICT(day) DO UPDATE SET fetched=excluded.fetched,count=excluded.count', (str(target), time.time(), len(rows)))
+
+    def _discard_day(self, target: date) -> None:
+        """仅丢弃未齐响应的缓存；数据库已发布快照及真实频控记录均保留。"""
+        with sqlite3.connect(self.cache) as connection:
+            connection.execute('DELETE FROM days WHERE day=?', (str(target),))
+            connection.execute('DELETE FROM raw WHERE day=?', (str(target),))
+        self._latest.pop(target, None)
+        if discard := getattr(self.wire, 'discard_daily', None):
+            discard(target)
+
+    def load_day(self, target: date) -> dict[str, dict[str, str]]:
+        try:
+            result, cached = self._read_day(target)
+            if any(row['date'] != str(target) for row in result.values()):
+                raise DomainError('DATA_NOT_AVAILABLE', '目标日期行情尚未全部更新。', 503)
+            seen_boards = set()
+            for code in result:
+                try:
+                    seen_boards.add(security(code, code, board_override=self.metadata.board(code) if self.metadata else None).board)
+                except DomainError:
+                    continue
+            if not self.expected_boards(target) <= seen_boards:
+                raise DomainError('DATA_NOT_AVAILABLE', '目标日期行情尚未覆盖所需板块。', 503)
+        except DomainError as error:
+            if error.code == 'DATA_NOT_AVAILABLE':
+                self._discard_day(target)
+            raise
+        if not cached:
+            self._save_day(target, result)
         return result
+
+    @staticmethod
+    def _ready_quote(row: dict[str, str] | None, target: date) -> bool:
+        """停牌记录可确认覆盖；正常交易必须具有目标日、有效价格和成交额。"""
+        if row is None or row['date'] != str(target):
+            return False
+        if row['tradestatus'] == '0':
+            return True
+        try:
+            opening, high, low, close, preclose = (decimal_value(row.get(key, '')) for key in ('open', 'high', 'low', 'close', 'preclose'))
+            return 0 < low <= opening <= high and low <= close <= high and preclose > 0 and decimal_value(row.get('amount', '')) >= 0
+        except (ValueError, ArithmeticError):
+            return False
 
     async def precheck(self, target: date) -> list[dict[str, Any]]:
         def check() -> list[dict[str, Any]]:
             try:
-                rows = self.load_day(target)
-                self._latest[target] = rows
-                status, message = 'ready', None
+                rows, cached = self._read_day(target)
             except DomainError as error:
                 if error.code != 'DATA_NOT_AVAILABLE':
                     raise
-                status, message = 'pending', error.message
-            return [{'board': board, 'status': status, 'latestDataDate': str(target) if status == 'ready' else None, 'message': message} for board in sorted(self.boards)]
+                self._discard_day(target)
+                return [{'board': board, 'status': 'pending', 'latestDataDate': None, 'message': error.message} for board in sorted(self.boards)]
+            stocks = self.stocks(target)
+            checks = []
+            for board in sorted(self.boards):
+                codes = [self.vendor_code(stock) for stock in stocks if stock.board == board]
+                received = [rows[code] for code in codes if code in rows]
+                missing = sum(not self._ready_quote(rows.get(code), target) for code in codes)
+                ready = bool(codes) and missing == 0
+                latest = max((row['date'] for row in received), default=None)
+                checks.append({'board': board, 'status': 'ready' if ready else 'pending', 'latestDataDate': latest,
+                    'message': f'已核对{len(codes)}只证券的目标日行情。' if ready else f'目标日数据暂未就绪，缺少或无效行情{missing}只。' if codes else '该日期尚无已确认的板块证券目录。'})
+            if all(item['status'] == 'ready' for item in checks):
+                current = {code: row for code, row in rows.items() if row['date'] == str(target)}
+                self._latest[target] = current
+                if not cached:
+                    self._save_day(target, current)
+            else:
+                self._discard_day(target)
+            return checks
         return await asyncio.to_thread(check)
 
     async def universe(self, target: date, known: tuple[Stock, ...]) -> tuple[Stock, ...]:

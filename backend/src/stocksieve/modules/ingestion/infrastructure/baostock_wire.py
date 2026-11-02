@@ -36,6 +36,7 @@ class BaostockWire:
         self.last_used = 0.0
         self.recovering_connection = False
         self.lock = threading.RLock()
+        self.daily_cache_paths: dict[date, set[Path]] = {}
         # SDK只负责构建和解析消息；连接和实际发送均由此处统一控制。
         def connect(client: Any, api_key: str = '0') -> None:
             if api_key != '0':
@@ -72,6 +73,12 @@ class BaostockWire:
                 return 600
         return 86400
 
+    def discard_daily(self, target: date) -> None:
+        """仅丢弃本次已识别的未齐行情响应；请求计数、拒绝冷却和成功流重试记录保留。"""
+        with self.lock:
+            for path in self.daily_cache_paths.get(target, set()):
+                path.unlink(missing_ok=True)
+
     def request(self, message: str) -> str:
         with self.lock:
             body = message[self.constants.MESSAGE_HEADER_LENGTH:]
@@ -79,6 +86,8 @@ class BaostockWire:
             dates = re.findall(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', body)
             stream_key = method + ':' + dates[-1] if method == 'query_daily_history_k_AStock' and dates else hashlib.sha256(message.encode()).hexdigest()
             path = self.cache / (hashlib.sha256(message.encode()).hexdigest() + '.json')
+            if method == 'query_daily_history_k_AStock' and dates:
+                self.daily_cache_paths.setdefault(date.fromisoformat(dates[-1]), set()).add(path)
             cacheable = method not in {'login', 'logout'}
             if cacheable and path.exists():
                 try:
@@ -157,7 +166,14 @@ class BaostockWire:
             if cacheable:
                 self.recovering_connection = False
                 self.policy.complete_stream(stream_key)
-            if cacheable and reply[header_size:].split('\1', 1)[0] == '0':
+            body_fields = reply[header_size:].split('\1')
+            empty_daily = False
+            if method == 'query_daily_history_k_AStock' and body_fields[0] == '0':
+                try:
+                    empty_daily = not json.loads(body_fields[4]).get('record')
+                except (ValueError, IndexError, AttributeError):
+                    empty_daily = True
+            if cacheable and body_fields[0] == '0' and not empty_daily:
                 temporary = path.with_suffix('.' + uuid4().hex + '.tmp')
                 temporary.write_text(json.dumps({'at': time.time(), 'reply': reply}))
                 temporary.replace(path)

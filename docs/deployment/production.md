@@ -44,6 +44,8 @@ uv run --project backend --frozen python backend/run.py create-admin --username 
 
 镜像不包含凭据、宿主虚拟环境或业务数据库。公开源账本及成功响应缓存单独挂载，保留已有次数、间隔、冷却和原保存时间；管理员凭据不在这些挂载目录内。应用以非root用户运行，根文件系统只读。
 
+应用账户为`stocksieve`（UID/GID 10001）。运行容器的只读根目录不能用`apt`安装工具；系统工具应在镜像构建时准备。需要独立排障环境时可用本机Ubuntu镜像启动临时容器，共享API网络但不挂载业务数据：`docker run --rm -it --network container:stocksieve-backend-api-1 ubuntu:24.04 bash`。该临时容器内可按需安装网络工具，退出后移除。
+
 ## 数据库管理与备份
 
 完整部署会自动准备数据库；如仅准备数据库，可在项目根执行`uv run --project backend --frozen python backend/deploy/docker/deploy.py --database-only`。连接配置见`backend/.env`；修改其中的密码不会自动修改已初始化的数据库角色密码。
@@ -92,6 +94,7 @@ docker compose -f backend/compose.yaml exec api /app/.venv/bin/python run.py che
 uv run --project backend --frozen python backend/run.py sync-schema
 uv run --project backend --frozen python backend/run.py sync-schema --apply
 uv run --project backend --frozen python backend/run.py check-db --counts
+uv run --project backend --frozen python backend/run.py check-db --sync-jobs
 ```
 
 结构对齐只调整项目约束和索引，不重建表；遇到字段类型/精度差异停止，避免自动损失数据。更新在同一事务校验，失败整次回滚；临时比较schema自动清理，不生成增量脚本。

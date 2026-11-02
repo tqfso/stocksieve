@@ -78,6 +78,9 @@ def test_waiting_task_claim_clears_queued_only_fields_and_keeps_retry_context(co
     context.submit('initialize'); context.run()
     context.source.pending = True
     job = context.submit('daily'); context.run()
+    pending = context.api.tasks.detail(job, 'sync')
+    assert pending['phase'] == 'waiting_data' and '数据暂未就绪' in pending['message']
+    assert pending['precheck']['boards'] and pending['waitReason'] == 'BOARD_DATA_NOT_READY'
     context.clock.advance(601)
     lease = context.api.tasks.claim('sync', 'retry-worker')
     with context.api.db.transaction() as connection:

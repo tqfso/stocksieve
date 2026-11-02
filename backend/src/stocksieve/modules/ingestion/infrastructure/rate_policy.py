@@ -61,7 +61,13 @@ class SourcePolicy:
             if counts.get(vendor, 0) >= self.daily_limit or sum(counts.values()) >= budget:
                 until = max(until, datetime.combine(day + timedelta(days=1), datetime.min.time(), SHANGHAI).timestamp())
             if until > instant:
-                raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), '遵守渠道间隔、预算或冷却，等待下次执行。')
+                if state.get('cooldown', {}).get(vendor, 0) > instant:
+                    message = '数据源暂处访问冷却，尚不能完成行情检查。'
+                elif sum(counts.values()) >= budget:
+                    message = '当日取数额度已用尽或已为日常更新预留，等待次日额度。'
+                else:
+                    message = '等待数据源请求间隔后继续。'
+                raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), message)
             counts[vendor] = counts.get(vendor, 0) + 1
             state['next_at'] = instant + self.interval
 

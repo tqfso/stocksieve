@@ -173,6 +173,10 @@ class Sync:
 
     async def precheck(self, lease: Lease, source: Source, task: dict[str, Any]) -> bool:
         target = task['target_date']
+        background = task['options_json'].get('historyBackfill', False)
+        if not background:
+            self.tasks.patch(lease, {'options_json': {**task['options_json'], 'syncPhase': 'checking',
+                'sourceProgressMessage': f'正在检查{target}的收盘数据是否就绪，尚未开始同步。'}})
         retry_pending = bool(task['options_json'].get('readinessRetryPending'))
         boards = self.tasks.boards(task)
         exchanges = {BOARDS[board][1] for board in boards}
@@ -207,7 +211,9 @@ class Sync:
             normalized.append(result)
         precheck = {'checkedAt': self.tasks.clock().isoformat(), 'boards': normalized}
         retry_count = task['retry_count'] + int(retry_pending)
-        options = {**task['options_json'], 'readinessRetryPending': False}
+        with self.db.transaction() as connection:
+            latest_options = self.tasks.assert_lease(connection, lease)['options_json']
+        options = {**latest_options, 'readinessRetryPending': False}
         self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count, 'options_json': options}, '已完成本次覆盖板块的就绪检查。')
         if any(item['status'] == 'unsupported' for item in normalized):
             raise DomainError('BOARD_DATA_UNSUPPORTED', '所选渠道不支持某个开市板块。', 503)
@@ -221,10 +227,15 @@ class Sync:
                 missing = '、'.join(item['board'] for item in normalized if item['status'] not in {'ready', 'market_closed'})
                 raise DomainError('DATA_READY_TIMEOUT', f'等待收盘数据超时，未就绪板块：{missing}。', 503)
             retry = min(self.tasks.clock() + timedelta(minutes=task['options_json']['retryMinutes']), deadline)
+            names = '、'.join(BOARDS[item['board']][0] for item in normalized if item['status'] not in {'ready', 'market_closed'})
+            message = f'{target}收盘数据暂未就绪：{names}；下次检查{retry.astimezone(SHANGHAI):%H:%M}，已有快照继续可用。'
             self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None,
-                'wait_reason': 'BOARD_DATA_NOT_READY', 'run_after': retry, 'retry_deadline_at': deadline}, '板块尚未就绪，等待下一轮预检。')
+                'wait_reason': 'BOARD_DATA_NOT_READY', 'run_after': retry, 'retry_deadline_at': deadline,
+                'options_json': {**options, 'syncPhase': 'waiting_data', 'sourceProgressMessage': message}}, message)
             return False
-        self.tasks.patch(lease, {'wait_reason': None}, '所有开市板块已就绪。')
+        if not background:
+            options['sourceProgressMessage'] = f'{target}收盘资料检查通过，正在同步行情。'
+        self.tasks.patch(lease, {'wait_reason': None, 'options_json': {**options, 'syncPhase': 'syncing'}}, '所有开市板块已就绪。')
         return True
 
     async def extend_history_calendar(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
@@ -411,6 +422,7 @@ class Sync:
                     connection.execute(t.concepts.insert(), [{'snapshot_id': snapshot_id, 'stock_id': stock.stock_id,
                         'concept_id': concept['id'], 'concept_name': concept['name']} for concept in relation['concepts']])
             options = {**row['options_json'], 'buildingSnapshotId': snapshot_id,
+                       'syncPhase': 'calculating',
                        'historyCutoffDate': floor.isoformat() if floor else None,
                        'sourceProgressMessage': '历史与补充资料准备完成，正在计算策略并保存结果。',
                        'stockIds': [stock.stock_id for stock in universe], 'nextIndex': 0, 'catalogTaskId': catalog['id'] if catalog else None,

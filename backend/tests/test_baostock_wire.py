@@ -49,7 +49,7 @@ def transport(tmp_path: Path, request: Any) -> Any:
 
 
 def test_completed_compressed_reply_is_cached_without_a_second_request(transport: Any) -> None:
-    body = b'0\1success\1query_daily_history_k_AStock\1anonymous\1{"record":[]}\1date,code\n'
+    body = b'0\1success\1query_daily_history_k_AStock\1anonymous\1{"record":[["2026-10-30","sh.600000"]]}\1date,code\n'
     packed = zlib.compress(body)
     header = ('00.9.10\1' + '99\1' + f'{len(packed):010d}').encode()
     socket = Socket(header + packed + b'<![CDATA[]]>\n')
@@ -70,3 +70,21 @@ def test_partial_success_reply_is_never_cached_as_complete(transport: Any, tmp_p
         transport.request(message)
     assert (tmp_path / 'last-failure-body.bin').exists()
     assert all('"reply"' not in file.read_text() for file in tmp_path.glob('*.json'))
+
+
+def test_empty_daily_is_not_cached_and_pending_cache_can_be_discarded(transport: Any, tmp_path: Path) -> None:
+    from datetime import date
+    message = 'x' * 21 + 'query_daily_history_k_AStock\1anonymous\1' + '2026-10-30\1checksum'
+    empty = b'0\1success\1query_daily_history_k_AStock\1anonymous\1{"record":[]}\1date,code\n'
+    def response(body: bytes) -> bytes:
+        packed = zlib.compress(body)
+        return ('00.9.10\1' + '99\1' + f'{len(packed):010d}').encode() + packed + b'<![CDATA[]]>\n'
+    socket = Socket(response(empty))
+    transport.socket = socket
+    transport.request(message)
+    assert not list(tmp_path.glob('*.json'))
+    socket.data = response(empty.replace(b'[]', b'[["2026-10-30","sh.600000"]]'))
+    transport.request(message)
+    assert socket.sent == 2 and list(tmp_path.glob('*.json'))
+    transport.discard_daily(date(2026, 10, 30))
+    assert not list(tmp_path.glob('*.json'))

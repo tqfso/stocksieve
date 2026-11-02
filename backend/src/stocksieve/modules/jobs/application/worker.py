@@ -60,7 +60,7 @@ class Worker:
                 else:
                     retry = min(deferred.until, deadline) if deadline else deferred.until
                     self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': retry,
-                                            'options_json': {**task['options_json'], 'sourceWaitReason': deferred.reason}},
+                                            'options_json': {**task['options_json'], 'sourceWaitReason': deferred.reason, 'sourceWaitMessage': str(deferred)}},
                                      str(deferred) if deferred.reason == 'FOREGROUND_SYNC_PENDING' else f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
             else:
                 self.fail_if_owned(lease, DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '资料渠道暂处于频控等待，请稍后重新发起分析。', 503))
@@ -72,7 +72,7 @@ class Worker:
                         options = dict(row['options_json'])
                     count = options.get('networkRetryCount', 0)
                     if count < 3:
-                        options.update(networkRetryCount=count + 1, sourceWaitReason='SOURCE_ACCESS_WAIT')
+                        options.update(networkRetryCount=count + 1, sourceWaitReason='SOURCE_ACCESS_WAIT', sourceWaitMessage='数据源连接暂时失败，尚不能确认目标日期行情是否就绪。')
                         self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None,
                             'run_after': self.tasks.clock() + timedelta(minutes=10), 'options_json': options},
                             f'渠道暂时不可用，已安排第{count + 1}/3次恢复检查；真实冷却和预算继续生效。')

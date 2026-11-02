@@ -306,6 +306,59 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
         raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
 
 
+def run_readiness_check(base: str, username: str, password: str) -> dict[str, Any]:
+    """只读核对管理页的就绪或访问等待提示，以及等待时仍保留已发布行情。"""
+    __tracebackhide__ = True
+    with browser_page() as page:
+        errors: list[str] = []
+        page.on('pageerror', lambda error: errors.append(str(error)[:300]))
+        page.on('console', lambda message: errors.append(message.text[:500]) if message.type == 'error' and ('import' in message.text or 'Error' in message.text or 'Failed' in message.text) else None)
+        page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+        page.get_by_placeholder('请输入账号', exact=True).fill(username)
+        page.get_by_placeholder('请输入密码', exact=True).fill(password)
+        page.get_by_role('button', name='登录工作台', exact=True).click()
+        page.wait_for_url('**/#/opportunities*')
+        expect(page.get_by_role('heading', name='发现值得研究的机会')).to_be_visible(timeout=15000)
+        expect(page.locator('.stock-name').first).to_be_visible(timeout=15000)
+        page.get_by_role('link', name='数据管理', exact=True).click(modifiers=[])
+        try:
+            expect(page.get_by_role('heading', name='让研究从完整数据开始')).to_be_visible(timeout=15000)
+        except Exception:
+            diagnostic = page.evaluate("""async () => {
+                const session = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1') ?? 'null');
+                const response = await fetch('/api/v1/auth/me', {headers:{Authorization:'Bearer '+session?.accessToken}});
+                const body = await response.json();
+                return {storedRole:session?.user?.role, status:response.status, serverRole:body.data?.role};
+            }""")
+            raise RuntimeError('数据管理未能打开：' + page.url + '；' + str(diagnostic) + '；' + '; '.join(errors)) from None
+        job = page.evaluate("""async () => {
+            const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+            const response = await fetch('/api/v1/admin/sync-jobs?kind=daily', {headers:{Authorization:'Bearer '+token}});
+            if (!response.ok) throw new Error('任务查询未成功');
+            return (await response.json()).data.items.find(job => !job.historyBackfill && ['queued','running'].includes(job.status));
+        }""")
+        assert job
+        panel = page.locator('.active-sync')
+        expect(panel).to_contain_text(job['dataDate'])
+        if job['waitReason'] == 'BOARD_DATA_NOT_READY':
+            expect(panel.locator('.section-caption')).to_contain_text('数据暂未就绪')
+            expect(panel).to_contain_text('目标日期收盘数据暂未就绪')
+            expect(panel.locator('.board-readiness article')).to_have_count(len(job['precheck']['boards']))
+        elif job['waitReason'] == 'SOURCE_ACCESS_WAIT':
+            expect(panel.locator('.section-caption')).to_contain_text('等待数据源访问')
+        else:
+            raise RuntimeError('本次验收需要处于数据或渠道等待中的收盘任务。')
+        page.set_viewport_size({'width': 390, 'height': 844})
+        expect(panel).to_be_visible()
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        page.get_by_role('link', name='机会筛选', exact=True).click()
+        expect(page.locator('.stock-name').first).to_be_visible()
+        page.locator('.sidebar-user').click()
+        page.wait_for_url('**/#/login*')
+        return {'waitReason': job['waitReason'], 'dataDate': job['dataDate'], 'nextRetryAt': job['nextRetryAt'], 'waitingStateChecked': True}
+
+
 def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
     """搜索真实未入选股票并生成明确标记的模拟报告，验证通用分析、刷新历史及移动布局。"""
     __tracebackhide__ = True

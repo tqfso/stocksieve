@@ -30,8 +30,10 @@ COPY skills/ ./skills/
 COPY .docker-build/web/ ./web/
 COPY run.py ./run.py
 COPY deploy/docker/http_check.py ./http_check.py
-RUN mkdir -p /var/lib/stocksieve && chown 10001:10001 /var/lib/stocksieve
-USER 10001:10001
+RUN groupadd --gid 10001 stocksieve \
+    && useradd --uid 10001 --gid 10001 --no-create-home --no-log-init --home-dir /var/lib/stocksieve --shell /bin/bash stocksieve \
+    && mkdir -p /var/lib/stocksieve && chown 10001:10001 /var/lib/stocksieve
+USER stocksieve:stocksieve
 ENTRYPOINT ["/usr/local/bin/uv", "run", "--frozen", "--no-dev", "--no-sync", "python", "run.py"]
 EXPOSE 8000
 CMD ["api", "--host", "0.0.0.0", "--port", "8000"]

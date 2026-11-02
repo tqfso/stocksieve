@@ -254,6 +254,9 @@ def main() -> int:
             raise RuntimeError('后端进程未全部处于运行状态。')
         port = env.get('STOCKSIEVE_API_PORT', '24048')
         check_service_networks(stack, port)
+        identity = command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', '-c',
+            "import os,pwd,grp; assert os.getuid() == os.getgid() == 10001; assert pwd.getpwuid(os.getuid()).pw_name == 'stocksieve'; assert grp.getgrgid(os.getgid()).gr_name == 'stocksieve'; print('系统运行账户已确认：stocksieve，UID/GID 10001。')"], capture=True, env=env)
+        print(identity.stdout.strip())
         # 容器内固定使用8000，宿主机通过映射端口验证同一服务。
         command([*compose, 'exec', '-T', 'api', '/usr/local/bin/uv', 'run', '--frozen', '--no-dev', '--no-sync',
                  'python', 'http_check.py', '--base-url', 'http://127.0.0.1:8000'], env=env)

@@ -39,11 +39,12 @@ class Tasks:
                                  'startedAt': stamp(row['started_at']), 'finishedAt': stamp(row['finished_at']),
                                  'error': {'code': row['error_code'], 'message': row['error_message']} if row['error_code'] else None}
         if row['category'] == 'sync':
-            source_wait = (row['options_json'] or {}).get('sourceWaitReason') if row['status'] == 'queued' else None
+            source_wait = (row['options_json'] or {}).get('sourceWaitReason') if row['status'] == 'queued' and not row['wait_reason'] else None
             stored = row['result_json']
             public_result = {key: stored.get(key) for key in ('outcome', 'totalCount', 'processedCount', 'successCount', 'skippedCount', 'failedCount', 'publishedSnapshotId')} if stored else None
             result.update(source=row['data_source'], trigger=row['trigger'], scheduledFor=stamp(row['scheduled_for']),
                           historyBackfill=bool((row['options_json'] or {}).get('historyBackfill')),
+                          phase=(row['options_json'] or {}).get('syncPhase'), waitMessage=(row['options_json'] or {}).get('sourceWaitMessage') if source_wait else None,
                           message=(row['options_json'] or {}).get('sourceProgressMessage'),
                           boards=list(self.boards(row)), waitReason=row['wait_reason'] or source_wait, nextRetryAt=stamp(row['run_after']) if row['wait_reason'] or source_wait else None,
                           retryDeadlineAt=stamp(row['retry_deadline_at']), retryCount=row['retry_count'], precheck=row['precheck_json'], result=public_result)

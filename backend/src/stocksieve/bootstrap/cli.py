@@ -41,6 +41,7 @@ def main() -> int:
     check = sub.add_parser('check-db')
     check.add_argument('--counts', action='store_true', help='只读显示public关键业务表行数与剩余临时测试schema数量')
     check.add_argument('--constraints', action='store_true', help='只读显示真实任务约束，核对现有数据库与初始化定义是否一致')
+    check.add_argument('--sync-jobs', action='store_true', help='只读显示最近收盘任务的就绪检查和等待原因')
     schema = sub.add_parser('sync-schema', help='审计或直接对齐现有库与当前初始化SQL的约束，不重建业务表')
     schema.add_argument('--apply', action='store_true')
     schema.add_argument('--details', action='store_true')
@@ -122,6 +123,8 @@ def main() -> int:
                 if set(table.c.keys()) - actual:
                     raise RuntimeError(f'数据库表字段不匹配：{name}')
             print('数据库连接和17张业务表字段检查通过。')
+            if args.sync_jobs:
+                print(json.dumps(service.tasks.list('sync', {'kind': 'daily', 'pageSize': '5'}), ensure_ascii=False, indent=2))
             if args.constraints:
                 print(json.dumps(inspector.get_check_constraints('tasks', schema='public'), ensure_ascii=False, indent=2))
             if args.counts:
