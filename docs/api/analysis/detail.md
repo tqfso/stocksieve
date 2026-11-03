@@ -32,4 +32,6 @@
 
 支持[Word/PDF导出](export.md)，导出与所选报告版本一致。
 
-`shareholders`与独立筹码的同名对象一致，展示于公司基本资料，另含previousAsOf、trend（当前unknown）及trendLabel。新报告与导出明确提示未核验，不能从成本图推断实际股东人数或主力吸筹；旧报告缺少此字段时页面提示可重新生成。
+`shareholders`只用于公司基本资料，包含status、latestCount、previousCount、changePercent、asOf、previousAsOf、publishedAt、sourceUrl、trend（当前unknown）、trendLabel、explanation。新报告与导出明确提示未核验，不能从成本图推断实际股东人数或主力吸筹；旧报告缺少此字段时页面提示可重新生成。
+
+关键指标含“技术盈亏比（赔率）”，value形如`2.00 : 1`；detail给出当前价、上方/风险参考及计算口径。行情不足或无法建立有效上下方情景时显示“暂无可靠参考”。该值不代表胜率，不单独改变持有建议；生成后随报告版本保存，Word/PDF沿用相同值。

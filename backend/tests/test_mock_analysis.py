@@ -134,3 +134,34 @@ def test_mock_mode_requires_a_published_input(context: Any) -> None:
     assert create_runtime(replace(context.api.settings, ai_mode='live')).identity() is None
     with pytest.raises(ValueError):
         replace(context.api.settings, ai_mode='invalid')
+
+
+@pytest.mark.parametrize(('price', 'expected'), [('10', '2.00 : 1'), ('12', '暂无可靠参考'), ('9', '暂无可靠参考')])
+def test_technical_risk_reward_is_based_on_current_price_and_valid_reference_range(context: Any, price: str, expected: str) -> None:
+    from decimal import Decimal as D
+
+    original = context.source.daily
+
+    async def daily(*args: Any) -> Any:
+        packet = await original(*args)
+        bars = list(packet.bars)
+        # 前20日技术区间固定9至12元；现价10元时，上行2元、下行1元。
+        bars[-21:-1] = [replace(bar, open=D(10), high=D(12), low=D(9), close=D(10)) for bar in bars[-21:-1]]
+        current = D(price)
+        bars[-1] = replace(bars[-1], open=current, high=current + D('.01'), low=current - D('.01'), close=current)
+        return replace(packet, bars=tuple(bars))
+
+    context.source.daily = daily
+    context.published()
+    task = generate(context)
+    metric = next(item for item in task['report']['metrics'] if item['label'] == '技术盈亏比（赔率）')
+    assert metric['value'] == expected
+    assert task['report']['overview']['decision']['action'] == 'wait'
+    path = '/api/v1/analyses/' + task['id'] + '/export'
+    word = context.request('GET', path + '?format=docx')[1]
+    with ZipFile(BytesIO(word)) as archive:
+        content = archive.read('word/document.xml').decode()
+        assert '技术盈亏比（赔率）' in content and expected in content
+    pdf = PdfReader(BytesIO(context.request('GET', path + '?format=pdf')[1]))
+    content = ''.join(page.extract_text() for page in pdf.pages)
+    assert '技术盈亏比（赔率）' in content and expected in content

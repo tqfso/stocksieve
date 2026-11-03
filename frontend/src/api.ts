@@ -180,7 +180,7 @@ export async function startAnalysis(stock: LiveStock, key: string): Promise<Anal
 }
 export interface ChipDistribution { currentPrice: number; bins: ChipBin[]; averageCost: number; profitableRatio: number; cost70: [number, number]; cost90: [number, number]; support: ChipBin | null; resistance: ChipBin | null }
 export interface Shareholders { status: 'unavailable'; latestCount: number | null; previousCount: number | null; changePercent: number | null; asOf: string | null; previousAsOf: string | null; publishedAt: string | null; sourceUrl: string | null; trend: 'unknown'; trendLabel: string; explanation: string }
-export interface ChipsResult { stockId: string; snapshotId: string; dataDate: string; distribution: ChipDistribution | null; method: string; missingInformation: string[]; shareholders: Shareholders }
+export interface ChipsResult { stockId: string; snapshotId: string; dataDate: string; distribution: ChipDistribution | null; method: string; missingInformation: string[] }
 
 export function getChips(stock: LiveStock): Promise<ChipsResult> { return request('/stocks/' + encodeURIComponent(stock.stockId) + '/chips' + params({ snapshotId: stock.snapshotId })); }
 

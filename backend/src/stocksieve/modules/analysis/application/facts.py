@@ -12,6 +12,15 @@ def report_facts(record: dict[str, Any], facts: dict[str, Any], data_date: str) 
     add('收盘价', quote.get('price'), ' 元')
     for period in (5, 10, 20, 60):
         add(f'MA{period}', facts['averages'].get(f'ma{period}'), ' 元', '前复权；不足完整窗口时为空')
+    scenario = (facts.get('generalTrade') or {}).get('riskReward') or {}
+    ratio = scenario.get('ratio')
+    if ratio is not None:
+        detail = (f"快照收盘价{scenario['currentPrice']:.2f}、上方参考{scenario['upsideReference']:.2f}、风险参考{scenario['riskReference']:.2f}元；"
+            '以前20日高低点计算，未计交易费用，不代表胜率或实际成交结果。')
+    else:
+        detail = ('（前20日高点－现价）÷（现价－前20日低点）；'
+            '行情、复权或交易状态不足，或现价不在两个参考位之间时不计算。')
+    metrics.append({'label': '技术盈亏比（赔率）', 'value': '暂无可靠参考' if ratio is None else f'{ratio:.2f} : 1', 'detail': detail})
     for label, field in [('营业收入（TTM）', 'revenueTtm'), ('归母净利润（TTM）', 'netProfitParentTtm')]:
         value = financial.get(field)
         add(label, value / 100000000 if value is not None else None, ' 亿元', financial.get('periodEnd', '缺少可核验财报'))

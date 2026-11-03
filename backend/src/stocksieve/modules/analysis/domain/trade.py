@@ -36,6 +36,10 @@ def general_trade(bars: list[Bar], days: list[date], target: date, state: StockS
         result['missing'] = ['通用技术参考需要至少60个连续交易日及完整复权资料。']
         return result
     result['metrics'] = {'ma20': float(ma20), 'ma60': float(ma60), 'support20': float(support), 'resistance20': float(resistance)}
+    # 从当前价比较前20日高低点的技术情景，不把它当作目标价预测或胜率。
+    ratio = (resistance - price) / (price - support) if 0 < support < price < resistance else None
+    result['riskReward'] = {'ratio': float(ratio) if ratio is not None else None,
+        'currentPrice': float(price), 'upsideReference': float(resistance), 'riskReference': float(support)}
     plan.update(exitPrice=f'{support:.2f} 元', exitCondition='后续收盘跌破此前20日低点时，重新评估风险。',
         entryCondition='尚未满足趋势观察条件，先等待。', avoidIf='趋势继续转弱、跌破风险参考位或事件风险尚未核验。')
     if price < support or ma20 < ma60 and price < ma20:

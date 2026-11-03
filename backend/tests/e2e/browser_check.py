@@ -560,7 +560,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             before = len(analysis_posts)
             page.get_by_role('button', name='筹码分布', exact=True).click()
             expect(page.locator('.chip-distribution')).to_be_visible(timeout=15000)
-            expect(page.locator('.ownership-note')).to_contain_text('待接入')
+            expect(page.locator('.chips-panel')).not_to_contain_text('股东户数')
             assert len(analysis_posts) == before
             stage = '统一七章模拟报告'
             page.get_by_role('button', name='AI 分析报告').click()
@@ -588,6 +588,8 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
             assert page.evaluate('window.scrollY') > 50, '切换AI报告不应滚动到页面顶部'
             expect(page.locator('.valuation-details')).to_have_count(0)
+            page.get_by_text('查看关键指标', exact=True).click()
+            expect(page.locator('.report-metrics')).to_contain_text('技术盈亏比（赔率）')
             expect(page.locator('.analysis-panel .chip-distribution')).to_have_count(0)
             page.locator('.chapter').nth(1).locator('summary').click()
             previous_url = page.url

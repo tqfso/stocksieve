@@ -2,7 +2,6 @@
 
 from typing import Any
 
-from stocksieve.modules.analysis.application.facts import shareholder_facts
 from stocksieve.modules.analysis.domain.calculations import chip_distribution
 from stocksieve.modules.market.application.queries import Market
 from stocksieve.shared.errors import MissingData
@@ -21,8 +20,7 @@ class Chips:
             history = self.market.history(connection, snapshot, stock_id)
         result: dict[str, Any] = {'stockId': stock_id, 'snapshotId': snapshot['id'], 'dataDate': snapshot['data_date'],
             'method': '换手衰减成本估算 v1；取最近最多120个交易日，首日及每日成交成本按当日高低价间均匀分布，随换手衰减。',
-            'distribution': None, 'missingInformation': [],
-            'shareholders': shareholder_facts()}
+            'distribution': None, 'missingInformation': []}
         try:
             result['distribution'] = chip_distribution(history, snapshot['data_date'])
         except MissingData as error:

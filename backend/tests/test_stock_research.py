@@ -35,6 +35,7 @@ def test_missing_history_keeps_a_limited_report_and_no_chip_graph(context: Any) 
     report = generate(context)['report']
     assert report['overview']['pricePlan']['entryPrice'] == '暂无可靠参考'
     assert report['dataQuality'] == 'partial' and len(report['sections']) == 7
+    assert next(item['value'] for item in report['metrics'] if item['label'] == '技术盈亏比（赔率）') == '暂无可靠参考'
 
 
 def test_report_input_and_list_reject_removed_types_and_strategy_modes(context: Any) -> None:
