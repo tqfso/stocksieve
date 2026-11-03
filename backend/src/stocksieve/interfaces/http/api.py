@@ -1,8 +1,10 @@
 """本文件提供 /api/v1 接口，控制层只校验权限和参数并调用业务服务。"""
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from aiohttp import web
 from sqlalchemy import func, select, text
@@ -11,6 +13,8 @@ import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import Database, utc
 from stocksieve.interfaces.http.middleware import USER, body, envelope, success
 from stocksieve.interfaces.http.query import known_query
+from stocksieve.modules.analysis.application.chips import Chips
+from stocksieve.modules.analysis.infrastructure.documents import export_document
 from stocksieve.modules.identity.application.commands import (
     LoginInput,
     PasswordInput,
@@ -36,7 +40,7 @@ class Runtime(Protocol):
 
 
 class API:
-    """依赖在应用构造时注入，离线接口测试不需要监听端口或访问真实数据源。"""
+    """依赖在应用构造时注入，HTTP控制层不执行长耗时数据采集。"""
 
     def __init__(self, database: Database, settings: Settings, registry: Registry | None = None,
                  runtime: Runtime | None = None, clock: Callable[[], datetime] | None = None) -> None:
@@ -57,11 +61,13 @@ class API:
             web.get('/api/v1/strategies', self.strategies), web.get('/api/v1/opportunities', self.opportunities),
             web.get('/api/v1/stocks', self.search_stocks),
             web.get('/api/v1/stocks/{stockId}', self.stock), web.get('/api/v1/stocks/{stockId}/candles', self.candles),
+            web.get('/api/v1/stocks/{stockId}/chips', self.chips),
             web.post('/api/v1/admin/sync-jobs', self.submit_sync), web.get('/api/v1/admin/sync-jobs', self.sync_list),
             web.get('/api/v1/admin/sync-jobs/{jobId}', self.sync_detail), web.get('/api/v1/admin/sync-jobs/{jobId}/logs', self.sync_logs),
             web.post('/api/v1/admin/sync-jobs/{jobId}/retry', self.retry_sync),
             web.post('/api/v1/stocks/{stockId}/analyses', self.submit_analysis),
             web.get('/api/v1/analyses', self.analysis_list), web.get('/api/v1/analyses/{analysisId}', self.analysis_detail),
+            web.get('/api/v1/analyses/{analysisId}/export', self.analysis_export),
         ])
         # 仅提供编译后的前端目录；不把项目源码、配置或状态目录映射到HTTP。
         if (settings.web_dir / 'index.html').is_file():
@@ -206,9 +212,29 @@ class API:
         return success(request, result, status=202, headers=headers)
 
     async def analysis_list(self, request: web.Request) -> web.Response:
-        query = known_query(request.query, {'stockId', 'kind', 'strategy', 'snapshotId', 'status', 'page', 'pageSize'})
+        query = known_query(request.query, {'stockId', 'snapshotId', 'status', 'page', 'pageSize'})
         return success(request, self.tasks.list('analysis', query, request[USER]['id']))
 
     async def analysis_detail(self, request: web.Request) -> web.Response:
         known_query(request.query, set())
         return success(request, self.tasks.detail(request.match_info['analysisId'], 'analysis', request[USER]['id']))
+
+    async def chips(self, request: web.Request) -> web.Response:
+        query = known_query(request.query, {'snapshotId'})
+        return success(request, Chips(self.market).get(request.match_info['stockId'], query.get('snapshotId')))
+
+    async def analysis_export(self, request: web.Request) -> web.Response:
+        query = known_query(request.query, {'format'})
+        format = query.get('format')
+        if format not in {'docx', 'pdf'}:
+            raise invalid('format', '请选择docx或pdf格式。')
+        task = self.tasks.detail(request.match_info['analysisId'], 'analysis', request[USER]['id'])
+        if task['status'] != 'succeeded' or not task['report'] or task['kind'] != 'report':
+            raise DomainError('ANALYSIS_EXPORT_UNAVAILABLE', '该报告尚不能导出，请先完成新版分析。', 409)
+        report = task['report']
+        content = await asyncio.to_thread(export_document, report, format)
+        name = quote(f"{report['stock']['name']}_{report['stock']['code']}_{task['dataDate']}.{format}", safe='')
+        mime = 'application/pdf' if format == 'pdf' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        return web.Response(body=content, content_type=mime, headers={
+            'Content-Disposition': f"attachment; filename=stocksieve-report.{format}; filename*=UTF-8''{name}",
+            'X-Content-Type-Options': 'nosniff'})

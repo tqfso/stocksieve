@@ -15,7 +15,12 @@ export const router = createRouter({
         { path: '/admin/password', component: () => import('./pages/PasswordPage.vue'), meta: { admin: true, title: '修改密码' } },
         { path: '/:pathMatch(.*)*', component: () => import('./pages/NotFoundPage.vue'), meta: { title: '页面未找到' } },
     ],
-    scrollBehavior: () => ({ top: 0 }),
+    scrollBehavior: (to, from, savedPosition) => {
+        if (savedPosition) return savedPosition;
+        // 个股内切换功能或策略只更新查询参数，保留当前阅读位置。
+        if (to.path === from.path && to.path.startsWith('/stocks/') && to.query.snapshotId === from.query.snapshotId) return false;
+        return { top: 0 };
+    },
 });
 router.beforeEach(async (to) => {
     try { if (currentUser()) await useSession().restore(); }

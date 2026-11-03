@@ -2,7 +2,6 @@
 export type Strategy = 'short' | 'swing' | 'long' | 'trend_wait' | 'base_wait';
 export type Role = 'admin' | 'user';
 export type Period = 'day' | 'week' | 'year';
-export type AnalysisKind = 'fundamental' | 'chips' | 'trade';
 export type AnalysisStage = 'queued' | 'preparing' | 'researching' | 'analyzing' | 'writing' | 'completed';
 export type Board = 'SSE_MAIN' | 'SZSE_MAIN' | 'CHINEXT' | 'STAR' | 'BSE';
 export interface User {
@@ -43,6 +42,7 @@ export interface ChipBin {
 }
 /** 默认阅读层展示简短机会、风险和有条件的参考价位。 */
 export interface ReportOverview {
+    holding: { label: string; reason: string };
     decision: { action: 'consider' | 'wait' | 'avoid'; label: string; reason: string };
     opportunities: string[];
     risks: string[];
@@ -59,6 +59,8 @@ export interface ReportOverview {
 }
 /** 来源保留实际可展示的链接和时间；未知链接保持为空。 */
 export interface ReportSource {
+    id: string;
+    publisher: string;
     title: string;
     url: string | null;
     publishedAt: string | null;

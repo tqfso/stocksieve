@@ -56,11 +56,32 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
         assert '/auth/login' in result['apiPaths'] and '/auth/logout' in result['apiPaths']
         assert run_concept_check(server.base_url, 'admin', 'testpass123')['matchedStocks'] > 0
         assert run_strategy_check(server.base_url, 'admin', 'testpass123')['filterResetChecked']
-        with context.api.db.transaction() as connection:
-            connection.execute(delete(t.signals).where(t.signals.c.stock_id == context.source.universe_stocks[1].stock_id))
-        assert run_research_check(server.base_url, 'admin', 'testpass123')['unselectedStockAnalyzed']
         assert run_readiness_check(server.base_url, 'admin', 'testpass123')['waitingStateChecked']
         run_access_check(server.base_url, 'admin', 'testpass123')
+    finally:
+        future.cancel()
+        async def settle() -> None:
+            await asyncio.sleep(.1)
+        asyncio.run_coroutine_threadsafe(settle(), server.loop).result(timeout=5)
+        server.close()
+
+
+def test_browser_unified_report_and_downloads(context: Any, request: Any) -> None:
+    if not request.config.getoption('--browser'):
+        pytest.skip('浏览器验收需--browser。')
+    context.published()
+    with context.api.db.transaction() as connection:
+        connection.execute(delete(t.signals).where(t.signals.c.stock_id == context.source.universe_stocks[1].stock_id))
+    settings = replace(context.api.settings, web_dir=Path(__file__).resolve().parents[2] / 'frontend/dist')
+    runtime = create_runtime(settings)
+    api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
+    api.app.freeze()
+    server = HTTPServer(api.app)
+    worker = Worker(api.tasks, Sync(api.tasks, api.registry), Analysis(api.tasks, runtime))
+    future = asyncio.run_coroutine_threadsafe(worker.serve(), server.loop)
+    try:
+        result = run_research_check(server.base_url, 'admin', 'testpass123')
+        assert result['downloads'] == ['docx', 'pdf'] and result['unselectedStockAnalyzed']
     finally:
         future.cancel()
         async def settle() -> None:

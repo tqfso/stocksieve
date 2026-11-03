@@ -57,7 +57,7 @@ onBeforeUnmount(() => { ++requestId; clearTimeout(timer); });
     <label for="stock-research-search"><strong>股票名称或代码</strong></label>
     <el-input id="stock-research-search" v-model="search" maxlength="50" placeholder="输入股票名称或代码，如浦发银行、600000" clearable size="large" @keyup.enter="load"><template #prefix><AppIcon name="search" /></template></el-input>
     <p class="muted">搜索完整股票目录；报告使用已同步的收盘数据，详细依据和来源按需展开。</p>
-    <StatePanel v-if="!search.trim()" title="你想了解哪只股票？" description="找到股票后，可以查看基本面、筹码和通用买卖建议。" />
+    <StatePanel v-if="!search.trim()" title="你想了解哪只股票？" description="找到股票后，可以查看独立筹码分布，并生成完整AI分析报告。" />
     <StatePanel v-else-if="loading" kind="loading" title="正在查找股票" />
     <StatePanel v-else-if="error" kind="error" title="股票搜索失败" :description="error" action="重试" @action="load" />
     <StatePanel v-else-if="!rows.length" title="没有找到这只股票" description="请检查名称或代码；北交所、港股和美股暂未开放。" />

@@ -28,6 +28,8 @@ uv run --project backend --frozen python backend/deploy/docker/deploy.py
 uv run --project backend --frozen python backend/run.py create-admin --username admin --name 管理员 --generate-password-file backend/.state/initial-admin.json
 ```
 
+验收新版功能：进入“个股分析”搜索股票，查看规则、独立筹码和AI报告；生成成功后可导出Word/PDF。下载沿用选定报告，不触发模型或联网；股东户数和未采集的行业估值明确显示待接入。
+
 普通用户从管理页面创建。当前 `STOCKSIEVE_AI_MODE=mock`，无需模型配置。后续真实模型配置键见 env 示例，当前不启用。
 
 ## 数据与历史窗口

@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from stocksieve.modules.market.domain.models import Strategy
 from stocksieve.shared.contracts import Input
 
 
@@ -31,6 +30,4 @@ class SyncRetryInput(Input):
 
 
 class AnalysisInput(Input):
-    kind: Literal['fundamental', 'chips', 'trade']
     snapshotId: str | None = Field(default=None, min_length=1)
-    strategy: Strategy | None = None

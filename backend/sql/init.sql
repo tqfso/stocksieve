@@ -182,7 +182,7 @@ CREATE TABLE public.tasks (
             AND data_source IS NOT NULL AND btrim(data_source) <> ''
             AND stock_id IS NULL AND input_snapshot_id IS NULL AND strategy_code IS NULL
             AND ((kind IN ('initialize', 'catalog') AND target_date IS NULL) OR (kind = 'daily' AND target_date IS NOT NULL)))
-        OR (category = 'analysis' AND kind IN ('fundamental', 'chips', 'trade')
+        OR (category = 'analysis' AND kind IN ('report', 'fundamental', 'chips', 'trade')
             AND stock_id IS NOT NULL AND input_snapshot_id IS NOT NULL AND target_date IS NOT NULL
             AND data_source IS NULL AND result_snapshot_id IS NULL AND result_json IS NULL
             AND ((kind = 'trade' AND (strategy_code IS NULL OR strategy_code IN ('short', 'swing', 'long', 'trend_wait', 'base_wait')))
@@ -224,7 +224,7 @@ CREATE TABLE public.tasks (
 COMMENT ON TABLE public.tasks IS '后台任务';
 COMMENT ON COLUMN public.tasks.id IS '同步任务或分析任务 ID';
 COMMENT ON COLUMN public.tasks.category IS 'sync / analysis';
-COMMENT ON COLUMN public.tasks.kind IS '同步为 initialize（股票基础信息）/ catalog（行业题材）/ daily（收盘行情）；分析为 fundamental / chips / trade';
+COMMENT ON COLUMN public.tasks.kind IS '同步为 initialize（股票基础信息）/ catalog（行业题材）/ daily（收盘行情）；分析为 report；已存历史记录保留原类型';
 COMMENT ON COLUMN public.tasks.created_by IS '手动创建者；系统定时同步为 NULL';
 COMMENT ON COLUMN public.tasks.trigger IS 'manual / scheduled';
 COMMENT ON COLUMN public.tasks.data_source IS '同步来源，映射 API 的 source';
@@ -669,7 +669,7 @@ CREATE TABLE public.analysis_results (
 );
 COMMENT ON TABLE public.analysis_results IS '页面分析结果';
 COMMENT ON COLUMN public.analysis_results.task_id IS '每个分析任务至多一份成功结果';
-COMMENT ON COLUMN public.analysis_results.payload_json IS '标题、摘要、指标、正文、来源、资料质量、缺失说明及可选筹码图';
+COMMENT ON COLUMN public.analysis_results.payload_json IS '标题、七章正文、指标、估值对比、引用来源、资料质量与缺失说明';
 COMMENT ON COLUMN public.analysis_results.schema_version IS '结果结构版本';
 COMMENT ON COLUMN public.analysis_results.provider IS '模型来源与名称';
 COMMENT ON COLUMN public.analysis_results.model_name IS '模型来源与名称';

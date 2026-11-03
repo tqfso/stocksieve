@@ -1,15 +1,11 @@
-# 分析历史 `GET /analyses`
+# 本人报告历史 `GET /analyses`
 
-[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md)
 
-权限：登录用户。
+权限：登录用户，仅返回本人统一报告记录。
 
-查询参数：可选 `stockId`、`kind`、`strategy`、`snapshotId`、`status`、`page`、`pageSize`。`strategy` 仅用于 `kind=trade` 的历史筛选；其他类型传入时返回 `400 INVALID_ARGUMENT`。仅返回当前用户自己的记录，按 `createdAt` 降序、相同时间按 `id` 降序。
+查询可选`stockId`、`snapshotId`、`status`、`page`、`pageSize`，不接受`kind`或`strategy`。按创建时间倒序、相同时间按ID倒序。
 
-买卖建议传`strategy=general`只查询通用分析（任务的`strategy=null`）；传具体策略只查询该策略，省略则返回所有买卖建议。通用与策略任务分别去重，历史不混合。
+成功`200`，标准分页`items/total/page/pageSize`；每项同[生成报告](create.md)的任务结构，省略`report`正文。使用[详情](detail.md)读取报告。
 
-成功 `200`，`data` 为标准分页对象；`data.items` 每项与[发起分析](create.md)响应的 `data` 同结构，但列表省略 `report`，查看内容使用[分析详情](detail.md)。报告历史下拉框可传 `stockId`、`kind`、`status=succeeded`；如仅看当前快照，再传 `snapshotId`。
-
-恢复任务时按股票、类型和适用策略查询，不传 `status`，从本人记录恢复进行中或最近失败任务；历史下拉框另查成功记录。列表返回 `stage`，含义与任务详情一致。刷新和重新登录只恢复查询，不自动提交新任务。
-
-每项均返回受理时固定的 `simulated` 标识，历史列表应据此区分模拟分析与真实分析。
+恢复任务时查询该股票所有状态，不传`status`；成功历史可传`status=succeeded`。不传快照时允许跨快照查看本人历史，每份报告保留其原行情日期。刷新或重新登录只查询，不自动提交任务。

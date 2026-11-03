@@ -1,143 +1,91 @@
-"""本文件验证真实分析服务的计算、来源校验、部分成功和等待建议，不调用付费模型。"""
+"""本文件通过HTTP验证报告契约、来源校验、实际财报计算与导出引用，不请求外部服务。"""
 
-import asyncio
-from dataclasses import replace
-from datetime import date
-from decimal import Decimal as D
+from datetime import date, datetime, timezone
+from io import BytesIO
+from typing import Any
+from zipfile import ZipFile
 
-import stocksieve.infrastructure.persistence.schema as t
-from stocksieve.modules.analysis.application.service import Analysis, AnalysisTools
-from stocksieve.modules.ingestion.application.service import Sync
-from stocksieve.modules.jobs.application.worker import Worker
+from pypdf import PdfReader
+from stocksieve.infrastructure.persistence import schema as t
+from stocksieve.modules.analysis.infrastructure.mock_runtime import MockAnalysisRuntime
 
-
-class Runtime:
-    def __init__(self, bad_source=False):
-        self.bad_source = bad_source
-
-    def identity(self):
-        return {'provider': 'test', 'model': 'test', 'protocol': 'chat_completions'}
-
-    async def execute(self, tools):
-        keys = ['snapshot']
-        if tools.facts.get('financial'):
-            keys.append('financial')
-        return {'overview': {'decision': {'action': 'consider', 'label': '可考虑', 'reason': '根据本次取得的资料形成分析。'},
-                             'opportunities': ['已有部分资料可以继续跟踪。'], 'risks': ['后续情况仍可能发生变化。']},
-                'summary': '依据冻结行情和实际取得的资料形成的测试结果。',
-                'sections': [{'title': '依据', 'text': '本结果仅使用当前任务已取得的资料，不新增来源或数值。'}],
-                'sourceKeys': ['invented'] if self.bad_source else keys, 'missingInformation': []}, {'inputTokens': 10}
+from .test_mock_analysis import generate
 
 
-def setup(context, kind, *, strategy=None, runtime=None, published=False):
-    if not published:
-        context.published()
-    runtime = runtime or Runtime()
-    context.api.runtime = runtime
-    stock = context.source.universe_stocks[0].stock_id
-    payload = {'kind': kind}
-    if strategy:
-        payload['strategy'] = strategy
-    status, result, _ = context.request('POST', f'/api/v1/stocks/{stock}/analyses', payload, key='analysis-request')
-    assert status == 202, result
-    worker = Worker(context.api.tasks, Sync(context.api.tasks, context.api.registry), Analysis(context.api.tasks, runtime))
-    return result['data']['id'], worker
+class EvidenceRuntime(MockAnalysisRuntime):
+    """受控资料验证链接在页面与文件中都来自实际保存内容。"""
+
+    async def execute(self, tools: Any) -> Any:
+        tools.save('announcement', 'research', '测试公告原文', {'text': '测试公司公开资料'}, url='https://www.sse.com.cn/fixture/disclosure')
+        result, usage = await super().execute(tools)
+        result['sourceKeys'].append('announcement')
+        result['sections'][2]['sourceKeys'].append('announcement')
+        return result, usage
 
 
-def test_chip_report_contains_computed_distribution_and_preserved_history(context):
-    job, worker = setup(context, 'chips')
-    asyncio.run(worker.run_once('analysis'))
-    status, response, _ = context.request('GET', f'/api/v1/analyses/{job}')
-    assert status == 200, response
-    result = response['data']
-    assert result['status'] == 'succeeded' and result['stage'] == 'completed'
-    report = result['report']
-    assert abs(sum(item['ratio'] for item in report['chipDistribution']['bins']) - 100) < 1e-8
-    assert report['sources'] and report['generatedAt'] >= report['materialsAsOfAt']
-    assert 'report' not in context.request('GET', '/api/v1/analyses')[1]['data']['items'][0]
+def test_citations_are_preserved_as_word_and_pdf_hyperlinks(context: Any) -> None:
+    context.published()
+    task = generate(context, runtime=EvidenceRuntime())
+    report = task['report']
+    url = 'https://www.sse.com.cn/fixture/disclosure'
+    citation = next(item for item in report['sources'] if item['url'] == url)
+    assert citation['id'] in report['sections'][2]['sourceIds']
+    base = '/api/v1/analyses/' + task['id'] + '/export?format='
+    word = context.request('GET', base + 'docx')[1]
+    with ZipFile(BytesIO(word)) as archive:
+        assert url in archive.read('word/_rels/document.xml.rels').decode()
+        assert 'w:hyperlink' in archive.read('word/document.xml').decode()
+    pdf = PdfReader(BytesIO(context.request('GET', base + 'pdf')[1]))
+    links = [str(annotation.get_object()['/A']['/URI']) for page in pdf.pages for annotation in page.get('/Annots', []) if '/A' in annotation.get_object()]
+    assert url in links
 
 
-def test_invented_source_rejected_without_publishing_report(context):
-    job, worker = setup(context, 'chips', runtime=Runtime(bad_source=True))
-    asyncio.run(worker.run_once('analysis'))
-    result = context.request('GET', f'/api/v1/analyses/{job}')[1]['data']
-    assert result['status'] == 'failed' and result['report'] is None
-    assert result['error']['code'] == 'ANALYSIS_INVALID_REPORT'
-
-
-def test_fundamental_unknown_reduction_forces_wait_with_real_financial_metrics(context):
+def test_saved_financials_produce_ttm_pe_but_do_not_invent_industry_pe(context: Any) -> None:
     context.published()
     stock = context.source.universe_stocks[0].stock_id
     with context.api.db.transaction() as connection:
-        for end, revenue, profit, published in [(date(2026, 9, 30), 120, 15, date(2026, 10, 29)), (date(2025, 12, 31), 150, 20, date(2026, 3, 30)), (date(2025, 9, 30), 100, 10, date(2025, 10, 29))]:
-            from datetime import datetime, timezone
+        for end, revenue, profit in [(date(2026, 9, 30), 1200000000, 150000000), (date(2025, 12, 31), 1500000000, 200000000), (date(2025, 9, 30), 1000000000, 100000000)]:
             connection.execute(t.financials.insert().values(stock_id=stock, period_start=date(end.year, 1, 1), period_end=end,
-                statement_scope='consolidated', revenue_ytd=D(revenue), net_profit_parent_ytd=D(profit), extra_json={'currency': 'CNY'},
-                source='测试财报', source_url='https://example.test/financial', published_at=datetime.combine(published, datetime.min.time(), timezone.utc),
-                fetched_at=context.clock.now(), content_hash='a' * 64, raw_payload_json={'revenue': revenue, 'profit': profit}))
-    job, worker = setup(context, 'fundamental', published=True)
-    asyncio.run(worker.run_once('analysis'))
-    result = context.request('GET', f'/api/v1/analyses/{job}')[1]['data']
-    assert result['status'] == 'succeeded', result
-    report = result['report']
-    assert report['dataQuality'] == 'partial'
-    assert report['overview']['decision']['action'] == 'wait'
-    assert '减持' in report['missingInformation'][0]
-    assert len(report['metrics']) == 3
-    assert any(source['url'] == 'https://example.test/financial' for source in report['sources'])
+                statement_scope='consolidated', revenue_ytd=revenue, net_profit_parent_ytd=profit,
+                extra_json={'currency': 'CNY'}, source='测试财报', source_url='https://www.sse.com.cn/fixture/financial',
+                published_at=datetime(2026, 10, 29, tzinfo=timezone.utc), fetched_at=context.clock.now(),
+                content_hash='a' * 64, raw_payload_json={'revenue': revenue, 'profit': profit}))
+    report = generate(context)['report']
+    assert report['valuation']['companyPe'] == 40
+    assert report['valuation']['industryPe'] is None and report['valuation']['status'] == 'unavailable'
+    assert any(item['label'] == '公司 PE（TTM）' and item['value'] == '40.00 倍' for item in report['metrics'])
+    assert any(item['url'] == 'https://www.sse.com.cn/fixture/financial' for item in report['sources'])
 
 
-def test_missing_core_financials_fails_instead_of_inventing_data(context):
-    job, worker = setup(context, 'fundamental')
-    asyncio.run(worker.run_once('analysis'))
-    result = context.request('GET', f'/api/v1/analyses/{job}')[1]['data']
-    assert result['status'] == 'failed' and result['error']['code'] == 'ANALYSIS_SOURCES_UNAVAILABLE'
+def test_unavailable_citation_and_incomplete_report_are_rejected(context: Any) -> None:
+    import asyncio
 
+    from stocksieve.modules.analysis.application.service import Analysis
+    from stocksieve.modules.ingestion.application.service import Sync
+    from stocksieve.modules.jobs.application.worker import Worker
 
-def test_waiting_strategy_cannot_be_changed_into_immediate_buy(context):
-    original = context.source.daily
-    async def trend(stock, target, history):
-        packet = await original(stock, target, history)
-        records = list(packet.bars)
-        for index in range(140, 160):
-            records[index] = replace(records[index], open=D('12.6'), low=D('12.58'), high=D('12.62'), close=D('12.6'), amount=D(30_000_000) if index >= 155 else D(50_000_000))
-        return replace(packet, bars=tuple(records))
-    context.source.daily = trend
-    job, worker = setup(context, 'trade', strategy='trend_wait')
-    asyncio.run(worker.run_once('analysis'))
-    result = context.request('GET', f'/api/v1/analyses/{job}')[1]['data']
-    assert result['status'] == 'succeeded', result
-    plan = result['report']['overview']['pricePlan']
-    assert plan['waiting'] is True
-    assert result['report']['overview']['decision']['action'] == 'wait'
-    assert plan['entryPrice'] == '12.80 元'
+    class InvalidRuntime(MockAnalysisRuntime):
+        """模拟模型违规输出，仍须经过相同的报告校验。"""
 
+        invalid = 'source'
 
-def test_public_reader_refuses_local_and_unapproved_urls_without_network(context):
+        async def execute(self, tools: Any) -> Any:
+            result, usage = await super().execute(tools)
+            if self.invalid == 'source':
+                result['sections'][0]['sourceKeys'] = ['invented-material']
+            else:
+                result['sections'] = result['sections'][:6]
+            return result, usage
+
     context.published()
-    runtime = Runtime(); context.api.runtime = runtime
+    runtime = InvalidRuntime()
+    context.api.runtime = runtime
+    worker = Worker(context.api.tasks, Sync(context.api.tasks, context.api.registry), Analysis(context.api.tasks, runtime))
     stock = context.source.universe_stocks[0].stock_id
-    job = context.request('POST', f'/api/v1/stocks/{stock}/analyses', {'kind': 'chips'}, key='reader-boundary')[1]['data']['id']
-    lease = context.api.tasks.claim('analysis', 'test-reader')
-    assert lease.id == job
-    tools = AnalysisTools(context.api.tasks, lease)
-    for url in ('file:///etc/passwd', 'http://127.0.0.1/', 'https://www.sse.com.cn@127.0.0.1/', 'https://example.test/', 'https://www.sse.com.cn:bad/'):
-        result = asyncio.run(tools.read_public(url))
-        assert result['status'] == 'missing'
-
-
-def test_reduction_proof_requires_original_text_and_separates_plan_from_actual(context):
-    context.published()
-    runtime = Runtime(); context.api.runtime = runtime
-    stock = context.source.universe_stocks[0].stock_id
-    context.request('POST', f'/api/v1/stocks/{stock}/analyses', {'kind': 'fundamental'}, key='reduction-proof')
-    lease = context.api.tasks.claim('analysis', 'proof-reader')
-    tools = AnalysisTools(context.api.tasks, lease)
-    text = '证券代码600000，大股东甲公司拟减持计划不超过100万股。本次进展披露已减持20万股，计划尚未完成。'
-    tools.save('announcement', 'research', '测试公告原文', {'text': text}, url='https://www.sse.com.cn/test')
-    bad = {'sourceKey': 'announcement', 'shareholder': '甲公司', 'status': 'in_progress', 'evidence': text, 'actualText': '计划不超过100万股'}
-    assert asyncio.run(tools.review_reductions([bad]))['status'] == 'missing'
-    assert tools.reduction_verified is False
-    good = {**bad, 'actualText': '已减持20万股', 'planText': '拟减持计划不超过100万股'}
-    assert asyncio.run(tools.review_reductions([good]))['status'] == 'available'
-    assert tools.reduction_verified is True
+    for invalid in ('source', 'sections'):
+        runtime.invalid = invalid
+        task = context.request('POST', f'/api/v1/stocks/{stock}/analyses', {}, key='invalid-report-' + invalid)[1]['data']
+        assert asyncio.run(worker.run_once('analysis'))
+        result = context.request('GET', '/api/v1/analyses/' + task['id'])[1]['data']
+        assert result['status'] == 'failed' and result['report'] is None
+        assert result['error']['code'] == 'ANALYSIS_INVALID_REPORT'

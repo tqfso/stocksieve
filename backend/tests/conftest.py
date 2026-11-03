@@ -168,7 +168,7 @@ class Context:
                 response = error
             with response:
                 value = response.read()
-                return response.status, json.loads(value) if value else None, response.headers
+                return response.status, (json.loads(value) if 'application/json' in response.headers.get('Content-Type', '') else value) if value else None, response.headers
         return asyncio.run(run())
 
     def submit(self, kind: str, *, day: str | None = None, force: bool = True) -> str:

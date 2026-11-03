@@ -1,9 +1,8 @@
-<!-- 本文件在 AI 筹码分析结果内绘制价格区间占比，并标出估算支撑、压力与现价。 -->
+<!-- 本文件独立绘制筹码价格区间占比，并标出估算支撑、压力与现价。 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { ChipBin } from '../types.ts';
-import type { LiveReport } from '../api.ts';
-type ChipDistribution = NonNullable<LiveReport['chipDistribution']>;
+import type { ChipDistribution } from '../api.ts';
 const props = defineProps<{
     distribution: ChipDistribution;
 }>();

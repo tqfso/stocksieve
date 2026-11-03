@@ -27,6 +27,7 @@ RUN uv sync --frozen --no-dev --no-python-downloads \
 
 COPY src/ ./src/
 COPY skills/ ./skills/
+COPY assets/ ./assets/
 COPY .docker-build/web/ ./web/
 COPY run.py ./run.py
 COPY deploy/docker/http_check.py ./http_check.py

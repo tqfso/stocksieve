@@ -32,9 +32,11 @@
 | GET | `/stocks` | [按名称或代码搜索全部股票](market/search.md) | 登录用户 |
 | GET | `/stocks/{stockId}` | [个股、行情与策略信号](market/stocks.md) | 登录用户 |
 | GET | `/stocks/{stockId}/candles` | [日 / 周 / 年 K 线](market/candles.md) | 登录用户 |
+| GET | `/stocks/{stockId}/chips` | [独立筹码分布](market/chips.md) | 登录用户 |
 | POST | `/stocks/{stockId}/analyses` | [发起分析](analysis/create.md) | 登录用户 |
 | GET | `/analyses` | [本人分析历史](analysis/list.md) | 登录用户 |
 | GET | `/analyses/{analysisId}` | [分析状态和报告](analysis/detail.md) | 报告所属用户 |
+| GET | `/analyses/{analysisId}/export` | [导出Word/PDF](analysis/export.md) | 报告所属用户 |
 | POST | `/admin/sync-jobs` | [发起数据任务](admin/sync-jobs/create.md) | 管理员 |
 | POST | `/admin/sync-jobs/{jobId}/retry` | [继续失败任务](admin/sync-jobs/retry.md) | 管理员 |
 | GET | `/admin/sync-jobs` | [任务记录](admin/sync-jobs/list.md) | 管理员 |

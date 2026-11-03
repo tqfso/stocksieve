@@ -1,6 +1,6 @@
 // 本文件通过真实HTTP接口提供会话、行情、后台任务与分析报告，不生成浏览器业务数据。
 import { randomId } from './ids.ts';
-import type { AnalysisKind, AnalysisStage, Board, Candle, ChipBin, Period, ReportOverview, ReportSource, StockQuery, Strategy, User } from './types.ts';
+import type { AnalysisStage, Board, Candle, ChipBin, Period, ReportOverview, ReportSource, StockQuery, Strategy, User } from './types.ts';
 
 export interface Snapshot { id: string; dataDate: string; publishedAt: string; adjustment: string; strategyVersion: string; boards?: Board[]; catalogAsOfAt?: string | null }
 export interface Source { id: string; name: string; available: boolean; supportedSyncKinds: SyncJob['kind'][] }
@@ -22,7 +22,6 @@ export interface LiveStock {
     price: number | null; change: number | null; turnover: number | null; amount: number | null; totalMarketCap: number | null;
 }
 export interface Filters { snapshotId: string; boards: { id: Board; name: string; exchange: string }[]; industries: { id: string; name: string }[]; concepts: { id: string; name: string }[]; coverage: Record<string, string> }
-export type AnalysisMode = Strategy | 'general';
 export interface StockMatch { stockId: string; code: string; name: string; exchange: string; board: Board; dataStatus: 'ready' | 'pending'; dataDate: string | null }
 export interface StockSearchPage { items: StockMatch[]; total: number; page: number; pageSize: number }
 export interface OpportunityPage { snapshot: Snapshot; items: LiveStock[]; total: number; page: number; pageSize: number; summary: { industryCount: number; strategyCounts: Record<Strategy, number> } }
@@ -38,15 +37,18 @@ export interface SyncJob {
     precheck?: { checkedAt: string; boards: { board: Board; status: 'ready' | 'pending' | 'market_closed' | 'unknown' | 'unsupported'; latestDataDate: string | null; message: string | null }[] } | null;
 }
 export interface AnalysisTask {
-    id: string; stockId: string; kind: AnalysisKind; strategy: Strategy | null; snapshotId: string; dataDate: string;
+    id: string; stockId: string; kind: 'report'; strategy: Strategy | null; snapshotId: string; dataDate: string;
     status: SyncJob['status']; stage: AnalysisStage; progress: number; createdAt: string; simulated: boolean;
     error: { code: string; message: string } | null; report?: LiveReport | null;
 }
 export interface LiveReport {
     title: string; overview: ReportOverview; summary: string; metrics: { label: string; value: string; detail: string }[];
-    sections: { title: string; text: string }[]; sources: ReportSource[]; simulated: boolean;
+    sections: { id: string; title: string; headline: string; text: string; sourceIds: string[] }[]; sources: ReportSource[]; simulated: boolean;
     dataQuality: 'complete' | 'partial'; missingInformation: string[]; materialsAsOfAt: string; generatedAt: string;
-    chipDistribution?: { currentPrice: number; bins: ChipBin[]; averageCost: number; profitableRatio: number; cost70: [number, number]; cost90: [number, number]; support: ChipBin | null; resistance: ChipBin | null };
+    stock: { code: string; name: string; board: Board | null; industry: { name: string } | null };
+    snapshotId: string; dataDate: string; researchStatus: 'not_searched' | 'researched';
+    shareholders?: Shareholders;
+    valuation: { basis: string; companyPe: number | null; industryPe: number | null; industry: string | null; companyDataDate: string; industryDataDate: string | null; industryClassification: string; industryStatistic: string | null; explanation: string };
 }
 export interface ServerCandle extends Omit<Candle, 'volume'> { volume: number | null; ma5: number | null; ma10: number | null; ma20: number | null; ma60: number | null; ma120: number | null; isComplete: boolean }
 export interface CandlePage { items: ServerCandle[]; hasMore: boolean; nextBefore: string | null }
@@ -170,11 +172,48 @@ export async function syncLogs(id: string): Promise<string[]> {
     } while (after && output.length < 1000);
     return output;
 }
-export async function analysesFor(stock: LiveStock, kind: AnalysisKind, strategy: AnalysisMode): Promise<AnalysisTask[]> { return (await request<{ items: AnalysisTask[] }>('/analyses' + params({ stockId: stock.stockId, kind, strategy: kind === 'trade' ? strategy : undefined, pageSize: 100 }))).items; }
+export async function analysesFor(stock: LiveStock): Promise<AnalysisTask[]> { return (await request<{ items: AnalysisTask[] }>('/analyses' + params({ stockId: stock.stockId, pageSize: 100 }))).items; }
 export function getAnalysis(id: string): Promise<AnalysisTask> { return request('/analyses/' + encodeURIComponent(id)); }
-export async function startAnalysis(stock: LiveStock, kind: AnalysisKind, strategy: AnalysisMode, key: string): Promise<AnalysisTask> {
-    try { return await request('/stocks/' + encodeURIComponent(stock.stockId) + '/analyses', 'POST', { kind, snapshotId: stock.snapshotId, ...(kind === 'trade' && strategy !== 'general' ? { strategy } : {}) }, key); }
+export async function startAnalysis(stock: LiveStock, key: string): Promise<AnalysisTask> {
+    try { return await request('/stocks/' + encodeURIComponent(stock.stockId) + '/analyses', 'POST', { snapshotId: stock.snapshotId }, key); }
     catch (error) { if (error instanceof ApiError && error.code === 'ANALYSIS_IN_PROGRESS' && typeof error.details.analysisId === 'string') return getAnalysis(error.details.analysisId); throw error; }
+}
+export interface ChipDistribution { currentPrice: number; bins: ChipBin[]; averageCost: number; profitableRatio: number; cost70: [number, number]; cost90: [number, number]; support: ChipBin | null; resistance: ChipBin | null }
+export interface Shareholders { status: 'unavailable'; latestCount: number | null; previousCount: number | null; changePercent: number | null; asOf: string | null; previousAsOf: string | null; publishedAt: string | null; sourceUrl: string | null; trend: 'unknown'; trendLabel: string; explanation: string }
+export interface ChipsResult { stockId: string; snapshotId: string; dataDate: string; distribution: ChipDistribution | null; method: string; missingInformation: string[]; shareholders: Shareholders }
+
+export function getChips(stock: LiveStock): Promise<ChipsResult> { return request('/stocks/' + encodeURIComponent(stock.stockId) + '/chips' + params({ snapshotId: stock.snapshotId })); }
+
+/** 通过鉴权下载当前选中的已保存报告，令牌不放入URL。 */
+export async function downloadReport(id: string, format: 'docx' | 'pdf'): Promise<void> {
+    const token = readSession()?.accessToken;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    try {
+        const response = await fetch('/api/v1/analyses/' + encodeURIComponent(id) + '/export' + params({ format }), {
+            headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), 'X-Request-ID': 'web_' + randomId() },
+            signal: controller.signal, redirect: 'error',
+        });
+        if (!response.ok) {
+            if (response.status === 401 && readSession()?.accessToken === token) {
+                saveSession(null); restored = undefined;
+                window.dispatchEvent(new Event('stocksieve:session-expired'));
+            }
+            const result = await response.json().catch(() => ({}));
+            throw new ApiError(result.error?.message ?? '报告下载失败，请重试。', result.error?.code ?? 'HTTP_ERROR', response.status);
+        }
+        const file = await response.blob();
+        const url = URL.createObjectURL(file);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        const name = response.headers.get('Content-Disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+        anchor.download = name ? decodeURIComponent(name) : `StockSieve报告.${format}`;
+        document.body.append(anchor); anchor.click(); anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(controller.signal.aborted ? '导出超时，请重试。' : '下载失败，请检查连接后重试。', 'NETWORK_ERROR', 0);
+    } finally { clearTimeout(timer); }
 }
 export function formatNumber(value: number | null | undefined, digits = 2): string { return value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits); }
 export function quoteClass(value: number | null): string { return value == null ? 'muted' : value >= 0 ? 'rise' : 'fall'; }

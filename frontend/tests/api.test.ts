@@ -51,9 +51,9 @@ test('退出通过后端撤销，会话不会仅由浏览器角色切换', async
 test('分析历史跨快照读取，重复进行中冲突恢复原任务', async () => {
     const stock = api.mapStock(fixture(), snapshot);
     replies.push({ status: 200, body: { data: { items: [] } } }, { status: 409, body: { error: { code: 'ANALYSIS_IN_PROGRESS', message: '已有任务', details: { analysisId: 'existing' } } } }, { status: 200, body: { data: { id: 'existing', status: 'queued', simulated: true } } });
-    await api.analysesFor(stock, 'fundamental', 'short');
+    await api.analysesFor(stock);
     assert.equal(new URL(calls[0]!.url, 'http://test.invalid').searchParams.has('snapshotId'), false);
-    const task = await api.startAnalysis(stock, 'fundamental', 'short', 'same-request-key');
+    const task = await api.startAnalysis(stock, 'same-request-key');
     assert.equal(task.id, 'existing'); assert.equal((calls[1]!.options.headers as Record<string, string>)['Idempotency-Key'], 'same-request-key');
     const body = JSON.parse(String(calls[1]!.options.body)); assert.equal(body.snapshotId, snapshot.id); assert.equal('strategy' in body, false); assert.equal('scenario' in body, false);
 });
@@ -94,14 +94,14 @@ test('旧账号的迟到401不会清除新账号会话', async () => {
     assert.equal(api.currentUser()?.id, 'new-user');
 });
 
-test('通用买卖建议不发送伪策略，历史只读取通用模式', async () => {
+test('统一报告不发送分析类型或伪策略', async () => {
     const stock = api.mapStock(fixture(), snapshot);
     replies.push({ status: 200, body: { data: { items: [] } } }, { status: 202, body: { data: { id: 'general-task', strategy: null } } });
-    await api.analysesFor(stock, 'trade', 'general');
-    assert.equal(new URL(calls[0]!.url, 'http://test.invalid').searchParams.get('strategy'), 'general');
-    await api.startAnalysis(stock, 'trade', 'general', 'general-submit-key');
+    await api.analysesFor(stock);
+    assert.equal(new URL(calls[0]!.url, 'http://test.invalid').searchParams.has('strategy'), false);
+    await api.startAnalysis(stock, 'general-submit-key');
     const body = JSON.parse(String(calls[1]!.options.body));
-    assert.equal(body.kind, 'trade'); assert.equal('strategy' in body, false);
+    assert.equal('kind' in body, false); assert.equal('strategy' in body, false);
 });
 
 test('局域网HTTP中缺少randomUUID仍可登录并提交带默认幂等编号的同步请求', async () => {
@@ -111,7 +111,7 @@ test('局域网HTTP中缺少randomUUID仍可登录并提交带默认幂等编号
         Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: native.getRandomValues.bind(native) } });
         replies.push({ status: 200, body: { data: { accessToken: 'http-token-for-client', user } } }, { status: 202, body: { data: { id: 'http-sync-job' } } });
         await api.login('admin', 'test-password');
-        await api.startSync('daily', 'baostock', '2026-10-30');
+        await api.startSync('daily', 'sina', '2026-10-30');
         for (const call of calls) assert.match((call.options.headers as Record<string, string>)['X-Request-ID']!, /^web_[0-9a-f-]{36}$/);
         assert.match((calls[1]!.options.headers as Record<string, string>)['Idempotency-Key']!, /^[0-9a-f-]{36}$/);
         assert.equal(api.currentUser()?.id, user.id);

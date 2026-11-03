@@ -12,6 +12,10 @@ from sqlalchemy import select, update
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import utc
 from stocksieve.infrastructure.persistence.operations import upsert
+from stocksieve.modules.analysis.application.facts import (
+    report_facts,
+    shareholder_facts,
+)
 from stocksieve.modules.analysis.application.ports import AgentRuntime, SearchProvider
 from stocksieve.modules.analysis.application.reports import (
     ReductionEvidence,
@@ -117,22 +121,22 @@ class AnalysisTools:
         record['signals'] = [self.tasks.market.signal_view(row, detail=True) for row in self.record['signalRows'].values()]
         result = self.save('snapshot', 'market', '已同步行情与策略快照', record, published_at=utc(self.snapshot['published_at']))
         self.facts['snapshot'] = record
-        if self.task['kind'] == 'trade' and self.task['strategy_code'] is None:
-            with self.db.transaction() as connection:
-                row = connection.execute(select(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == self.snapshot['id'], t.snapshot_stocks.c.stock_id == self.task['stock_id'])).mappings().one()
-            days = [datetime.fromisoformat(day).date() for day, opened in self.snapshot['calendar_json'][self.record['stock']['exchange']].items() if opened is True]
-            technical = general_trade(self.history, days, self.snapshot['data_date'], StockState(row['trade_status'], row['is_st'], row['is_delisting']))
-            self.facts['generalTrade'] = technical
-            self.save('general_trade', 'market', '通用技术观察计算 v1（模拟规则）', technical)
-            for index, missing in enumerate(technical['missing']):
-                self.save(f'general_missing_{index}', 'market', '通用技术资料', missing=missing)
-        if self.task['kind'] == 'chips':
-            try:
-                distribution = chip_distribution(self.history, self.snapshot['data_date'])
-                self.facts['chips'] = distribution
-                self.save('chips', 'chips', '换手衰减成本估算 v1', distribution)
-            except MissingData as error:
-                raise DomainError('ANALYSIS_DATA_UNAVAILABLE', str(error), 409) from error
+        with self.db.transaction() as connection:
+            row = connection.execute(select(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == self.snapshot['id'],
+                t.snapshot_stocks.c.stock_id == self.task['stock_id'])).mappings().one()
+        days = [datetime.fromisoformat(day).date() for day, opened in self.snapshot['calendar_json'][self.record['stock']['exchange']].items() if opened is True]
+        technical = general_trade(self.history, days, self.snapshot['data_date'], StockState(row['trade_status'], row['is_st'], row['is_delisting']))
+        self.facts['generalTrade'] = technical
+        self.facts['averages'] = {f'ma{period}': row[f'ma{period}'] for period in (5, 10, 20, 60, 120)}
+        self.save('general_trade', 'market', '通用技术观察计算 v1（模拟规则）', technical)
+        for index, missing in enumerate(technical['missing']):
+            self.save(f'general_missing_{index}', 'market', '通用技术资料', missing=missing)
+        try:
+            distribution = chip_distribution(self.history, self.snapshot['data_date'])
+            self.facts['chips'] = distribution
+            self.save('chips', 'chips', '换手衰减成本估算 v1', distribution)
+        except MissingData as error:
+            self.save('chips', 'chips', '筹码估算资料', missing=str(error))
         return result
 
     async def financial_facts(self) -> dict[str, Any]:
@@ -256,8 +260,7 @@ class Analysis:
         identity = tools.task['options_json']['runtime']
         simulated = identity.get('mode') == 'mock'
         await tools.snapshot_facts()
-        if tools.task['kind'] == 'fundamental':
-            await tools.financial_facts()
+        await tools.financial_facts()
         tools.stage('analyzing', 40)
         raw, usage = await self.runtime.execute(tools)
         try:
@@ -267,34 +270,22 @@ class Analysis:
         available = {key: value for key, value in tools.seen.items() if value['status'] == 'available'}
         if any(key not in available for key in draft.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告引用了未取得的资料。', 503)
-        if not simulated and tools.task['kind'] == 'fundamental' and not tools.facts.get('financial') and not any(value['material_kind'] == 'research' for value in available.values()):
-            raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '没有足够的经营或财务资料，无法生成基本面分析。', 503)
+        if not simulated and not any(value['material_kind'] == 'research' for value in available.values()):
+            raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '真实分析尚无核验的公司与行业资料。', 503)
+        if any(key not in available for section in draft.sections for key in section.sourceKeys):
+            raise DomainError('ANALYSIS_INVALID_REPORT', '报告章节引用了未取得的资料。', 503)
         tools.stage('writing', 85)
+        metrics, valuation = report_facts(tools.record, tools.facts, tools.snapshot['data_date'].isoformat())
         overview = draft.overview.model_dump()
-        missing = list(dict.fromkeys([value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available'] + draft.missingInformation))
-        if tools.task['kind'] == 'fundamental' and not tools.reduction_verified:
-            text = '股东减持计划及实际进展未核验。'
-            missing = list(dict.fromkeys([text, *missing]))
-            if overview['decision']['action'] != 'avoid':
-                overview['decision'] = {'action': 'wait', 'label': '暂缓买入', 'reason': '股东减持风险尚未核实，先等待资料补齐。'}
-            overview['risks'] = [text, *overview['risks']][:2]
-        metrics = []
-        financial = tools.facts.get('financial')
-        if financial:
-            for label, field in [('营业收入（TTM）', 'revenueTtm'), ('归母净利润（TTM）', 'netProfitParentTtm'), ('PE（TTM）', 'peTtm')]:
-                value = financial[field]
-                metrics.append({'label': label, 'value': '—' if value is None else f'{value / 100000000:.2f}亿元' if field != 'peTtm' else f'{value:.2f}倍', 'detail': financial['periodEnd']})
-        if tools.task['kind'] == 'trade':
-            technical = tools.facts.get('generalTrade')
-            overview['pricePlan'] = technical['plan'] if technical else self.price_plan(tools)
-            if technical:
-                overview['decision'] = {key: technical[key] for key in ('action', 'label', 'reason')}
-                metrics.extend({'label': label, 'value': f"{technical['metrics'][field]:.2f} 元", 'detail': '同一快照前复权口径'}
-                    for label, field in [('20日均价', 'ma20'), ('60日均价', 'ma60'), ('此前20日低点', 'support20'), ('此前20日高点', 'resistance20')] if field in technical['metrics'])
-            elif overview['pricePlan']['waiting']:
-                overview['decision'] = {'action': 'wait', 'label': '等待突破', 'reason': '当前还未确认突破，先不买入。'}
+        technical = tools.facts['generalTrade']
+        overview['pricePlan'] = technical['plan']
+        # 模拟文字不构成真实持有或买入判断，价格仅采用已计算的技术观察范围。
+        if not tools.reduction_verified:
+            overview['decision'] = {'action': 'wait', 'label': '先核验风险', 'reason': '公司基本面、诉讼与减持尚未核验，当前只提供技术观察参考。'}
+        missing = list(dict.fromkeys([value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available'] + draft.missingInformation
+            + ([] if tools.reduction_verified else ['股东减持计划与实际进展尚未核验。'])))
         # 引用地址与时间只采用后端保存记录，不能接受模型自己编写的URL。
-        used_keys = set(draft.sourceKeys)
+        used_keys = set(draft.sourceKeys) | {key for section in draft.sections for key in section.sourceKeys}
         if 'financial' in used_keys:
             used_keys.update(key for key, value in available.items() if value['material_kind'] == 'financial')
         if 'chips' in available:
@@ -304,35 +295,23 @@ class Analysis:
         if tools.reduction_verified:
             used_keys.add('reduction_review')
             used_keys.update(record['sourceKey'] for record in tools.facts['reductions'])
-        sources = [{'title': value['source_name'], 'url': value['source_url'], 'publishedAt': utc(value['published_at']).isoformat() if value['published_at'] else None,
+        ordered_keys = [key for key in available if key in used_keys]
+        source_ids = {key: f'source_{index + 1}' for index, key in enumerate(ordered_keys)}
+        sources = [{'id': source_ids[key], 'title': value['source_name'], 'publisher': value['source_name'],
+                    'url': value['source_url'], 'publishedAt': utc(value['published_at']).isoformat() if value['published_at'] else None,
                     'fetchedAt': utc(value['fetched_at']).isoformat()} for key, value in available.items() if key in used_keys]
         instant = self.tasks.clock()
-        report = {'title': f"{tools.record['stock']['name']} · { {'fundamental': '机会与风险', 'chips': '筹码分布（估算）', 'trade': '买卖建议'}[tools.task['kind']]}",
-                  'overview': overview, 'summary': draft.summary, 'sections': [section.model_dump() for section in draft.sections],
-                  'metrics': metrics, 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
-                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': simulated}
-        if simulated:
-            report['title'] = '【模拟】' + report['title']
-            report['summary'] = '模拟分析，未调用真实模型。' + report['summary']
-        if 'chips' in tools.facts:
-            report['chipDistribution'] = tools.facts['chips']
+        report = {'title': ('【模拟】' if simulated else '') + tools.record['stock']['name'] + ' · AI分析报告',
+                  'stock': tools.record['stock'], 'snapshotId': tools.snapshot['id'], 'dataDate': tools.snapshot['data_date'].isoformat(),
+                  'overview': overview, 'summary': draft.summary,
+                  'sections': [{**section.model_dump(exclude={'sourceKeys'}), 'sourceIds': [source_ids[key] for key in section.sourceKeys]} for section in draft.sections],
+                  'metrics': metrics, 'valuation': valuation, 'shareholders': shareholder_facts(), 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
+                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': simulated,
+                  'researchStatus': 'not_searched' if simulated else 'researched'}
         with self.tasks.db.transaction(serialized=True) as connection:
             task = self.tasks.assert_lease(connection, lease)
-            connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=1,
+            connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=3,
                 provider=identity['provider'], model_name=identity['model'], prompt_version=identity.get('skillVersion', 'stock-analysis-v1'), calculation_version='v1',
                 usage_json=usage, materials_as_of_at=instant, generated_at=instant))
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(status='succeeded', progress=100, finished_at=instant,
                 lease_owner=None, lease_expires_at=None, options_json={**task['options_json'], 'stage': 'completed'}))
-
-    def price_plan(self, tools: AnalysisTools) -> dict[str, Any]:
-        code = tools.task['strategy_code']
-        metrics = tools.record['signalRows'][code]['metrics_json']
-        waiting = code in {'trend_wait', 'base_wait'}
-        entry = metrics['rangeUpper'] if waiting else metrics['breakoutReference'] if code == 'short' else metrics['ma20'] if code == 'swing' else metrics['ma60']
-        exit_price = metrics['rangeLower'] if waiting else metrics['breakoutReference'] if code == 'short' else metrics['pullbackLow'] if code == 'swing' else metrics['ma60']
-        return {'waiting': waiting, 'entryLabel': '等待突破参考价' if waiting else '参考买入位置',
-                'entryPrice': f'{entry:.2f} 元', 'exitPrice': f'{exit_price:.2f} 元' + ('（动态均价）' if code == 'long' else ''),
-                'entryCondition': '突破后重新检查短线全部条件。' if waiting else '原有策略条件需继续满足，按参考位置观察价格。',
-                'exitCondition': '连续5天低于各自60日均价或均线关系转弱时复查。' if code == 'long' else '收盘低于该参考价时，重新评估本次信号。',
-                'considerIf': '看好当前策略所依据的趋势，也能接受对应波动时，可按参考价位和条件考虑。',
-                'avoidIf': '关键条件未成立、已经失效或你不能接受对应风险时，先别买。'}

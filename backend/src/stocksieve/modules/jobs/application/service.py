@@ -236,27 +236,19 @@ class Tasks:
     def submit_analysis(self, user: dict[str, Any], stock_id: str, path: str, key: str | None,
                         data: AnalysisInput, runtime_identity: dict[str, Any] | Callable[[], dict[str, Any] | None] | None) -> tuple[dict[str, Any], dict[str, str]]:
         def create(connection: Connection) -> Any:
-            if data.kind != 'trade' and 'strategy' in data.model_fields_set:
-                raise invalid('strategy', '该分析类型不接受策略。')
             snapshot = self.market.snapshot(connection, data.snapshotId)
-            record = next((row for row in self.market.records(connection, snapshot) if row['stock']['stockId'] == stock_id), None)
-            if not record:
+            if not connection.scalar(select(t.snapshot_stocks.c.stock_id).where(
+                t.snapshot_stocks.c.snapshot_id == snapshot['id'], t.snapshot_stocks.c.stock_id == stock_id)):
                 raise DomainError('STOCK_NOT_FOUND', '股票不在所选快照内。', 404)
-            if data.kind == 'trade' and data.strategy is not None and data.strategy not in record['signalRows']:
-                raise DomainError('ANALYSIS_DATA_UNAVAILABLE', '所选快照未入选该策略。', 409)
-            history = self.market.history(connection, snapshot, stock_id)
-            if data.kind == 'chips' and (not history or record['quote'] is None or len(history) < 60):
-                raise DomainError('ANALYSIS_DATA_UNAVAILABLE', '该类分析所需行情不足。', 409)
             active = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'analysis', t.tasks.c.created_by == user['id'],
-                t.tasks.c.stock_id == stock_id, t.tasks.c.input_snapshot_id == snapshot['id'], t.tasks.c.kind == data.kind,
-                t.tasks.c.strategy_code == data.strategy, t.tasks.c.status.in_(['queued', 'running']))).first()
+                t.tasks.c.stock_id == stock_id, t.tasks.c.input_snapshot_id == snapshot['id'], t.tasks.c.kind == 'report', t.tasks.c.status.in_(['queued', 'running']))).first()
             if active:
                 raise DomainError('ANALYSIS_IN_PROGRESS', '已有相同输入的分析进行中。', 409, {'analysisId': active.id})
             identity = runtime_identity() if callable(runtime_identity) else runtime_identity
             if identity is None:
                 raise DomainError('SERVICE_UNAVAILABLE', '分析服务暂不可用，请稍后重试或联系管理员。', 503)
-            return self.new(connection, category='analysis', kind=data.kind, user_id=user['id'], target=snapshot['data_date'],
-                            stock_id=stock_id, snapshot_id=snapshot['id'], strategy=data.strategy,
+            return self.new(connection, category='analysis', kind='report', user_id=user['id'], target=snapshot['data_date'],
+                            stock_id=stock_id, snapshot_id=snapshot['id'],
                             options={'stage': 'preparing', 'runtime': identity})
         return self.accept(user['id'], path, key, data.model_dump(mode='json', exclude_unset=True), create)
 
@@ -265,7 +257,9 @@ class Tasks:
         predicates = [t.tasks.c.category == category]
         if user_id:
             predicates.append(t.tasks.c.created_by == user_id)
-        allowed_kinds = {'initialize', 'catalog', 'daily'} if category == 'sync' else {'fundamental', 'chips', 'trade'}
+        if category == 'analysis':
+            predicates.append(t.tasks.c.kind == 'report')
+        allowed_kinds = {'initialize', 'catalog', 'daily'} if category == 'sync' else {'report'}
         if 'kind' in query:
             if query['kind'] not in allowed_kinds:
                 raise invalid('kind')
@@ -282,10 +276,6 @@ class Tasks:
             predicates.append(t.tasks.c.trigger == query['trigger'])
         if 'stockId' in query:
             predicates.append(t.tasks.c.stock_id == query['stockId'])
-        if 'strategy' in query:
-            if query.get('kind') != 'trade' or query['strategy'] not in {'short', 'swing', 'long', 'trend_wait', 'base_wait', 'general'}:
-                raise invalid('strategy')
-            predicates.append(t.tasks.c.strategy_code.is_(None) if query['strategy'] == 'general' else t.tasks.c.strategy_code == query['strategy'])
         if 'snapshotId' in query:
             predicates.append(t.tasks.c.input_snapshot_id == resource_id(query['snapshotId'], 'SNAPSHOT_NOT_FOUND'))
         with self.db.transaction() as connection:

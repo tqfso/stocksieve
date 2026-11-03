@@ -63,10 +63,10 @@ def test_analysis_conflict_and_owner_privacy(context):
     snapshot = context.published()
     stock_id = context.source.universe_stocks[0].stock_id
     path = f'/api/v1/stocks/{stock_id}/analyses'
-    status, first, _ = context.request('POST', path, {'kind': 'trade', 'strategy': 'short', 'snapshotId': snapshot}, key='analysis-first')
+    status, first, _ = context.request('POST', path, {'snapshotId': snapshot}, key='analysis-first')
     assert status == 202, first
     assert first['data']['stage'] == 'preparing'
-    status, conflict, _ = context.request('POST', path, {'kind': 'trade', 'strategy': 'short', 'snapshotId': snapshot}, key='analysis-second')
+    status, conflict, _ = context.request('POST', path, {'snapshotId': snapshot}, key='analysis-second')
     assert status == 409 and conflict['error']['details']['analysisId'] == first['data']['id']
     context.api.auth.create_user('reader', '测试读者', 'readerpass123')
     viewer = context.api.auth.login('reader', 'readerpass123')['accessToken']

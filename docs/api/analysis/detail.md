@@ -1,89 +1,35 @@
-# 分析详情 `GET /analyses/{analysisId}`
+# 报告详情 `GET /analyses/{analysisId}`
 
-[模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
+[模块目录](README.md) · [接口总览](../README.md)
 
-权限：分析所属用户。
+权限：任务所属用户，管理员也不能查看他人报告；无权访问和不存在均返回`404 ANALYSIS_NOT_FOUND`。
 
-成功 `200`，`data` 返回完整任务。仅所属用户可访问，管理员也不能查看他人报告；无权访问与不存在均返回 `404 ANALYSIS_NOT_FOUND`。
+成功`200`返回任务。`status`为queued/running/succeeded/failed；`stage`为queued、preparing、researching、analyzing、writing、completed。模拟阶段researching只准备本地资料，不表示已联网。
 
-任务失败时仍返回 `200`，`data.status=failed`、`data.report=null`，`data.error` 包含 `code`（例如 `ANALYSIS_TIMEOUT`）和可读原因；这与 HTTP 请求失败时的顶层 `error` 不同。
+失败保留最后阶段，`report=null`且`error`包含原因；不删除其他成功报告。成功时`report`如下：
 
-### 任务阶段
-
-`stage` 为必填的用户可见业务阶段，与 `status` 分别返回：
-
-| stage | 展示 | 对应 status |
-| --- | --- | --- |
-| queued | 排队中 | queued |
-| preparing | 准备本地资料 | queued / running |
-| researching | 获取资料 | running |
-| analyzing | 分析研判 | running |
-| writing | 整理报告 | running |
-| completed | 报告已生成 | succeeded |
-
-失败时保留最后阶段，`status=failed`；`report=null` 只表示该次任务无新报告，不删除历史。获取资料阶段完全无法继续时，可返回 `ANALYSIS_SOURCES_UNAVAILABLE`。分析中可再次进入 `researching` 补充资料；前端展示最新阶段，不能据阶段推定固定耗时或展示内部推理过程。
-
-### 成功报告
-
-任务成功时的完整响应示例：
-
-```json
-{
-  "data": {
-    "id": "analysis_example", "stockId": "SZSE.300750", "kind": "fundamental", "strategy": null,
-    "snapshotId": "snapshot_example", "dataDate": "2026-10-28", "simulated": false,
-    "status": "succeeded", "stage": "completed", "progress": 100,
-    "createdAt": "2026-10-29T18:30:00+08:00", "startedAt": "2026-10-29T18:30:02+08:00", "finishedAt": "2026-10-29T18:30:40+08:00",
-    "error": null,
-    "report": {
-      "title": "示例股票 · 基本面分析", "simulated": false,
-      "overview": {
-        "decision": { "action": "wait", "label": "暂缓买入", "reason": "股东减持风险尚未核实，先等待资料补齐。" },
-        "opportunities": ["已有经营资料显示收入和利润增长。"],
-        "risks": ["股东减持计划及实施进展未核验。"]
-      },
-      "summary": "近12个月营收同比增长18.6%，净利润同比增长22.4%，经营现金流能够覆盖净利润。后续需要验证增长和现金回收能否延续。",
-      "metrics": [
-        { "label": "营收同比", "value": "+18.6%", "detail": "近12个月" },
-        { "label": "现金流／净利润", "value": "1.12倍", "detail": "经营现金流覆盖情况" }
-      ],
-      "sections": [{ "title": "盈利质量与现金流", "text": "经营现金流／净利润为1.12倍，利润形成了相应现金流，后续需关注回款和营运资金占用变化。" }],
-      "sources": [
-        { "title": "示例公司公告", "url": "https://example.com/report", "publishedAt": "2026-10-27T18:00:00+08:00", "fetchedAt": "2026-10-29T18:30:20+08:00" }
-      ],
-      "dataQuality": "partial",
-      "missingInformation": ["未取得最新分部经营资料。"],
-      "materialsAsOfAt": "2026-10-29T18:30:20+08:00",
-      "generatedAt": "2026-10-29T18:30:40+08:00"
-    }
-  },
-  "requestId": "req_example"
-}
-```
-
-- `sections` 是纯文本章节，不是可直接执行的 HTML。`sources` 为实际资料列表；来源 URL 仅允许 HTTP(S)，URL 与发布日期未知时可为 `null`，`fetchedAt` 必填，不得补造链接或日期。
-- 任务和报告的 `simulated=true` 表示模拟结果，标题和摘要包含“模拟”。模拟报告不调用真实模型或联网查询，不能作为真实 AI 分析展示；即使财报不足也可返回说明缺失的模拟基本面报告，`dataQuality=partial`。筹码图、财务指标及参考价只使用实际取得的输入和计算结果。
-- `title` 为报告标题，`metrics` 为关键指标卡片，含 `label`、`value`、`detail`；没有可展示的已核实指标时返回空数组，不填造数值。上述数据仅为虚构接口示例。
-- `overview` 为默认展示的精简结果：`decision` 含 `action`（`consider` / `wait` / `avoid`）、明确的建议 `label` 及一句 `reason`；`opportunities`、`risks` 为短句数组，默认各展示一条。详细正文及来源按需展开。
-- 买卖建议可附 `overview.pricePlan`，含 `waiting`、`entryLabel`、`entryPrice`、`entryCondition`、`exitPrice`、`exitCondition`、`considerIf`、`avoidIf`。价位字段为展示文本，条件在详细依据中查看；缺乏依据时省略计划或显示“暂无可靠参考”，当前建议说明等待或暂不买。`strategy=null`表示通用分析。
-- 基本面指标明确标注营业收入（TTM）、归母净利润（TTM）及 PE（TTM）。TTM 为最近四个季度的滚动12个月；PE采用同币种、同单位总市值除以归母净利润（TTM）。盈利为零、为负或数据缺失时显示无有效倍数，不以零或负 PE 误导估值判断。
-- `dataQuality` 为 `complete` 或 `partial`，按该类分析所需资料判断。资料不足但仍可提供有限结论时成功并标记 `partial`，`missingInformation` 必须非空；完全无法分析时任务失败并说明缺失原因。
-- 基本面、筹码和买卖建议共用该报告结构。来源、资料缺失和规则信号分别展示，避免把估算或 AI 文本当作确定事实。
-- `dataDate` 仅指引用的行情快照日期；按需获取的资料可能晚于该日，须依据来源时间展示，报告不能被解释成历史时点已知结论。
-- `materialsAsOfAt` 为本次资料集合冻结时间，必填且不晚于 `generatedAt`；前端以“资料获取截至”展示，与“行情截至”的 `dataDate` 分开。来源的 `publishedAt` 和 `fetchedAt` 分别表示发布时间与获取时间，发布时间未知时明确展示未知。
-
-### 筹码分析图形数据
-
-筹码报告可附带 `data.report.chipDistribution`，仅用于页面分析结果内绘图，无独立的资金或筹码接口。缺少可核实分布时返回 `null` 或省略该字段。
-
-| 字段 | 说明 |
+| 字段 | 含义 |
 | --- | --- |
-| currentPrice | 对应行情快照的收盘价，单位元 |
-| bins | 按价格升序的档位，每项为 `{lower, upper, price, ratio}`，分别为价格区间下界、上界、代表价与筹码占比（%） |
-| averageCost、profitableRatio | 估算平均成本，以及收盘价及以下的估算筹码占比 |
-| cost70、cost90 | 中央70%和90%的成本区间，分别按第15～85、第5～95百分位计算 |
-| support、resistance | 与 `bins` 同结构，标识现价下方、上方的主要筹码参考档位 |
+| title、stock、snapshotId、dataDate | 标题、股票身份与引用行情版本；stock含code/name/industry等 |
+| simulated、researchStatus | 模拟标识；`not_searched`明确未联网，`researched`表示已执行资料研究 |
+| overview | decision含action（consider/wait/avoid）、label、reason；holding含持有判断label/reason；opportunities/risks为短句数组；pricePlan为技术观察条件和价位 |
+| summary | 报告摘要 |
+| sections | 七章，依次为company、advantages、risks、holding、buy、avoid、sell；每项含id/title/headline/text/sourceIds |
+| metrics | 实际指标的label/value/detail，缺失展示待核验，不填零代替 |
+| valuation | 公司与行业PE对比，见下文 |
+| shareholders | 本期/上期股东户数、变化比例、统计与披露时间、来源及集中趋势；未采集保持null/unknown，较早报告可省略 |
+| sources | 实际引用资料，每项含id/title/publisher/url/publishedAt/fetchedAt，章节sourceIds关联此处 |
+| dataQuality、missingInformation | complete/partial与资料缺失列表；部分结果明确判断范围 |
+| materialsAsOfAt、generatedAt | 资料集合截至时间与报告生成时间；与行情日期分别展示 |
 
-档位连续且占比合计100%；价格与当前快照使用统一复权口径。图中支撑、压力和报告文字必须引用同一份数据，明确标为估算参考，不能保证价格反弹或受阻。占比表示成本区间内的估算筹码，不等同当日成交量或真实股东持股数量。
+七章分别回答公司基本资料（含公司类型、股东户数与集中趋势）、优势壁垒与市场关注、风险、是否持有、买入条件与区间、不买条件、卖出条件。正文为纯文本，不能当HTML执行。筹码分布图不再附于报告，改用[独立筹码接口](../market/chips.md)。
 
-现价某一侧没有正占比档位时，该侧 `support` 或 `resistance` 为 `null`，不得拿空档位补造支撑或压力；后续前端对接需展示该侧暂无有效参考。
+`pricePlan`含waiting、entryLabel、entryPrice、entryCondition、exitPrice、exitCondition、considerIf、avoidIf。数值及条件来自冻结的计算结果；资料不足时显示暂无可靠参考。模拟区间只是技术观察，不构成已核验的公司投资建议。
+
+`valuation`含basis（当前TTM）、companyPe、industryPe、industry、industryClassification、companyDataDate、financialPeriodEnd、industryDataDate、industryStatistic、status、explanation。未取得同口径行业估值时industryPe与行业日期为null，status=unavailable，禁止直接判断相对高低；动态与静态PE不能替代TTM。
+
+资料URL只采用实际保存的原文，未知可为null；发布日未知与未检索到资料均不意味着没有风险。当前模拟模式不联网，不虚构公告、券商目标价、行业PE或公司分类；sources可包含无外部链接的本地计算资料。报告不包含筹码图，但可引用筹码指标。
+
+支持[Word/PDF导出](export.md)，导出与所选报告版本一致。
+
+`shareholders`与独立筹码的同名对象一致，展示于公司基本资料，另含previousAsOf、trend（当前unknown）及trendLabel。新报告与导出明确提示未核验，不能从成本图推断实际股东人数或主力吸筹；旧报告缺少此字段时页面提示可重新生成。

@@ -9,7 +9,7 @@ Python 3.12、aiohttp、SQLAlchemy、PostgreSQL；依赖和虚拟环境统一由
 - 新浪提供沪深四板块的证券基础、日历、行情、复权和市值；百度提供行业与题材。
 - 默认先发布150个交易日策略，再回补至2500个交易日，约十年；历史范围由 env 控制。
 - 相同日期、渠道、配置和分类的成功结果直接复用；失败同步从原任务检查点继续。
-- 任意已覆盖股票均可分析。AI 保持后端模拟，不需要模型凭据，不调用真实模型或联网研究；任务、报告和权限走真实服务。
+- 任意已覆盖股票均可分析。AI 保持后端模拟，不需要模型凭据，不调用真实模型或联网研究；任务、报告和权限走真实服务；统一七章报告支持Word/PDF导出，筹码为独立查询，股东户数资料待接入。
 
 `backend/.env` 是唯一配置文件，环境变量优先。参考[配置示例](.env.example)，不要提交真实凭据。
 
@@ -33,6 +33,7 @@ Python 3.12、aiohttp、SQLAlchemy、PostgreSQL；依赖和虚拟环境统一由
 ```bash
 uv sync --project backend --frozen
 uv run --project backend --frozen pytest backend/tests -q
+uv run --project backend --frozen playwright install chromium
 uv run --project backend --frozen pytest backend/tests --browser -q
 ```
 
