@@ -83,7 +83,7 @@ class IncrementalSource(Protocol):
 
 @runtime_checkable
 class SnapshotScopedSource(Protocol):
-    """续跑时保持旧任务已冻结的字段来源，配置变化只影响新任务。"""
+    """续跑时保持任务已冻结的字段来源，配置变化只影响新任务。"""
 
     def for_snapshot(self, provenance: dict[str, Any], *, force: bool = False) -> Source: ...
 
@@ -131,5 +131,4 @@ class PublicHTTPClient(Protocol):
     """公开资料读取端口，由网络适配器实现；应用服务不依赖具体HTTP客户端。"""
 
     async def document(self, vendor: str, url: str, cache_seconds: int = 86400) -> tuple[bytes, datetime]: ...
-    async def get_json(self, vendor: str, url: str, params: dict[str, Any] | None = None, *, cache_seconds: int = 600) -> Any: ...
     async def close(self) -> None: ...

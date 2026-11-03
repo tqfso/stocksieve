@@ -13,7 +13,6 @@ class Registry:
     def __init__(self, boards: tuple[str, ...] = tuple(BOARDS)) -> None:
         self.boards = frozenset(boards)
         self.sources: dict[str, Source] = {}
-        self.pending: dict[str, str] = {'sina': 'Sina', 'eastmoney': '东方财富'}
 
     def register(self, source: Source) -> None:
         import re
@@ -22,7 +21,6 @@ class Registry:
         if source.id in self.sources:
             raise ValueError('重复注册数据源')
         self.sources[source.id] = source
-        self.pending.pop(source.id, None)
 
     def get(self, source_id: str, kind: str, boards: tuple[str, ...] | None = None) -> Source:
         source = self.sources.get(source_id)
@@ -32,5 +30,4 @@ class Registry:
         return source
 
     def public(self) -> list[dict[str, Any]]:
-        return [{'id': key, 'name': source.name, 'available': bool(kinds := sorted(kind for kind in source.supported_kinds if kind == 'catalog' or self.boards <= source.boards)), 'supportedSyncKinds': kinds, 'supportedBoards': sorted(source.boards)} for key, source in self.sources.items()] + [
-            {'id': key, 'name': name, 'available': False, 'supportedSyncKinds': []} for key, name in self.pending.items()]
+        return [{'id': key, 'name': source.name, 'available': bool(kinds := sorted(kind for kind in source.supported_kinds if kind == 'catalog' or self.boards <= source.boards)), 'supportedSyncKinds': kinds, 'supportedBoards': sorted(source.boards)} for key, source in self.sources.items()]

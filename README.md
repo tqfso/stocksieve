@@ -12,9 +12,7 @@
 ## 项目文档
 
 - [项目需求说明书（V1）](docs/requirements.md)
-- [AI 分析专项评审](docs/product/ai-analysis.md)
 - [后端概要设计](docs/design/backend.md)
-- [免费数据源验证](docs/research/data-sources.md)
 - [选股策略设计](docs/product/strategies/README.md)
 - [AI 分析设计](docs/product/ai-analysis-design.md)
 - [后端 API 接口文档（V1）](docs/api/README.md)

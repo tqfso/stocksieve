@@ -7,7 +7,6 @@ from decimal import Decimal as D
 from typing import Any
 
 from sqlalchemy import delete
-
 from stocksieve.infrastructure.persistence import schema as t
 from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.domain.trade import general_trade

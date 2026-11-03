@@ -10,8 +10,8 @@ from sqlalchemy.engine import Connection
 
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import Database, utc
-from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.ingestion.application.ports import SourceDeferred
+from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.jobs.application.commands import AnalysisInput, SyncInput
 from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.application.queries import Market
@@ -127,48 +127,12 @@ class Tasks:
 
     @staticmethod
     def boards(row: Any) -> tuple[str, ...]:
-        """覆盖范围在受理时冻结；旧任务按原来的五板块解释，不随新配置缩减。"""
-        return tuple((row['options_json'] or {}).get('marketBoards', list(BOARDS)))
+        """覆盖范围在受理时冻结，不随新配置缩减。"""
+        return tuple(row['options_json']['marketBoards'])
 
     def initialized(self, connection: Connection) -> bool:
         rows = connection.execute(select(t.tasks.c.options_json).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'initialize', t.tasks.c.status == 'succeeded')).scalars()
-        return any(set(self.settings.market_boards) <= set((options or {}).get('marketBoards', list(BOARDS))) for options in rows)
-
-    def recover_history_bootstrap(self, *, apply: bool = False) -> dict[str, Any]:
-        """修复旧自然年配置留下的首次排队任务，近期发布后再按当前最大窗口回补。"""
-        with self.db.transaction(serialized=True) as connection:
-            normalized = []
-            backfills = connection.execute(select(t.tasks).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'daily',
-                t.tasks.c.status.in_(['queued', 'running']), t.tasks.c.options_json['historyBackfill'].as_boolean().is_(True))).mappings().all()
-            for row in backfills:
-                key = f'sync:daily:{row["target_date"]}:history'
-                if row['dedupe_key'] != key:
-                    normalized.append(row['id'])
-                    if apply:
-                        values = {'dedupe_key': key}
-                        if row['status'] == 'queued':
-                            values['run_after'] = self.clock()
-                        connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(**values))
-            if connection.scalar(select(t.snapshots.c.id).where(t.snapshots.c.status == 'published').limit(1)):
-                return {'applied': apply and bool(normalized), 'taskIds': [], 'normalizedBackfillIds': normalized}
-            rows = connection.execute(select(t.tasks).where(t.tasks.c.category == 'sync', t.tasks.c.kind == 'daily',
-                t.tasks.c.status == 'queued')).mappings().all()
-            changed = []
-            for row in rows:
-                options = dict(row['options_json'])
-                if not options.get('historyYears') or options.get('buildingSnapshotId'):
-                    continue
-                changed.append(row['id'])
-                if apply:
-                    options.pop('historyYears')
-                    options.pop('sourceWaitReason', None)
-                    options.update(historyDays=self.settings.history_trading_days, historyMaxDays=self.settings.history_max_trading_days,
-                        sourceProgressMessage='先准备近期行情并发布策略，较早历史随后回补。')
-                    connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(options_json=options,
-                        progress=0, run_after=self.clock()))
-                    connection.execute(t.logs.insert().values(task_id=row['id'], time=self.clock(), level='info',
-                        message='已改为先发布近期策略、后补齐历史；真实渠道预算与冷却保持。'))
-            return {'applied': apply, 'taskIds': changed, 'normalizedBackfillIds': normalized}
+        return any(set(self.settings.market_boards) <= set(options['marketBoards']) for options in rows)
 
     def completed_sync(self, connection: Connection, source: str, target: date, boards: tuple[str, ...], initial: int, maximum: int) -> Any:
         """相同日期、渠道、范围和分类仍有效时复用成功快照，不重复取数和计算。"""

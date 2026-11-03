@@ -35,9 +35,6 @@ from stocksieve.modules.ingestion.infrastructure.providers.sina_metadata import 
     SinaMarketData,
     quote_rows,
 )
-from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
-    TencentMetadata,
-)
 from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
 from stocksieve.modules.market.domain.history import HistoryPolicy
 from stocksieve.modules.market.domain.models import (
@@ -73,7 +70,7 @@ def dated_values(rows: list[dict[str, Any]], day_key: str, value_key: str, multi
 
 
 class SinaSource:
-    """由新浪提供价格、因子、元资料和行业；保留旧任务冻结来源的兼容读取。"""
+    """由新浪提供价格、因子和元资料，历史窗口由任务冻结。"""
 
     id = 'sina'
     name = '新浪行情（沪深四板块）'
@@ -83,9 +80,8 @@ class SinaSource:
     provenance: ClassVar[dict[str, str]] = {'prices': 'sina', 'volume': 'sina', 'amount': 'sina', 'calendar': 'sina',
                   'adjustment': 'sina-hfq-factor', 'turnover': 'sina-historical-float-shares-and-quotes', 'totalMarketCap': 'sina'}
 
-    def __init__(self, policy: SourcePolicy, cache: Path, history_days: int = 150, history_max_days: int = 0,
-                 metadata: TencentMetadata | None = None) -> None:
-        self.policy, self.cache, self.metadata = policy, cache, metadata
+    def __init__(self, policy: SourcePolicy, cache: Path, history_days: int = 150, history_max_days: int = 0) -> None:
+        self.policy, self.cache = policy, cache
         self.history_policy = HistoryPolicy(history_days, history_max_days)
         self._calendar: dict[date, CalendarDay] = {}
         self._calendar_at: datetime | None = None
@@ -98,7 +94,6 @@ class SinaSource:
         self.market_data = SinaMarketData(cache)
         self.market_data.quotes = self._quotes
         self._known: tuple[Stock, ...] = ()
-        self.legacy_cap = False
         self.force_read = False
         self.history_revision = False
 
@@ -111,7 +106,6 @@ class SinaSource:
 
     def for_snapshot(self, provenance: dict[str, Any], *, force: bool = False) -> 'SinaSource':
         source = copy(self)
-        source.legacy_cap = provenance.get('totalMarketCap') == 'tencent'
         source.force_read = force
         source.provenance = {**self.provenance, **provenance}
         source._http = None
@@ -125,7 +119,6 @@ class SinaSource:
 
     async def document(self, url: str, seconds: int = 600) -> tuple[bytes, datetime]:
         # 同一任务复用连接，减少每份资料的TLS握手；所有端点仍共享供应商账本。
-        self.market_data.import_evidence()
         if self._http is None:
             self._http = SourceHTTP(self.policy, self.cache)
             self._http.client.headers['Referer'] = 'https://finance.sina.com.cn/'
@@ -290,8 +283,6 @@ class SinaSource:
         return stocks
 
     def target_cap(self, stock: Stock, target: date, close: Decimal) -> Decimal | None:
-        if self.legacy_cap:
-            return self.metadata.cap(stock, target, close) if self.metadata else None
         return self.market_data.cap(stock, target, close)
 
     async def factors(self, symbol: str) -> list[tuple[date, Decimal | None]]:
@@ -342,7 +333,7 @@ class SinaSource:
             (bar,), 'ADJUSTMENT_UNAVAILABLE' if current_factor is None else None)
 
     def packet_path(self, symbol: str, target: date) -> Path:
-        return self.cache / 'sina-packets-v2' / str(target) / (symbol + '.json')
+        return self.cache / 'sina-packets' / str(target) / (symbol + '.json')
 
     async def daily(self, stock: Stock, target: date, history: tuple[Bar, ...]) -> DailyPacket:
         """保存同源原始日线；累计因子由公共计算层锚定为前复权，不重复调整价格。"""
@@ -354,11 +345,11 @@ class SinaSource:
             dates = sorted(day for day, entry in self._calendar.items() if entry.is_open and day <= target)
             floor = self.history_policy.initial_dates(dates, target)[0]
             rows = saved['bars']
-            complete = 'retentionDays' in saved and (saved['retentionDays'] == 0 or saved['retentionDays'] >= self.history_policy.initial_days)
+            complete = saved['retentionDays'] == 0 or saved['retentionDays'] >= self.history_policy.initial_days
             if complete or not rows or rows[0][0] <= str(floor) or stock.listed_on and stock.listed_on >= floor:
                 bars = tuple(Bar(date.fromisoformat(row[0]), *(decimal_value(v) if v is not None else None for v in row[1:6]),
                     row[6], *(decimal_value(v) if v is not None else None for v in row[7:])) for row in rows if row[0] >= str(floor))
-                return self.select_packet(stock, target, bars, StockState(**saved['state']), saved.get('excludedReason'), saved.get('capSource', 'tencent'))
+                return self.select_packet(stock, target, bars, StockState(**saved['state']), saved.get('excludedReason'))
         if not is_background_sync() and (packet := await self.incremental_packet(stock, target, history)) is not None:
             return packet
         dates = sorted(day for day, entry in self._calendar.items() if entry.is_open and day <= target)
@@ -406,24 +397,23 @@ class SinaSource:
             'ST' in verified_name.upper() if verified_name else None, '退' in verified_name if verified_name else None)
         path.parent.mkdir(parents=True, exist_ok=True)
         saved = {'state': {'trade_status': state.trade_status, 'is_st': state.is_st, 'is_delisting': state.is_delisting},
-            'capSource': 'tencent' if self.legacy_cap else 'sina', 'retentionDays': self.history_policy.max_days,
+            'retentionDays': self.history_policy.max_days,
             'excludedReason': excluded,
             'bars': [[str(b.day), *(str(v) if v is not None else None for v in (b.open, b.high, b.low, b.close, b.amount)),
-                      b.volume, *(str(v) if v is not None else None for v in (b.turnover, b.total_market_cap, b.factor))] for b in bars_list]}
+                      b.volume, *(str(v) if v is not None else None for v in (b.turnover, None, b.factor))] for b in bars_list]}
         temporary = path.with_suffix('.' + uuid4().hex + '.tmp')
         temporary.write_text(json.dumps(saved, ensure_ascii=False))
         temporary.replace(path)
-        return self.select_packet(stock, target, tuple(bars_list), state, excluded, saved['capSource'])
+        return self.select_packet(stock, target, tuple(bars_list), state, excluded)
 
-    def select_packet(self, stock: Stock, target: date, bars: tuple[Bar, ...], state: StockState, excluded: str | None, cap_source: str = 'sina') -> DailyPacket:
+    def select_packet(self, stock: Stock, target: date, bars: tuple[Bar, ...], state: StockState, excluded: str | None) -> DailyPacket:
         """按本次冻结的历史窗口选择数据，补充已核验的同日元资料，不改变原始价格。"""
         dates = sorted(day for day, entry in self._calendar.items() if entry.is_open and day <= target)
         selected = self.history_policy.initial_dates(dates, target)
         floor = min(selected)
         selected_bars = tuple(bar for bar in bars if (self.history_revision or floor <= bar.day) and bar.day <= target)
-        expected = 'tencent' if self.legacy_cap else 'sina'
-        selected_bars = tuple(replace(bar, total_market_cap=self.target_cap(stock, target, bar.close) or (bar.total_market_cap if cap_source == expected else None),
-            turnover=(self.market_data.turnover(stock, target, bar.close) if not self.legacy_cap else None) or bar.turnover)
+        selected_bars = tuple(replace(bar, total_market_cap=self.target_cap(stock, target, bar.close),
+            turnover=self.market_data.turnover(stock, target, bar.close) or bar.turnover)
             if bar.day == target else bar for bar in selected_bars)
         symbol = ('sh' if stock.exchange == 'SSE' else 'sz') + stock.code
         quote = self._quotes.get(symbol)

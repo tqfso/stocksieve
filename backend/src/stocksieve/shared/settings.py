@@ -18,7 +18,7 @@ class Settings:
     database_url: str = field(repr=False)
     state_dir: Path = ROOT / '.state'
     web_dir: Path = ROOT / 'web'
-    rate_dir: Path = ROOT / '.source-probe'
+    rate_dir: Path = ROOT / '.state/rate'
     market_boards: tuple[str, ...] = tuple(BOARDS)
     enabled_sources: tuple[str, ...] = ()
     default_source: str = 'sina'
@@ -36,14 +36,12 @@ class Settings:
     ai_max_steps: int = 12
     ai_tools_supported: bool = True
     ai_mode: str = 'mock'
-    testing: bool = False
 
     @classmethod
     def from_env(cls) -> 'Settings':
         values: dict[str, str] = {}
         central = ROOT / '.env'
-        # 统一配置存在时只读取它；旧位置仅兼容尚未迁移的独立数据库部署。
-        for local in (central,) if central.exists() else (ROOT / 'deploy/postgres/.env',):
+        for local in (central,):
             if not local.exists():
                 continue
             for line in local.read_text().splitlines():
@@ -61,7 +59,7 @@ class Settings:
                              database=values.get('STOCKSIEVE_POSTGRES_DB', 'stocksieve')).render_as_string(hide_password=False)
         return cls(database_url=url, state_dir=Path(values.get('STOCKSIEVE_STATE_DIR', str(ROOT / '.state'))),
                    web_dir=Path(values.get('STOCKSIEVE_WEB_DIR', str(ROOT / 'web'))),
-                   rate_dir=Path(values.get('STOCKSIEVE_RATE_DIR', str(ROOT / '.source-probe'))),
+                   rate_dir=Path(values.get('STOCKSIEVE_RATE_DIR', str(ROOT / '.state/rate'))),
                    market_boards=tuple(filter(None, values.get('STOCKSIEVE_MARKET_BOARDS', ','.join(BOARDS)).split(','))),
                    enabled_sources=tuple(filter(None, values.get('STOCKSIEVE_ENABLED_SOURCES', 'sina,baidu_concepts').split(','))),
                    default_source=values.get('STOCKSIEVE_DEFAULT_SOURCE', 'sina'),

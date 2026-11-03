@@ -1,20 +1,14 @@
 """本文件解析新浪批量报价并核对总市值、换手率的单位和日期，保存已确认的收盘资料。"""
 
-import base64
-import hashlib
 import json
 import re
 from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 from uuid import uuid4
 
-from stocksieve.modules.ingestion.infrastructure.providers.sina_codec import assignment
 from stocksieve.modules.market.domain.models import Stock, decimal_value
-
-BASE = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
 
 
 def optional_decimal(value: object) -> Decimal | None:
@@ -44,52 +38,12 @@ class SinaMarketData:
     """只在完整日期报价与目录价格、成交量额一致后采用市值；总市值万元转元。"""
 
     def __init__(self, cache: Path) -> None:
-        self.cache = cache
         self.path = cache / 'sina-market-observations.json'
         self.closed_path = cache / 'sina-closed-quotes.json'
         self.rows: dict[str, dict[str, Any]] = {}
         self.quotes: dict[str, dict[str, str]] = {}
         self.observed: dict[str, dict[str, dict[str, Any]]] = json.loads(self.path.read_text()) if self.path.exists() else {}
         self.closed: dict[str, dict[str, dict[str, str]]] = json.loads(self.closed_path.read_text()) if self.closed_path.exists() else {}
-        self.imported = self.path.exists() and self.closed_path.exists()
-
-    def cached(self, url: str) -> bytes | None:
-        """仅复用本机已保存的公开原文；迁移证据不发请求，也不更新原获取时间。"""
-        path = self.cache / (hashlib.sha256(('document:' + url).encode()).hexdigest() + '.json')
-        if not path.exists():
-            return None
-        return base64.b64decode(json.loads(path.read_text())['body'], validate=True)
-
-    def import_evidence(self) -> None:
-        """从旧版本成功原文建立日期证明，旧数据库和快照保持原有来源。"""
-        if self.imported:
-            return
-        self.imported = True
-        count = self.cached(BASE + 'Market_Center.getHQNodeStockCount?node=hs_a')
-        if not count:
-            return
-        total = int(assignment(count))
-        if not 0 < total <= 100000:
-            return
-        for page in range(1, (total + 79) // 80 + 1):
-            url = BASE + 'Market_Center.getHQNodeData?' + urlencode({'page': page, 'num': 80, 'sort': 'symbol',
-                'asc': 1, 'node': 'hs_a', 'symbol': '', '_s_r_a': 'page'})
-            if raw := self.cached(url):
-                for row in assignment(raw):
-                    self.rows[row['symbol']] = row
-        symbols = sorted(symbol for symbol in self.rows if symbol.startswith(('sh', 'sz')))
-        for index in range(0, len(symbols), 100):
-            selected = symbols[index:index + 100]
-            if raw := self.cached('https://hq.sinajs.cn/list=' + ','.join(selected)):
-                self.quotes.update(quote_rows(raw, set(selected)))
-        self.record_closed(self.quotes)
-        # 旧版日期探测还保存过单股真实报价，独立保留它们，不用市值是否匹配来丢弃已确认收盘价。
-        singles = {}
-        for symbol in symbols:
-            if raw := self.cached('https://hq.sinajs.cn/list=' + symbol):
-                singles.update(quote_rows(raw, {symbol}))
-        self.record_closed(singles)
-        self.capture()
 
     def remember_rows(self, rows: list[dict[str, Any]]) -> None:
         self.rows.update({row['symbol']: row for row in rows})

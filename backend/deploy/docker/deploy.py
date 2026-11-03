@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -16,8 +17,6 @@ import tomllib
 from pathlib import Path
 from typing import BinaryIO
 from zoneinfo import TZPATH
-
-from stack import Stack, prepare_env
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / 'compose.yaml'
@@ -46,8 +45,8 @@ def prepare() -> dict[str, str]:
     output = ROOT / '.docker-build'
     output.mkdir(exist_ok=True)
     # 挂载既有公开取数账本，保留探测阶段已消耗次数和冷却，容器不能另起空账本。
-    rate = ROOT / '.source-probe'
-    rate.mkdir(exist_ok=True)
+    rate = ROOT / '.state/rate'
+    rate.mkdir(parents=True, exist_ok=True)
     if rate.is_symlink():
         raise RuntimeError('取数账本目录不能是符号链接。')
     for path in [rate, *rate.iterdir()]:
@@ -55,7 +54,7 @@ def prepare() -> dict[str, str]:
             raise RuntimeError('取数账本中不能包含符号链接。')
         os.chown(path, 10001, 10001)
     # 仅共享公开源的成功响应缓存；管理员私有凭据不在这些挂载目录内。
-    for name in ('baostock-wire', 'source-cache'):
+    for name in ('source-cache',):
         public_cache = ROOT / '.state' / name
         public_cache.mkdir(parents=True, exist_ok=True)
         for path in [public_cache, *public_cache.rglob('*')]:
@@ -107,50 +106,6 @@ def check_production_dependencies() -> None:
         raise RuntimeError('PostgreSQL 驱动尚未通过 uv 声明和锁定；需先补齐 psycopg[binary]，不能部署为可用服务。')
 
 
-def reuse_price_cache(archive: Path) -> None:
-    """仅从本项目备份复用成功的公开行情响应，保留当前缓存和完整频控账本。"""
-    folder = archive.resolve()
-    if not folder.is_relative_to((ROOT / '.state/backups').resolve()) or not folder.is_dir():
-        raise RuntimeError('只允许复用本项目备份目录中的公开行情缓存。')
-    destination = ROOT / '.state/baostock-wire'
-    destination.mkdir(parents=True, exist_ok=True)
-    copied = 0
-    for path in (folder / 'baostock-wire').glob('*.json'):
-        if path.is_symlink() or not re.fullmatch(r'[a-f0-9]{64}\.json', path.name):
-            continue
-        saved = json.loads(path.read_text())
-        fields = saved.get('reply', '')[21:].split('\x01', 3)
-        if len(fields) < 3 or fields[:3] != ['0', 'success', 'query_daily_history_k_AStock']:
-            continue
-        target = destination / path.name
-        if target.exists():
-            continue
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(descriptor, 'w') as stream:
-            json.dump(saved, stream)
-        os.chown(target, 10001, 10001)
-        copied += 1
-    print(f'已复用{copied}份成功的公开行情缓存；未改写当前缓存或源频控账本。')
-
-
-def check_service_networks(stack: Stack, port: str) -> None:
-    """核对四个服务实际使用共同的Compose网络，并确认API的宿主机端口映射。"""
-    networks: list[set[str]] = []
-    for service in ('postgres', 'api', 'worker', 'scheduler'):
-        identifier = command([*stack.compose, 'ps', '-q', service], capture=True, env=stack.env).stdout.strip()
-        info = stack.inspect('container', identifier) if identifier else None
-        if info is None or info['HostConfig']['NetworkMode'] == 'host':
-            raise RuntimeError(f'{service}未使用预期的Compose内部网络。')
-        networks.append(set(info['NetworkSettings']['Networks']))
-        if service == 'api':
-            bindings = info['NetworkSettings']['Ports'].get('8000/tcp') or []
-            if not any(item.get('HostIp') == '0.0.0.0' and item.get('HostPort') == port for item in bindings):
-                raise RuntimeError('API宿主机端口映射未生效。')
-    if not set.intersection(*networks):
-        raise RuntimeError('应用与PostgreSQL没有共同的Compose网络。')
-    print(f'四个服务已使用共同的Compose内部网络，API映射为0.0.0.0:{port}→8000。')
-
-
 def local_base(image: str, record: dict[str, str]) -> str:
     """只检查本机镜像，并离线验证 Ubuntu、运行架构及复制的 uv/Python。"""
     explicit = '@' in image or ':' in image.rsplit('/', 1)[-1]
@@ -184,42 +139,35 @@ def local_base(image: str, record: dict[str, str]) -> str:
     raise RuntimeError('没有通过 Ubuntu、linux/amd64 和运行材料兼容性检查的本机镜像。')
 
 
+def prepare_env() -> dict[str, str]:
+    """首次生成私有配置；之后完整保留已有账号、历史窗口及渠道设置。"""
+    target = ROOT / '.env'
+    if not target.exists():
+        content = (ROOT / '.env.example').read_text().replace('STOCKSIEVE_POSTGRES_PASSWORD=\n',
+            'STOCKSIEVE_POSTGRES_PASSWORD=' + secrets.token_hex(32) + '\n')
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(content)
+    values = {}
+    for line in target.read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            values[key.strip()] = value.strip().strip('"\'')
+    target.chmod(0o600)
+    return {**values, **os.environ}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base-image', default=os.environ.get('STOCKSIEVE_BASE_IMAGE', DEFAULT_BASE))
+    parser.add_argument('--base-image', default=DEFAULT_BASE)
     parser.add_argument('--image', default='stocksieve-backend:local')
-    parser.add_argument('--reuse-price-cache-from', type=Path, help='从项目私有备份复用成功的公开行情响应，避免重复取数')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare-only', action='store_true')
     modes.add_argument('--build-only', action='store_true')
-    modes.add_argument('--database-only', action='store_true', help='首次仅准备统一配置、数据库及结构')
-    modes.add_argument('--validate-stack', action='store_true', help='准备统一配置并检查资源接续计划，不停止服务')
-    modes.add_argument('--reset-data', action='store_true', help='明确清空重建：备份后删除本项目容器、数据库和状态卷，再部署空库')
     args = parser.parse_args()
-    stack = None
-    credentials = None
     try:
-        if args.validate_stack:
-            env = prepare_env()
-            command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
-            planned = Stack(command, env)
-            migrate = planned.prepare()
-            print(json.dumps({'compose': str(COMPOSE), 'postgresMigrationRequired': migrate,
-                              'persistentVolumes': ['stocksieve-postgres-data', 'stocksieve-backend-state']}, ensure_ascii=False))
-            return 0
-        if args.database_only:
-            env = prepare_env()
-            command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
-            stack = Stack(command, env)
-            migrate = stack.prepare()
-            stack.start_database(migrate, database_only=True)
-            command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
-            stack.finish()
-            print('数据库已在backend/compose.yaml下就绪，私有配置位于backend/.env。')
-            return 0
+        # 1. 使用本机 Ubuntu、uv 管理的 Python 和前端构建产物生成镜像。
         record = prepare()
-        if args.reuse_price_cache_from:
-            reuse_price_cache(args.reuse_price_cache_from)
         if args.prepare_only:
             return 0
         base_image = local_base(args.base_image, record)
@@ -228,55 +176,27 @@ def main() -> int:
                  '--build-arg', f'STOCKSIEVE_BASE_IMAGE={base_image}', '--tag', args.image, str(ROOT)])
         if args.build_only:
             return 0
+        # 2. 接续固定的持久卷；初始化 SQL 仅由 PostgreSQL 在空卷首次启动时执行。
         env = {**prepare_env(), 'STOCKSIEVE_BACKEND_IMAGE': args.image}
-        command([sys.executable, str(ROOT / 'run.py'), 'check-config'], env=env)
-        stack = Stack(command, env)
-        if args.reset_data:
-            credentials = json.loads((ROOT / '.state/initial-admin.json').read_text())
-            if not isinstance(credentials.get('username'), str) or not isinstance(credentials.get('password'), str) or not credentials['password']:
-                raise RuntimeError('重建所需的管理员私有凭据不完整，未清理。')
-            stack.reset()
-        migrate = stack.prepare()
-        stack.start_database(migrate)
-        # PG健康后直接对齐项目SQL约束；既有数据只审计、校验，不重新初始化。
-        command([sys.executable, str(ROOT / 'run.py'), 'sync-schema', '--apply'])
-        if credentials:
-            command([sys.executable, str(ROOT / 'run.py'), 'create-admin', '--username', credentials['username'],
-                     '--password-env', 'STOCKSIEVE_RESET_ADMIN_PASSWORD'],
-                    env={**env, 'STOCKSIEVE_RESET_ADMIN_PASSWORD': credentials['password']})
-        compose = stack.compose
+        compose = ['docker', 'compose', '--project-directory', str(ROOT), '--env-file', str(ROOT / '.env'), '-f', str(COMPOSE)]
+        command([*compose, 'config', '--quiet'], env=env)
+        for name in ('stocksieve-postgres-data', 'stocksieve-backend-state'):
+            command(['docker', 'volume', 'create', name], capture=True)
+        command([*compose, 'up', '-d', '--pull', 'never', '--wait', 'postgres'], env=env)
         command([*compose, 'run', '--rm', '--no-deps', 'api', 'check-db'], env=env)
+        # 3. 启动三个应用进程，检查容器内和映射端口上的 HTTP 服务。
         command([*compose, 'up', '-d', '--no-build', '--pull', 'never', 'api', 'worker', 'scheduler'], env=env)
-        # Compose旧版本对没有healthcheck的后台进程无法使用--wait，只等待API的真实健康检查。
         command([*compose, 'up', '-d', '--no-build', '--pull', 'never', '--wait', 'api'], env=env)
         running = set(command([*compose, 'ps', '--status', 'running', '--services'], capture=True, env=env).stdout.splitlines())
         if not {'postgres', 'api', 'worker', 'scheduler'} <= running:
-            raise RuntimeError('后端进程未全部处于运行状态。')
+            raise RuntimeError('四个服务未全部处于运行状态。')
+        command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', 'http_check.py',
+                 '--base-url', 'http://127.0.0.1:8000'], env=env)
         port = env.get('STOCKSIEVE_API_PORT', '24048')
-        check_service_networks(stack, port)
-        identity = command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', '-c',
-            "import os,pwd,grp; assert os.getuid() == os.getgid() == 10001; assert pwd.getpwuid(os.getuid()).pw_name == 'stocksieve'; assert grp.getgrgid(os.getgid()).gr_name == 'stocksieve'; print('系统运行账户已确认：stocksieve，UID/GID 10001。')"], capture=True, env=env)
-        print(identity.stdout.strip())
-        # 容器内固定使用8000，宿主机通过映射端口验证同一服务。
-        command([*compose, 'exec', '-T', 'api', '/usr/local/bin/uv', 'run', '--frozen', '--no-dev', '--no-sync',
-                 'python', 'http_check.py', '--base-url', 'http://127.0.0.1:8000'], env=env)
         command([sys.executable, str(ROOT / 'deploy/docker/http_check.py'), '--base-url', f'http://127.0.0.1:{port}'], env=env)
-        command([*compose, 'exec', '-T', 'api', '/app/.venv/bin/python', 'run.py', 'check-config'], env=env)
-        overridden = command([*compose, 'run', '--rm', '--no-deps', '--env', 'STOCKSIEVE_HISTORY_TRADING_DAYS=250',
-            '--env', 'STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=500', 'api', 'check-config'], capture=True, env=env)
-        active = json.loads(overridden.stdout)
-        if active['historyTradingDays'] != 250 or active['historyMaxTradingDays'] != 500:
-            raise RuntimeError('历史配置的容器环境覆盖校验失败。')
-        print('历史配置容器覆盖校验通过：250/500个交易日，仅检查配置，未执行行情同步。')
-        stack.finish()
-        print('容器已通过基础HTTP检查；账号与真实数据验收仍需提供登录配置并运行完整检查。')
+        print(f'部署完成：四个服务运行，前端和 API 共用宿主机端口 {port}。')
         return 0
     except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
-        if stack:
-            try:
-                stack.rollback()
-            except Exception:
-                print('自动恢复未完成；原数据卷与数据库备份保留，请核对容器状态。')
         print(f'部署未完成：{error}')
         return 2
 

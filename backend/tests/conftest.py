@@ -1,4 +1,4 @@
-"""本文件提供隔离测试数据，默认 SQLite，也可显式选择真实 PostgreSQL 与 HTTP 传输。"""
+"""本文件在真实 PostgreSQL 隔离 schema 中准备数据，通过 TCP/HTTP 验证接口。"""
 
 import asyncio
 import json
@@ -15,7 +15,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 import pytest
-from aiohttp.test_utils import TestServer, make_mocked_request
+from aiohttp.test_utils import TestServer
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from stocksieve.infrastructure.persistence.database import Database
@@ -29,6 +30,7 @@ from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
 from stocksieve.modules.market.domain.models import BOARDS, Bar, Stock, StockState
+from stocksieve.shared.paths import BACKEND_ROOT
 from stocksieve.shared.settings import Settings
 
 
@@ -45,7 +47,7 @@ class Clock:
 
 class FixtureSource:
     id = 'fixture'
-    name = '离线测试渠道'
+    name = '接口测试渠道'
     supported_kinds = frozenset({'initialize', 'catalog', 'daily'})
     boards = frozenset(BOARDS)
 
@@ -157,21 +159,16 @@ class Context:
             if encoded is not None:
                 supplied.setdefault('Content-Type', 'application/json')
                 supplied['Content-Length'] = str(len(encoded))
-            if self.server is not None:
-                # HTTP模式走真实 TCP/HTTP，不调用应用内部处理函数。
-                url = self.server.base_url + quote(path, safe='/:?&=%+@,')
-                http_request = Request(url, data=encoded, headers=supplied, method=method)
-                try:
-                    response = build_opener(ProxyHandler({})).open(http_request, timeout=15)
-                except HTTPError as error:
-                    response = error
-                with response:
-                    value = response.read()
-                    return response.status, json.loads(value) if value else None, response.headers
-            request = make_mocked_request(method, path, headers=supplied, app=self.api.app)
-            request._read_bytes = encoded or b''
-            response = await self.api.app._handle(request)
-            return response.status, json.loads(response.text) if response.text else None, response.headers
+            assert self.server is not None
+            url = self.server.base_url + quote(path, safe='/:?&=%+@,')
+            http_request = Request(url, data=encoded, headers=supplied, method=method)
+            try:
+                response = build_opener(ProxyHandler({})).open(http_request, timeout=15)
+            except HTTPError as error:
+                response = error
+            with response:
+                value = response.read()
+                return response.status, json.loads(value) if value else None, response.headers
         return asyncio.run(run())
 
     def submit(self, kind: str, *, day: str | None = None, force: bool = True) -> str:
@@ -199,10 +196,8 @@ class Context:
 
 
 def pytest_addoption(parser: Any) -> None:
-    parser.addoption('--postgres', action='store_true', help='在真实PostgreSQL数据库的临时隔离schema中测试')
     parser.addoption('--postgres-url-env', default=None, help='数据库URL环境变量名；省略则读取项目数据库配置')
-    parser.addoption('--http', action='store_true', help='通过真实本机HTTP请求执行接口用例')
-    parser.addoption('--browser', action='store_true', help='使用本机浏览器验证隔离数据的前后端完整流程，需--http及已构建前端')
+    parser.addoption('--browser', action='store_true', help='使用本机浏览器验证隔离数据的前后端完整流程，需已构建前端')
     parser.addoption('--deployed-base', default=None, help='正式部署的只读浏览器验收地址')
     parser.addoption('--deployed-credentials', default=None, help='正式管理员私有凭据JSON文件路径，不在终端显示内容')
     parser.addoption('--deployed-data', action='store_true', help='正式部署已发布真实行情时验收图表及后端模拟筹码报告')
@@ -214,28 +209,38 @@ def pytest_addoption(parser: Any) -> None:
 
 
 def pytest_report_header(config: Any) -> str:
-    database = '真实PostgreSQL（自动清理的隔离schema）' if config.getoption('--postgres') else '独立SQLite'
-    transport = '真实TCP/HTTP' if config.getoption('--http') else '应用路由直接调用'
-    return f'StockSieve测试模式：{database} / {transport}；供应商和模型使用测试输入。'
+    return 'StockSieve：真实 PostgreSQL 隔离 schema / TCP HTTP；供应商使用受控输入，不访问外网。'
 
 
 @pytest.fixture
 def context(tmp_path: Any, request: Any) -> Any:
     __tracebackhide__ = True
-    url = 'sqlite+pysqlite:///:memory:'
-    schema = None
-    if request.config.getoption('--postgres'):
-        variable = request.config.getoption('--postgres-url-env')
-        url = os.environ.get(variable) if variable else Settings.from_env().database_url
-        if not url or make_url(url).get_backend_name() != 'postgresql':
-            pytest.fail('PostgreSQL模式需要有效的项目数据库配置。', pytrace=False)
-        schema = 'stocksieve_test_' + uuid4().hex[:16]
+    variable = request.config.getoption('--postgres-url-env')
+    url = os.environ.get(variable) if variable else Settings.from_env().database_url
+    if not url or make_url(url).get_backend_name() != 'postgresql':
+        pytest.fail('接口测试需要有效的 PostgreSQL 配置。', pytrace=False)
+    schema = 'stocksieve_test_' + uuid4().hex[:16]
+    schema_created = False
     database = None
     server = None
     try:
         try:
-            database = Database(make_url(url), testing=True, schema=schema)
-            database.create_test_schema()
+            database = Database(make_url(url))
+            # schema 名只来自 UUID，数据库连接始终绑定该 schema，禁止写入 public。
+            @event.listens_for(database.engine, 'connect')
+            def select_schema(connection: Any, record: Any) -> None:
+                with connection.cursor() as cursor:
+                    cursor.execute(f'SET search_path TO "{schema}"')
+                    cursor.execute('SET statement_timeout = 10000')
+                    cursor.execute('SET lock_timeout = 5000')
+                connection.commit()
+            script = (BACKEND_ROOT / 'sql/init.sql').read_text().replace('public.', f'"{schema}".').replace("namespace.nspname = 'public'", f"namespace.nspname = '{schema}'")
+            with database.engine.connect().execution_options(isolation_level='AUTOCOMMIT') as connection:
+                connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+                schema_created = True
+                assert connection.exec_driver_sql('SELECT current_schema()').scalar() == schema
+                with connection.connection.driver_connection.cursor() as cursor:
+                    cursor.execute(script, prepare=False)
         except ModuleNotFoundError as error:
             pytest.fail(f'数据库自测未执行：缺少运行依赖 {error.name}。', pytrace=False)
         except SQLAlchemyError:
@@ -243,13 +248,12 @@ def context(tmp_path: Any, request: Any) -> Any:
         clock = Clock()
         source = FixtureSource()
         registry = Registry(); registry.register(source)
-        settings = Settings(database_url=url, state_dir=tmp_path, testing=True, default_source='fixture')
+        settings = Settings(database_url=url, state_dir=tmp_path, default_source='fixture')
         api = API(database, settings, registry, FixtureRuntime(), clock.now)
         api.auth.create_user('admin', '测试管理员', 'testpass123', admin=True)
         token = api.auth.login('admin', 'testpass123')['accessToken']
         api.app.freeze()
-        if request.config.getoption('--http'):
-            server = HTTPServer(api.app)
+        server = HTTPServer(api.app)
         yield Context(api, source, clock, Worker(api.tasks, Sync(api.tasks, registry)), token, server)
     finally:
         try:
@@ -258,6 +262,8 @@ def context(tmp_path: Any, request: Any) -> Any:
         finally:
             if database:
                 try:
-                    database.drop_test_schema()
+                    if schema_created:
+                        with database.engine.connect().execution_options(isolation_level='AUTOCOMMIT') as connection:
+                            connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
                 finally:
                     database.close()

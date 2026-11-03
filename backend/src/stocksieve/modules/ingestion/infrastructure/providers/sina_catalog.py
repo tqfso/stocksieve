@@ -1,4 +1,4 @@
-"""本文件读取新浪明确的板块、上市日期及申万一级行业，按任务保存分页断点。"""
+"""本文件读取新浪明确的板块、上市日期，按任务保存分页断点。"""
 
 import json
 import re
@@ -13,8 +13,9 @@ from uuid import uuid4
 from stocksieve.modules.ingestion.application.progress import report_progress
 from stocksieve.modules.ingestion.infrastructure.checkpoint import SourceCheckpoint
 from stocksieve.modules.ingestion.infrastructure.providers.sina_codec import assignment
-from stocksieve.modules.ingestion.infrastructure.providers.sina_metadata import BASE
 from stocksieve.shared.errors import DomainError
+
+BASE = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
 
 Document = Callable[[str, int], Awaitable[tuple[bytes, datetime]]]
 PREFIXES = {'600': 'SSE_MAIN', '601': 'SSE_MAIN', '603': 'SSE_MAIN', '605': 'SSE_MAIN', '688': 'STAR',
@@ -60,7 +61,7 @@ def listing_date(raw: bytes) -> date:
 
 
 class SinaCatalog:
-    """目录和行业复用同一受控HTTP会话，成功的分页和单股基础资料均可跨重启恢复。"""
+    """目录和基础资料复用同一受控HTTP会话，成功的分页和单股基础资料均可跨重启恢复。"""
 
     def __init__(self, cache: Path, document: Document) -> None:
         self.cache, self.document = cache, document

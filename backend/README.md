@@ -1,47 +1,43 @@
 # StockSieve 后端
 
-Python3.12、aiohttp、SQLAlchemy、PostgreSQL，Python依赖和锁文件统一由uv管理。当前先上线沪深四板块，北交所后续补齐；AI采用后端模拟模式。
+Python 3.12、aiohttp、SQLAlchemy、PostgreSQL；依赖和虚拟环境统一由 uv 管理。采用模块化单体与分层架构，数据源通过能力接口扩展，见[后端概要设计](../docs/design/backend.md)。
 
-源码按`identity`、`market`、`ingestion`、`jobs`、`analysis`业务模块分包，核心模型/规则在`domain`，用例在`application`，供应商和智能体实现在模块内`infrastructure`；HTTP入口、共享持久化及启动组装独立。结构与依赖约束见[后端概要](../docs/design/backend.md#2-模块职责)，CLI命令保持兼容。
+## 运行
 
-## 当前状态
+前端、PostgreSQL、API、worker、scheduler 的统一部署与配置见[线上部署](../docs/deployment/production.md)。当前访问地址为 `http://172.21.21.98:24048`。
 
-- PostgreSQL、API、worker、scheduler统一由backend/compose.yaml管理，使用bridge网络；应用通过postgres服务名访问数据库，API内部8000映射到服务器24048，对外访问http://172.21.21.98:24048。后端基础镜像为本机ubuntu:24.04，API同源提供前端。
-- 登录、会话撤销、用户管理、持久化任务、策略与快照、查询、图表、报告和权限已实现。页面不再使用浏览器模拟业务层。
-- 独立个股分析已支持完整目录按名称/代码搜索；未入选策略也可生成基本面、筹码与通用买卖建议模拟报告。通用与策略模式分别保存任务和历史；缺核心数据时保留等待或明确拒绝，不补造财报、筹码图或参考价。
-- 2026-11-01按用户要求清理了旧容器、数据库和状态卷，并从空库重新部署；旧库与缓存已归档到私有备份目录，仅恢复原管理员账号，源频控账本完整保留。
-- 已发布2026-11-02新浪快照：5222只股票，2500交易日历史回补已完成；2026-11-03已验证基础、分类和收盘完整HTTP流程。策略数量与字段覆盖以当前快照为准，旧快照和报告保持不变。
-- 百度股市通更新行业和题材，每批20只，按真实来源区分申万与国标；分类缺失保持未知，成功后通过新行情快照生效。
-- 新浪独立提供证券基础、日历、价格、复权及新收盘市值；日常批量报价更新，只在必要时回查历史。Baostock不再注册或安装到生产镜像；旧字段、快照与来源证据保留。
-- 2026-11-02新浪四板块真实样本及5222只沪深完整目录已核对，正式浏览器验证默认新浪、旧快照和K线通过；当日全量与2500交易日历史回补均已成功。当前同日同渠道已成功的普通更新直接复用结果，失败重试从原检查点继续。
-- 日常更新与历史回补可同时排队，日常优先；运行中的回补在保存批次后主动让位。初始化SQL与现有PG的同步去重索引已直接对齐，保留已有快照和任务。
+- 新浪提供沪深四板块的证券基础、日历、行情、复权和市值；百度提供行业与题材。
+- 默认先发布150个交易日策略，再回补至2500个交易日，约十年；历史范围由 env 控制。
+- 相同日期、渠道、配置和分类的成功结果直接复用；失败同步从原任务检查点继续。
+- 任意已覆盖股票均可分析。AI 保持后端模拟，不需要模型凭据，不调用真实模型或联网研究；任务、报告和权限走真实服务。
 
-最新数据源证据见[验证记录](../docs/research/data-sources.md)，模块设计见[后端概要](../docs/design/backend.md)。报告文档导出和真实AI服务属于后续扩展。
+`backend/.env` 是唯一配置文件，环境变量优先。参考[配置示例](.env.example)，不要提交真实凭据。
 
-## 运行与配置
+## 命令入口
 
-正式启动及维护见[线上环境部署](../docs/deployment/production.md)。服务器与数据库配置统一放在`backend/.env`，环境变量优先。[示例](.env.example)不包含真实凭据。
+在仓库根目录运行 `uv run --frozen --project backend python backend/run.py <命令>`：
 
-当前`STOCKSIEVE_AI_MODE=mock`，无需模型配置，不调用真实模型或联网检索。任务和报告均返回`simulated=true`，标题与摘要明确标记；图表与参考价仍用实际输入计算。缺财报可生成说明缺失的模拟报告，缺少核心行情仍拒绝受理。未来改为`live`并填写模型参数；真实模式不可用时不自动回退模拟。
+| 命令 | 用途 |
+| --- | --- |
+| `api --host 127.0.0.1 --port 8000` | HTTP接口与前端静态文件 |
+| `worker` | 执行同步和分析任务 |
+| `scheduler` | 登记到期的定时任务 |
+| `create-admin` | 创建管理员，支持私有口令文件 |
+| `check-config` | 查看非敏感运行配置 |
+| `check-db [--counts]` | 检查连接、表字段及可选业务行数 |
 
-历史统一使用`STOCKSIEVE_HISTORY_TRADING_DAYS=150`与`STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=2500`，分别控制首次策略窗口和后台回补/保留上限；0上限表示不限。上市较晚的股票从实际可得行情开始，旧快照和报告数据保留。配置示例与生效方式见部署说明。
-
-正式源默认共享0.2秒请求间隔、项目预算20000次/日，其中80%为日常更新预留；这些是项目配置，不是数据源公布的硬限制。日常任务优先于历史回补，回补不禁用管理页的日常更新入口。共用原访问账本、次数与冷却，缓存命中不重复请求，明确拒绝访问时暂停；正常成功流中断最多短退避3次。
+探测、数据修复和历史部署兼容入口已移除；日常数据操作从管理页面进行。
 
 ## 测试
 
-在仓库根目录执行：
-
 ```bash
 uv sync --project backend --frozen
-uv run --project backend --frozen pytest backend/tests backend/tools/tests -q
-uv run --project backend --frozen pytest backend/tests backend/tools/tests --postgres --http --browser -q
+uv run --project backend --frozen pytest backend/tests -q
+uv run --project backend --frozen pytest backend/tests --browser -q
 ```
 
-默认模式使用独立SQLite；`--postgres`使用现有连接，在随机`stocksieve_test_`schema中执行完整SQL约束并自动清理，不向public写模拟行情。`--http`通过本机随机端口发送真实请求；`--browser`使用隔离浏览器上下文验证真实前端，需先构建前端。供应商与模型夹具仍是测试输入，与正式数据源验收分开记录。
+接口测试始终使用真实 PostgreSQL 和随机端口 HTTP 服务，在随机 `stocksieve_test_` schema 中执行完整初始化 SQL，结束自动清理，不向 public 写测试数据。供应商返回值使用受控输入，测试不会消耗真实渠道预算。
 
-近期发布、历史回补、日常任务优先与主动让位、预算预留、定时任务、旧快照保持和旧链接恢复均已通过相关PostgreSQL/HTTP/浏览器验收。正式HTTP已实测回补期间提交并完成日常更新，回补随后续跑；完整历史进度以数据管理为准。
+保留的少量单元测试用于策略、复权、筹码等核心计算及限频保护。浏览器测试需先构建前端，复用同一隔离数据库；`tests/e2e/browser_check.py` 是浏览器辅助代码。
 
-个股分析另已通过搜索、普通用户权限、通用/策略历史隔离和资料不足的接口测试，以及真实PG/HTTP浏览器验收。正式部署实测未入选的万科A生成通用与基本面模拟报告，模式切换、刷新和手机视口均通过；前端6组测试及构建通过，真实模型和联网研究未调用。
-
-VS Code从仓库根打开时，[工作区配置](../.vscode/settings.json)指定`backend/src`和uv解释器；旧诊断可重新选择`backend/.venv/bin/python`并执行`Developer: Reload Window`。
+VS Code 使用[工作区配置](../.vscode/settings.json)中的 uv 解释器和 `backend/src` 导入路径。

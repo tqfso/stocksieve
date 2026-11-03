@@ -35,6 +35,6 @@ npm test
 npm run build
 ```
 
-测试覆盖HTTP客户端的会话、权限错误、单位、空值、固定快照和幂等重发。`src/mock`仅保留为旧评审数据与回归夹具，正式页面不导入。浏览器与真实PostgreSQL/HTTP验收命令见[后端说明](../backend/README.md)。
+测试覆盖HTTP客户端的会话、权限错误、单位、空值、固定快照和幂等重发。前端不保留模拟业务层，AI模拟由后端负责。浏览器与真实PostgreSQL/HTTP验收命令见[后端说明](../backend/README.md)。
 
 主题样式集中在[theme.css](src/theme.css)，布局在[style.css](src/style.css)。VS Code推荐Vue - Official扩展；远程开发时安装在远程环境，旧诊断可通过`Developer: Reload Window`刷新。

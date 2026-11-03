@@ -449,7 +449,6 @@ def run_sync_dedup_check(base: str, username: str, password: str) -> dict[str, A
         }"""
         before = page.evaluate(query)
         assert before['state']['publishedSnapshot']
-        assert all(source['id'] != 'baostock' for source in before['state']['sources'])
         day = before['state']['publishedSnapshot']['dataDate']
         panel = page.locator('.summary-card').filter(has=page.get_by_role('heading', name='收盘行情与策略', exact=True))
         entry = panel.get_by_placeholder('目标收盘日期', exact=True)
@@ -465,7 +464,7 @@ def run_sync_dedup_check(base: str, username: str, password: str) -> dict[str, A
         assert {item['id'] for item in after['jobs']} == {item['id'] for item in before['jobs']}
         assert after['state']['publishedSnapshot']['id'] == before['state']['publishedSnapshot']['id']
         page.locator('.sidebar-user').click(); page.wait_for_url('**/#/login*')
-        return {'date': day, 'reusedJobId': job['id'], 'noNewTask': True, 'completedMessageChecked': True, 'baostockRemoved': True}
+        return {'date': day, 'reusedJobId': job['id'], 'noNewTask': True, 'completedMessageChecked': True}
 
 
 def run_sync_retry_check(base: str, username: str, password: str, job_id: str) -> dict[str, Any]:

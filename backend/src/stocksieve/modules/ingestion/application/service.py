@@ -9,7 +9,6 @@ from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection
 
 import stocksieve.infrastructure.persistence.schema as t
@@ -21,9 +20,9 @@ from stocksieve.modules.ingestion.application.ports import (
     IncrementalSource,
     SecuritiesAwareSource,
     SharedCalendarSource,
+    SnapshotScopedSource,
     Source,
     SourceSession,
-    SnapshotScopedSource,
 )
 from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.application.registry import Registry
@@ -31,7 +30,12 @@ from stocksieve.modules.jobs.application.service import Tasks
 from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.application.queries import strategy_catalog
 from stocksieve.modules.market.domain.history import HistoryPolicy
-from stocksieve.modules.market.domain.models import BOARDS, Stock, StockState, adjusted_history
+from stocksieve.modules.market.domain.models import (
+    BOARDS,
+    Stock,
+    StockState,
+    adjusted_history,
+)
 from stocksieve.modules.market.domain.strategies import SORTS, Context, evaluate
 from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.time import SHANGHAI
@@ -369,8 +373,8 @@ class Sync:
                 packet = replace(packet, state=StockState(packet.state.trade_status or seed_quote['trade_status'],
                     packet.state.is_st if packet.state.is_st is not None else seed_quote['is_st'],
                     packet.state.is_delisting if packet.state.is_delisting is not None else seed_quote['is_delisting']),
-                    bars=tuple(replace(bar, total_market_cap=seed_quote['total_market_cap'])
-                    if bar.day == task['target_date'] and bar.total_market_cap is None and bar.close == seed_quote['quote_price'] else bar for bar in packet.bars))
+                    bars=tuple(replace(bar, total_market_cap=seed_quote['total_market_cap'] if bar.close == seed_quote['quote_price'] else None)
+                    if bar.day == task['target_date'] else bar for bar in packet.bars))
             if packet.stock.stock_id != stock_id or any(bar.day > task['target_date'] for bar in packet.bars) or len({bar.day for bar in packet.bars}) != len(packet.bars):
                 raise DomainError('DATA_INCOMPLETE', '行情身份、日期或唯一性校验失败。', 503)
             if floor:
@@ -403,7 +407,7 @@ class Sync:
                 latest = self.tasks.assert_lease(connection, lease)
                 if packet.bars:
                     # 每只股票一批写入，避免首次全市场历史产生数百万次逐行往返。
-                    statement = (postgres_insert if self.db.engine.dialect.name == 'postgresql' else sqlite_insert)(t.bars)
+                    statement = postgres_insert(t.bars)
                     fields = ('open', 'high', 'low', 'close', 'amount', 'volume', 'turnover', 'total_market_cap', 'adj_factor', 'source', 'fetched_at')
                     statement = statement.on_conflict_do_update(index_elements=['snapshot_id', 'stock_id', 'trade_date'], set_={field: getattr(statement.excluded, field) for field in fields})
                     connection.execute(statement, [{'snapshot_id': snapshot['id'], 'stock_id': stock_id, 'trade_date': bar.day,
@@ -507,7 +511,7 @@ class Sync:
                        'totalMarketCap': coverage(sum(row['total_market_cap'] is not None for row in rows))}
             if options.get('conceptCoverage') == 'partial' and filters['concepts'] == 'complete':
                 filters['concepts'] = 'partial'
-            version = connection.scalar(text('SELECT nextval(CAST(:sequence AS regclass))'), {'sequence': f'{self.db.schema or "public"}.snapshot_version_seq'}) if self.db.engine.dialect.name == 'postgresql' else (connection.scalar(select(func.max(t.snapshots.c.version))) or 0) + 1
+            version = connection.scalar(text("SELECT nextval('snapshot_version_seq')"))
             connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='published', version=version,
                 published_at=self.tasks.clock(), coverage_json={'totalStocks': len(rows), 'boards': list(self.tasks.boards(task)), 'filters': filters, 'catalogTaskId': options['catalogTaskId'], 'catalogAsOfAt': options.get('catalogAsOfAt'), 'dataProvenance': options.get('dataProvenance', {}),
                     'historyPolicy': {'initialDays': options.get('historyDays', 150), 'maxDays': options.get('historyMaxDays', 0)}}))

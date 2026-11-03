@@ -20,11 +20,8 @@ x-app: &app
   volumes:
     - backend_state:/var/lib/stocksieve
     - type: bind
-      source: ./.source-probe
+      source: ./.state/rate
       target: /var/lib/stocksieve-rate
-    - type: bind
-      source: ./.state/baostock-wire
-      target: /var/lib/stocksieve/baostock-wire
     - type: bind
       source: ./.state/source-cache
       target: /var/lib/stocksieve/source-cache
@@ -49,6 +46,7 @@ services:
       - "0.0.0.0:${STOCKSIEVE_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/00-stocksieve.sql:ro
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 3s

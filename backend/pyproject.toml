@@ -8,18 +8,14 @@ dependencies = [
   "deepagents>=0.7.32",
   "httpx==0.28.1",
   "langchain-openai>=1.7.3",
-  "openpyxl>=3.1,<4",
   "psycopg[binary]>=3.2,<4",
   "py-mini-racer>=0.6,<0.7",
   "pydantic==2.13.4",
-  "pytdx>=1.72,<2",
   "sqlalchemy==2.1.6",
 ]
 
 [dependency-groups]
 dev = [
-    # 仅保留历史SDK协议的对照回归，生产镜像不安装也不连接该渠道。
-    "baostock>=0.9.1,<0.10",
     "playwright>=1.55,<2",
     "pytest==9.1.1",
     "ruff>=0.14,<1",
@@ -30,5 +26,5 @@ package = false
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "tools/tests"]
+testpaths = ["tests"]
 pythonpath = ["src"]

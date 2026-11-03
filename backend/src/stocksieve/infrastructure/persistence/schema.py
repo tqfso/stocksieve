@@ -1,10 +1,9 @@
-"""本文件映射现有17张 PostgreSQL 业务表；SQLite 类型变体只供离线事务与接口测试。"""
+"""本文件映射现有17张 PostgreSQL 业务表。"""
 
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import (
-    JSON,
     BigInteger,
     Boolean,
     Date,
@@ -25,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 UUID = Uuid(as_uuid=False)
-J = JSON().with_variant(JSONB(), 'postgresql')
+J = JSONB()
 T = DateTime(timezone=True)
 P = Numeric(24, 12)
 
@@ -64,7 +63,7 @@ tasks = Table('tasks', metadata, C('id', UUID, primary_key=True, default=identif
               C('lease_owner', String(64)), C('lease_expires_at', T), C('result_json', J), C('result_snapshot_id', UUID),
               C('error_code', String(64)), C('error_message', Text), C('created_at', T, default=now), C('started_at', T), C('finished_at', T))
 active = tasks.c.status.in_(['queued', 'running'])
-Index('tasks_active_dedupe_uq', tasks.c.dedupe_key, unique=True, postgresql_where=active, sqlite_where=active)
+Index('tasks_active_dedupe_uq', tasks.c.dedupe_key, unique=True, postgresql_where=active)
 snapshots = Table('data_snapshots', metadata, C('id', UUID, primary_key=True, default=identifier),
                   C('sync_task_id', UUID, unique=True), C('base_snapshot_id', UUID), C('version', BigInteger, unique=True),
                   C('data_date', Date), C('source', String(32)), C('status', String(16)), C('adjustment', String(8)),
@@ -87,7 +86,7 @@ signals = Table('strategy_signals', metadata, C('id', UUID, primary_key=True, de
                 C('snapshot_id', UUID), C('stock_id', String(16)), C('strategy_code', String(16)), C('reason', Text),
                 C('metrics_json', J), C('condition_results_json', J), C('invalidation_json', J),
                 C('sort_value', P), C('created_at', T, default=now))
-logs = Table('task_logs', metadata, C('id', BigInteger().with_variant(Integer(), 'sqlite'), primary_key=True, autoincrement=True),
+logs = Table('task_logs', metadata, C('id', BigInteger(), primary_key=True, autoincrement=True),
              C('task_id', UUID), C('time', T, default=now), C('level', String(16)), C('message', Text), C('details_json', J))
 triggers = Table('sync_triggers', metadata, C('scheduled_date', Date, primary_key=True), C('scheduled_for', T),
                  C('task_id', UUID), C('created_at', T, default=now), C('linked_at', T), C('last_error', Text))

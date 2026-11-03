@@ -1,6 +1,6 @@
 # AI 分析接口
 
-[产品交互与复审范围](../../product/ai-analysis.md)
+[分析设计与交互流程](../../product/ai-analysis-design.md)
 
 | 方法 | 路径 | 文档 |
 | --- | --- | --- |

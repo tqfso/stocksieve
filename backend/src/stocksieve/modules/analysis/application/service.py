@@ -22,13 +22,13 @@ from stocksieve.modules.analysis.domain.calculations import (
     financial_metrics,
 )
 from stocksieve.modules.analysis.domain.trade import general_trade
-from stocksieve.modules.market.domain.models import StockState
 from stocksieve.modules.ingestion.application.ports import (
     PublicHTTPClient,
     SourceDeferred,
 )
 from stocksieve.modules.jobs.application.service import Tasks
 from stocksieve.modules.jobs.domain.models import Lease
+from stocksieve.modules.market.domain.models import StockState
 from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.serialization import encode
 

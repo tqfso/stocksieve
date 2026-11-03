@@ -13,16 +13,16 @@ from stocksieve.shared.errors import DomainError
 
 def test_formal_budget_preserves_used_counts_and_existing_cooldowns(tmp_path: Path) -> None:
     now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc).timestamp()
-    state = {'daily': {'2026-10-31': {'baostock': 8, 'sina': 9}}, 'next_at': now - 1, 'cooldown': {'sina': now + 86400}}
+    state = {'daily': {'2026-10-31': {'sina': 8, 'baidu': 9}}, 'next_at': now - 1, 'cooldown': {'baidu': now + 86400}}
     (tmp_path / 'state.json').write_text(json.dumps(state))
     policy = SourcePolicy(tmp_path, 10, 400)
-    policy.reserve('baostock', now)
+    policy.reserve('sina', now)
     with pytest.raises(SourceDeferred):
-        SourcePolicy(tmp_path, 10, 400).reserve('baostock', now + 1)
+        SourcePolicy(tmp_path, 10, 400).reserve('sina', now + 1)
     with pytest.raises(SourceDeferred):
-        policy.reserve('sina', now + 20)
+        policy.reserve('baidu', now + 20)
     saved = json.loads((tmp_path / 'state.json').read_text())
-    assert saved['daily']['2026-10-31'] == {'baostock': 9, 'sina': 9}
+    assert saved['daily']['2026-10-31'] == {'sina': 9, 'baidu': 9}
     assert saved['cooldown'] == state['cooldown']
 
 
@@ -37,34 +37,20 @@ def test_global_budget_and_corruption_never_silently_reset(tmp_path: Path) -> No
         policy.reserve('a', now + 86400)
 
 
-def test_partial_stream_retries_are_persistent_bounded_and_keep_peer_wait(tmp_path: Path) -> None:
-    policy = SourcePolicy(tmp_path)
-    policy.block('baostock', 10000)
-    before = json.loads((tmp_path / 'state.json').read_text())['cooldown']['baostock']
-    for _ in range(3):
-        until = SourcePolicy(tmp_path).retry_partial_stream('baostock', 'daily:2026-10-30')
-        # datetime精度为微秒；持久账本的原始秒数仍在下方单独校验，不能因转换舍入误报。
-        assert until is not None and until >= datetime.fromtimestamp(before, timezone.utc)
-    assert SourcePolicy(tmp_path).retry_partial_stream('baostock', 'daily:2026-10-30') is None
-    policy.complete_stream('daily:2026-10-30')
-    assert SourcePolicy(tmp_path).retry_partial_stream('baostock', 'daily:2026-10-30') is not None
-    assert json.loads((tmp_path / 'state.json').read_text())['cooldown']['baostock'] >= before
-
-
 def test_one_second_shared_interval_and_daily_budget_reserved_for_regular_updates(tmp_path: Path) -> None:
     now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc).timestamp()
     policy = SourcePolicy(tmp_path, 1, 8)
     with progress_sink(lambda *args: None, background=True):
         for offset in range(2):
-            policy.reserve('baostock', now + offset)
+            policy.reserve('sina', now + offset)
         with pytest.raises(SourceDeferred):
-            policy.reserve('baostock', now + 2)
+            policy.reserve('sina', now + 2)
     for offset in range(2, 7):
-        policy.reserve('tencent', now + offset)
+        policy.reserve('sina', now + offset)
     with pytest.raises(SourceDeferred):
         policy.reserve('baidu', now + 6.5)
     policy.reserve('baidu', now + 7)
     with pytest.raises(SourceDeferred):
-        policy.reserve('baostock', now + 8)
+        policy.reserve('sina', now + 8)
     saved = json.loads((tmp_path / 'state.json').read_text())
     assert sum(saved['daily']['2026-10-31'].values()) == 8

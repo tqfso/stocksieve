@@ -1,8 +1,8 @@
 // 本文件统一上市板块的展示名称和所属交易所，供筛选与详情页面共用。
-import type { Board, Stock } from './types.ts';
+import type { Board } from './types.ts';
 
 /** 板块标识与正式 API 使用相同枚举，主板按所属交易所区分。 */
-export const BOARDS: Record<Board, { name: string; exchange: Stock['exchange'] }> = {
+export const BOARDS: Record<Board, { name: string; exchange: '上海' | '深圳' | '北京' }> = {
     SSE_MAIN: { name: '沪市主板', exchange: '上海' },
     SZSE_MAIN: { name: '深市主板', exchange: '深圳' },
     CHINEXT: { name: '创业板', exchange: '深圳' },

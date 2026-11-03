@@ -9,23 +9,33 @@ from typing import Any
 
 import pytest
 from conftest import HTTPServer
+from sqlalchemy import delete
+from stocksieve.infrastructure.persistence import schema as t
 from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.infrastructure.agent import create_runtime
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
-from sqlalchemy import delete
-from stocksieve.infrastructure.persistence import schema as t
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check, run_research_check, run_readiness_check, run_sync_progress_check, run_sync_retry_check, run_sync_dedup_check
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'e2e'))
+from browser_check import (
+    run_access_check,
+    run_check,
+    run_concept_check,
+    run_readiness_check,
+    run_research_check,
+    run_strategy_check,
+    run_sync_dedup_check,
+    run_sync_progress_check,
+    run_sync_retry_check,
+)
 
 
 def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
     if not request.config.getoption('--browser'):
         pytest.skip('浏览器验收需显式--browser。')
     if context.server is None:
-        pytest.fail('--browser需配合--http。')
+        pytest.fail('隔离HTTP服务尚未启动。')
     context.published()
     context.source.pending = True
     waiting = context.submit('daily')

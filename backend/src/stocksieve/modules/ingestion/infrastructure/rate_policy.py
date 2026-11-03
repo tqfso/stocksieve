@@ -1,4 +1,4 @@
-"""本文件让正式同步与早期探测共用请求账本、间隔和冷却，不清空已有访问记录。"""
+"""本文件通过共享账本协调所有进程的请求预算、间隔和冷却。"""
 
 import fcntl
 import json
@@ -17,7 +17,7 @@ from stocksieve.shared.time import SHANGHAI
 
 
 class SourcePolicy:
-    """正式阶段使用配置的每日预算；探测工具仍使用更小预算，共用同一账本与锁。"""
+    """日常更新和历史回补共用预算、锁和真实冷却。"""
 
     def __init__(self, directory: Path, interval: float = 0.2, daily_limit: int = 20000) -> None:
         if not math.isfinite(interval) or interval < 0.2 or daily_limit < 1:
@@ -80,20 +80,3 @@ class SourcePolicy:
         with self.transaction(blocking=True) as state:
             values = state.setdefault('cooldown', {})
             values[vendor] = max(values.get(vendor, 0), instant + seconds)
-
-    def retry_partial_stream(self, vendor: str, key: str) -> datetime | None:
-        """正常成功流中断最多短重试3次；计数持久化，不能通过重启或新建任务清零。"""
-        instant = time.time()
-        with self.transaction(blocking=True) as state:
-            retries = state.setdefault('partialStreamRetries', {})
-            count = retries.get(key, 0)
-            if count >= 3:
-                return None
-            retries[key] = count + 1
-            until = max(state.setdefault('cooldown', {}).get(vendor, 0), instant + min(120, 30 * 2 ** count))
-            state['cooldown'][vendor] = until
-        return datetime.fromtimestamp(until, timezone.utc)
-
-    def complete_stream(self, key: str) -> None:
-        with self.transaction(blocking=True) as state:
-            state.setdefault('partialStreamRetries', {}).pop(key, None)

@@ -1,14 +1,10 @@
-# 线上环境部署（前端、后端与数据库）
+# 线上部署：前端、后端与数据库
 
-使用本机ubuntu:24.04构建应用镜像、PostgreSQL15保存数据，Python依赖由uv锁定。PostgreSQL、API、worker、scheduler统一在`backend/compose.yaml`中，前端由API同源提供。当前覆盖沪深四板块，AI保持模拟。
-
-当前部署已完成空库重建、管理员登录和空库浏览器验收，正在重新补齐十年历史行情；同步与测试状态统一记录在[后端指南](../../backend/README.md)。
-
-PostgreSQL、API、worker和scheduler统一由Compose管理。历史统一按交易日配置；先发布近期策略，再补齐较早历史，遇到访问间隔、预算或冷却会保留进度后续跑。完整回补状态以数据管理中的任务结果为准。
+四个服务由 `backend/compose.yaml` 管理：PostgreSQL 保存数据；API 提供前端和接口；worker 执行任务；scheduler 登记定时任务。应用使用本机 `ubuntu:24.04` 构建，Python 依赖由 uv 锁定。
 
 ## 构建与启动
 
-在仓库根目录执行：
+在项目根目录执行：
 
 ```bash
 cd frontend
@@ -18,45 +14,64 @@ cd ..
 uv run --project backend --frozen python backend/deploy/docker/deploy.py
 ```
 
-部署脚本核实本机镜像、构建应用、校验统一配置，按依赖顺序等待PG和API健康。首次合并旧部署会先停止应用写入并保存权限600的数据库备份，再将旧PG容器停止、改名并用原卷启动统一服务；业务行数一致且全部检查通过后才移除旧容器。失败时可恢复原容器，数据卷不删除。已有数据库仅审计和直接对齐约束，完全空库才执行初始化SQL。
+脚本准备 uv 管理的 Python、前端构建、CA 和时区，核实本机基础镜像后构建，按顺序等待 PG 和 API 健康。支持 `--base-image`、`--image`、`--prepare-only` 和 `--build-only`；不包含清库、旧部署迁移或数据修复选项。
 
-明确需要清空项目数据并重建时使用：
+浏览器访问 **http://172.21.21.98:24048**。所有服务使用 Compose bridge 网络，应用通过 `postgres:5432` 连接数据库；API 内部8000映射到服务器 `STOCKSIEVE_API_PORT=24048`，同源提供页面与 `/api/v1`。
 
-```bash
-uv run --project backend --frozen python backend/deploy/docker/deploy.py --reset-data
-```
+## 配置与账号
 
-此入口先核对项目独占资源、保存并校验数据库备份，然后移除本项目容器及两只数据卷，归档旧缓存和任务状态，创建空库并复用`backend/.state/initial-admin.json`中的管理员账号。恢复资料在`backend/.state/backups/`；私有env与源频控账本保留。日常部署不加此参数。
+配置统一放在 `backend/.env`，环境变量优先。首次部署按[示例](../../backend/.env.example)生成私有配置和数据库口令；已有配置保持原值。修改 env 后重新部署使容器生效。修改 env 中的数据库密码不会自动修改已有 PG 角色密码。
 
-所有服务使用Compose默认的bridge网络，应用容器通过`postgres:5432`访问数据库。API在容器内监听`0.0.0.0:8000`，映射到服务器`0.0.0.0:24048`，同时提供前端页面与`/api/v1`接口。
-
-浏览器直接访问`http://172.21.21.98:24048`。服务器映射端口由`backend/.env`中的`STOCKSIEVE_API_PORT=24048`控制，容器内部端口和健康检查固定为8000。API、worker、scheduler在容器中自动使用服务名连接PG；宿主机CLI仍使用本机数据库端口，连接参数无需改成容器服务名。
-
-## 配置与凭据
-
-所有配置统一在`backend/.env`，参考[示例](../../backend/.env.example)，文件权限600且不提交Git。首次迁移自动合并旧数据库env，保留原口令；成功后旧env转入`backend/.state/backups/`私有备份，后续仅修改统一文件。当前`STOCKSIEVE_AI_MODE=mock`无需模型密钥。
-
-初始管理员`admin`已创建，随机口令位于服务器`backend/.state/initial-admin.json`，权限600，不在终端或聊天输出。已有管理员和口令文件不会覆盖。新增服务器可执行：
+当前管理员为 `admin`，随机口令保存在服务器 `backend/.state/initial-admin.json`，权限600。新服务器创建管理员：
 
 ```bash
 uv run --project backend --frozen python backend/run.py create-admin --username admin --name 管理员 --generate-password-file backend/.state/initial-admin.json
 ```
 
-镜像不包含凭据、宿主虚拟环境或业务数据库。公开源账本及成功响应缓存单独挂载，保留已有次数、间隔、冷却和原保存时间；管理员凭据不在这些挂载目录内。应用以非root用户运行，根文件系统只读。
+普通用户从管理页面创建。当前 `STOCKSIEVE_AI_MODE=mock`，无需模型配置。后续真实模型配置键见 env 示例，当前不启用。
 
-应用账户为`stocksieve`（UID/GID 10001）。运行容器的只读根目录不能用`apt`安装工具；系统工具应在镜像构建时准备。需要独立排障环境时可用本机Ubuntu镜像启动临时容器，共享API网络但不挂载业务数据：`docker run --rm -it --network container:stocksieve-backend-api-1 ubuntu:24.04 bash`。该临时容器内可按需安装网络工具，退出后移除。
+## 数据与历史窗口
 
-## 数据库管理与备份
+在数据管理页面依次执行初始化、百度行业与题材更新、收盘行情更新。行情选择新浪。分类成功后通过新的收盘快照生效；任务由后台执行，关闭页面不取消。
 
-完整部署会自动准备数据库；如仅准备数据库，可在项目根执行`uv run --project backend --frozen python backend/deploy/docker/deploy.py --database-only`。连接配置见`backend/.env`；修改其中的密码不会自动修改已初始化的数据库角色密码。
+```dotenv
+STOCKSIEVE_HISTORY_TRADING_DAYS=150
+STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=2500
+STOCKSIEVE_SOURCE_INTERVAL_SECONDS=0.2
+STOCKSIEVE_SOURCE_DAILY_LIMIT=20000
+```
 
-进入数据库控制台后，可用`\dt public.*`查看业务表：
+首次策略窗口至少140个交易日；最大窗口0表示不限制，非0须不小于首次窗口。150/2500表示先发布近期策略，再由独立任务补齐约十年历史。新股从实际可得数据开始；已保存的快照和报告资料保留。
+
+0.2秒间隔和20000次日预算是项目配置；80%预算预留给日常更新，回补让位并可跨日继续。百度分类至少间隔1秒、每批20只。所有进程共用 `backend/.state/rate/`，重启不重置次数或冷却；缓存命中不发请求。渠道拒绝访问时暂停，不通过新建任务绕过限制。
+
+同日同渠道、配置和分类已成功时直接复用结果。失败任务从页面“从断点继续”恢复原任务与进度。
+
+## 持久化与数据库
+
+- `stocksieve-postgres-data`：PG 数据卷。
+- `stocksieve-backend-state`：应用状态卷。
+- `backend/.state/rate/`：共享访问账本。
+- `backend/.state/source-cache/`：公开数据响应和同步检查点。
+
+两个命名卷均为 external，部署不会删除。`backend/sql/init.sql` 仅在空 PG 卷首次启动时执行；修改结构时同时更新完整 SQL 并直接更新现有数据库，不重建业务库、不提供增量脚本。
+
+应用以 `stocksieve`（UID/GID10001）运行，根目录只读。镜像不包含私有 env、口令、宿主机虚拟环境或业务数据。
+
+```bash
+uv run --project backend --frozen python backend/run.py check-config
+uv run --project backend --frozen python backend/run.py check-db --counts
+docker compose -f backend/compose.yaml ps
+docker compose -f backend/compose.yaml logs --tail=100 api worker scheduler
+```
+
+进入数据库：
 
 ```bash
 docker compose -f backend/compose.yaml exec postgres sh -eu -c 'exec psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-手工备份使用带时间戳的私有文件：
+备份到私有文件：
 
 ```bash
 umask 077
@@ -64,88 +79,4 @@ mkdir -p backend/.state/backups
 docker compose -f backend/compose.yaml exec -T postgres sh -eu -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "backend/.state/backups/manual-$(date +%Y%m%d-%H%M%S).dump"
 ```
 
-恢复时另建空库并核对结果，保留当前业务库。
-
-## 历史范围配置
-
-在`backend/.env`设置：
-
-```dotenv
-STOCKSIEVE_HISTORY_TRADING_DAYS=150
-STOCKSIEVE_HISTORY_MAX_TRADING_DAYS=2500
-```
-
-`TRADING_DAYS`是首次发布策略需要补齐的近期窗口，至少140；`MAX_TRADING_DAYS`是后续回补及最新窗口上限，0表示不限制，非0须不小于前者。150/2500表示先用最近150个交易日发布策略，再由独立后台任务补齐最多2500个交易日，约十年；后续日常更新继续使用已取得的历史。
-
-日期使用真实交易日历，上市较晚的股票从实际可得行情开始，不补造数据。日线按快照差异保存，策略只计算各自所需窗口；旧快照及报告引用的原始日线保留。
-
-修改后运行部署命令重建应用容器，再提交新的收盘更新。任务受理时固定配置，进行中的任务及旧快照不受之后改动影响。扩大范围会补真实日历和缺失行情，继续遵守原频控。可只读核对生效值：
-
-```bash
-uv run --project backend --frozen python backend/run.py check-config
-docker compose -f backend/compose.yaml exec api /app/.venv/bin/python run.py check-config
-```
-
-## 数据库与真实数据验收
-
-结构审计和直接对齐命令：
-
-```bash
-uv run --project backend --frozen python backend/run.py sync-schema
-uv run --project backend --frozen python backend/run.py sync-schema --apply
-uv run --project backend --frozen python backend/run.py check-db --counts
-uv run --project backend --frozen python backend/run.py check-db --sync-jobs
-```
-
-结构对齐只调整项目约束和索引，不重建表；遇到字段类型/精度差异停止，避免自动损失数据。更新在同一事务校验，失败整次回滚；临时比较schema自动清理，不生成增量脚本。
-
-首轮通过正式HTTP提交初始化、分类和最近收盘任务，可跨中断恢复：
-
-```bash
-uv run --project backend --frozen python backend/run.py bootstrap-data --base-url http://127.0.0.1:24048 --credentials-file backend/.state/initial-admin.json --source sina --date 2026-11-02
-```
-
-日期需改为已确认收盘的交易日。该流程不写模拟行情，任务受理后由服务器执行；网络失败、冷却和预算等待按原任务恢复，完整校验后发布。首轮按配置补齐历史比后续增量慢；进度、等待时间和日志可在数据管理查看。
-
-长期回补允许分多日完成。基础初始化和行业同步成功后，可用`--only-kind daily --submit-only`仅提交收盘任务并返回；任务由worker跨日执行，不需要终端持续连接。近期策略发布后页面即可使用，日常更新优先于较早历史回补；停止或重建应用容器不会清空已保存进度。
-
-已有基础数据时，默认行情改为新浪；CLI提交同样显式选源：
-
-```bash
-uv run --project backend --frozen python backend/run.py bootstrap-data --base-url http://127.0.0.1:24048 --credentials-file backend/.state/initial-admin.json --state-file backend/.state/sina-live-pipeline.json --source sina --date YYYY-MM-DD --only-kind daily --submit-only
-```
-
-完整验收中的证券与行情使用新浪，分类步骤自动选择百度行业与题材。普通更新复用已成功结果；只有明确需要重新计算时使用新的状态文件并加`--force`。
-
-正式服务已有快照后，可加`--only-kind initialize`、`catalog`或`daily`只执行单种任务。相同状态文件恢复原任务；需要新一轮更新时指定新的`--state-file`。
-
-分类更新选择“百度股市通行业与题材”，每批20只、每任务最多300批并保存断点。优先采用申万一级，源仅提供国标时明确标注；分类成功后再更新收盘，新分类通过新快照进入筛选。行情使用新浪。
-
-正式发布后的浏览器验收：
-
-```bash
-uv run --project backend --frozen pytest backend/tests/test_browser.py --deployed-base http://172.21.21.98:24048 --deployed-credentials backend/.state/initial-admin.json --deployed-data -q
-```
-
-它使用隔离浏览器会话验证真实列表、详情、K线与后端模拟筹码报告；会产生一份明确标记的模拟报告，不更改行情或账号口令。隔离PostgreSQL回归命令见[后端说明](../../backend/README.md)。
-
-题材渠道验收后，可加`--deployed-concepts -k deployed_concepts -s`单独检查真实下拉选择、成员筛选和刷新恢复；该检查只读，并保存页面截图到`backend/.state/concept-filter.png`。访问历史链接仍沿用原快照，查看新分类请从“机会筛选”菜单重新进入。
-
-## 日常维护
-
-```bash
-docker compose -f backend/compose.yaml ps
-docker compose -f backend/compose.yaml logs --tail=100 api worker scheduler
-```
-
-数据库卷和后端状态卷均为external，统一Compose停止或移除容器仍保留数据。首次迁移备份位于`backend/.state/backups/compose-*.dump`。重启不取消已受理任务，不删除频控账本或成功缓存。
-
-`STOCKSIEVE_DEFAULT_SOURCE=sina`控制页面和定时任务默认行情渠道；`STOCKSIEVE_ENABLED_SOURCES=sina,baidu_concepts`启用新浪基础与行情、百度行业与题材。更改默认值后重建应用容器才能生效。
-
-`STOCKSIEVE_SOURCE_INTERVAL_SECONDS=0.2`和`STOCKSIEVE_SOURCE_DAILY_LIMIT=20000`控制共享间隔和项目日预算，不是上游许可额度。80%预留给日常更新；首次补历史时日线、因子和股本每只最多3次；日常批量取当日报价，每只核验官方因子，缺口才回查历史。缓存命中不计次，百度分类另遵守每秒一批；任务与十年回补均可从断点继续。403/429及现有冷却照常暂停对应渠道。
-
-新浪实测：`uv run --frozen --project backend python backend/run.py check-sina --date YYYY-MM-DD --directory`。切换时旧排队任务不会自动改写渠道；核对后可运行`retire-source-jobs --source baostock --apply`停止其等待，原日志、检查点及已发布数据保留。运行中的任务须先释放租约。
-
-失败定位：`uv run --frozen --project backend python backend/run.py inspect-sync --job UUID`只读显示检查点和下一只证券；加`--probe`按正式频控复现该证券取数，不修改任务或业务表。页面“从断点继续”恢复原任务，修复后无需重新从第一只开始。
-
-同日已成功更新时，页面直接提示已完成，不创建新任务。`reconcile-sync-duplicates`可审计旧版本已受理的重复任务，加`--apply`才复用旧成功结果并结束多余执行，保留部分构建与访问记录。增量四板块实测使用`check-sina --date YYYY-MM-DD --incremental`，全量分类核验使用`check-baidu-classifications`，均不写业务行情。
+恢复先在新建空库验证，保留当前业务库。HTTP 与浏览器测试见[后端说明](../../backend/README.md)。
