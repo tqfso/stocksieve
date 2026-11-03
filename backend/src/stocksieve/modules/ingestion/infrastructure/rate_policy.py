@@ -54,7 +54,7 @@ class SourcePolicy:
         day = datetime.fromtimestamp(instant, SHANGHAI).date()
         with self.transaction() as state:
             counts = state.setdefault('daily', {}).setdefault(day.isoformat(), {})
-            until = max(state.get('next_at', 0), state.get('cooldown', {}).get(vendor, 0))
+            until = max(state.get('next_at', 0), state.get('vendor_next_at', {}).get(vendor, 0), state.get('cooldown', {}).get(vendor, 0))
             # 回补最多使用扣除预留后的额度，日常更新仍可使用完整预算；已有次数始终计入。
             reserved = self.foreground_reserve if is_background_sync() else 0
             budget = self.daily_limit - reserved
@@ -72,6 +72,8 @@ class SourcePolicy:
                 raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), message, reason=reason)
             counts[vendor] = counts.get(vendor, 0) + 1
             state['next_at'] = instant + self.interval
+            # 百度分类沿用已验证的每秒一批，不随新浪行情提速而提高其请求频率。
+            state.setdefault('vendor_next_at', {})[vendor] = instant + max(self.interval, 1 if vendor == 'baidu' else self.interval)
 
     def block(self, vendor: str, seconds: float, now: float | None = None) -> None:
         instant = time.time() if now is None else now

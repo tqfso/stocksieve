@@ -54,9 +54,9 @@ export const useSync = defineStore('sync', () => {
         })();
         return refreshing;
     }
-    async function start(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = randomId()): Promise<void> {
+    async function start(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = randomId()): Promise<SyncJob> {
         loading.value = true;
-        try { await api.startSync(kind, source, dataDate, key); await refresh(); }
+        try { const job = await api.startSync(kind, source, dataDate, key); await refresh(); return job; }
         finally { loading.value = false; }
     }
     async function retry(id: string, key: string): Promise<void> {

@@ -13,6 +13,7 @@ from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
     BaiduConcepts,
     parse_concepts,
+    parse_industries,
 )
 from stocksieve.modules.ingestion.infrastructure.providers.baostock import security
 from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
@@ -39,6 +40,20 @@ def test_concepts_are_explicit_and_unknown_is_different_from_empty() -> None:
         parse_concepts({'ResultCode': 1, 'Result': data['Result']}, set(data['Result']))
     with pytest.raises(DomainError):
         parse_concepts({'ResultCode': 0, 'Result': {'000001': groups([{'name': '测试概念', 'xcx_query': 'name=no-code'}])}}, {'000001'})
+
+
+def test_industry_prefers_explicit_shenwan_and_labels_csrc_fallback() -> None:
+    value = {'ResultCode': 0, 'Result': {'000001': [{'name': '行业', 'list': [
+        {'name': '金融业', 'describe': '一级', 'xcx_query': 'code=J00000'},
+        {'name': '货币金融服务', 'describe': '二级', 'xcx_query': 'code=J66000'},
+        {'name': '银行', 'describe': '申万一级', 'xcx_query': 'code=480000'},
+        {'name': '股份制银行', 'describe': '申万二级', 'xcx_query': 'code=480300'}]}],
+        '600927': [{'name': '行业', 'list': [{'name': '金融业', 'describe': '一级', 'xcx_query': 'code=J00000'},
+            {'name': '资本市场服务', 'describe': '二级', 'xcx_query': 'code=J67000'}]}]}}
+    result = parse_industries(value, {'000001', '600927', '688981'})
+    assert result['000001'] == {'id': 'baidu_sw_480000', 'name': '银行'}
+    assert result['600927'] == {'id': 'baidu_csrc_J67000', 'name': '资本市场服务（国标）'}
+    assert result['688981'] is None
 
 
 def test_batches_resume_and_expand_without_repeating_known_stocks(tmp_path: Path, monkeypatch: Any) -> None:

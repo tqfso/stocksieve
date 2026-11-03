@@ -13,7 +13,7 @@ class Registry:
     def __init__(self, boards: tuple[str, ...] = tuple(BOARDS)) -> None:
         self.boards = frozenset(boards)
         self.sources: dict[str, Source] = {}
-        self.pending: dict[str, str] = {'sina': 'Sina', 'baostock': 'Baostock', 'eastmoney': '东方财富'}
+        self.pending: dict[str, str] = {'sina': 'Sina', 'eastmoney': '东方财富'}
 
     def register(self, source: Source) -> None:
         import re

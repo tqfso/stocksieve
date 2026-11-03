@@ -24,7 +24,7 @@
     },
     "coverage": { "totalStocks": 5223, "byExchange": { "SSE": 2318, "SZSE": 2905, "BSE": 0 } },
     "sources": [
-      { "id": "baostock", "name": "沪深免费组合（Baostock行情 / 腾讯市值）", "available": true, "supportedSyncKinds": ["catalog", "daily", "initialize"] },
+      { "id": "baidu_concepts", "name": "百度股市通行业与题材", "available": true, "supportedSyncKinds": ["catalog"] },
       { "id": "sina", "name": "新浪行情（沪深四板块）", "available": true, "supportedSyncKinds": ["daily", "initialize"] }
     ]
   },

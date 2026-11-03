@@ -429,6 +429,45 @@ def run_sync_progress_check(base: str, username: str, password: str, *, screensh
             'stocksPerSecond': round((saved - previous) / elapsed, 2), 'actualProgress': after['progress']}
 
 
+def run_sync_dedup_check(base: str, username: str, password: str) -> dict[str, Any]:
+    """实际点击已发布日期的更新，确认提示完成、返回原任务且任务列表未新增。"""
+    __tracebackhide__ = True
+    with browser_page() as page:
+        page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+        page.get_by_placeholder('请输入账号', exact=True).fill(username)
+        page.get_by_placeholder('请输入密码', exact=True).fill(password)
+        page.get_by_role('button', name='登录工作台', exact=True).click()
+        page.wait_for_url('**/#/opportunities*')
+        expect(page.locator('.stock-name').first).to_be_visible()
+        page.get_by_role('link', name='数据管理', exact=True).click()
+        expect(page.locator('.data-table')).to_be_visible()
+        query = """async () => {
+            const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+            const headers = {Authorization:'Bearer '+token};
+            const [state, jobs] = await Promise.all([fetch('/api/v1/market/status',{headers}), fetch('/api/v1/admin/sync-jobs?pageSize=100',{headers})]);
+            return {state:(await state.json()).data, jobs:(await jobs.json()).data.items};
+        }"""
+        before = page.evaluate(query)
+        assert before['state']['publishedSnapshot']
+        assert all(source['id'] != 'baostock' for source in before['state']['sources'])
+        day = before['state']['publishedSnapshot']['dataDate']
+        panel = page.locator('.summary-card').filter(has=page.get_by_role('heading', name='收盘行情与策略', exact=True))
+        entry = panel.get_by_placeholder('目标收盘日期', exact=True)
+        entry.fill(day); entry.press('Enter')
+        with page.expect_response(lambda response: response.request.method == 'POST' and urlsplit(response.url).path == '/api/v1/admin/sync-jobs') as captured:
+            panel.get_by_role('button', name='开始更新', exact=True).click()
+        response = captured.value
+        assert response.status == 202
+        job = response.json()['data']
+        assert job['status'] == 'succeeded' and job['id'] in {item['id'] for item in before['jobs']}
+        expect(page.get_by_text(day + '已成功更新，无需重复执行。', exact=True)).to_be_visible()
+        after = page.evaluate(query)
+        assert {item['id'] for item in after['jobs']} == {item['id'] for item in before['jobs']}
+        assert after['state']['publishedSnapshot']['id'] == before['state']['publishedSnapshot']['id']
+        page.locator('.sidebar-user').click(); page.wait_for_url('**/#/login*')
+        return {'date': day, 'reusedJobId': job['id'], 'noNewTask': True, 'completedMessageChecked': True, 'baostockRemoved': True}
+
+
 def run_sync_retry_check(base: str, username: str, password: str, job_id: str) -> dict[str, Any]:
     """通过页面继续指定失败任务，确认返回原ID和原进度，并越过原失败位置。"""
     __tracebackhide__ = True

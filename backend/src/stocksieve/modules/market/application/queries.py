@@ -71,6 +71,16 @@ class Market:
     def __init__(self, database: Database) -> None:
         self.db = database
 
+    def known_securities(self, connection: Connection) -> list[dict[str, Any]]:
+        """旧渠道未返回上市日时，复用已发布快照中确认过的值，缺失新股仍由渠道核验。"""
+        confirmed = select(t.snapshot_stocks.c.stock_id, t.snapshot_stocks.c.listed_on,
+            func.row_number().over(partition_by=t.snapshot_stocks.c.stock_id, order_by=t.snapshots.c.version.desc()).label('rank')).join(
+                t.snapshots, t.snapshot_stocks.c.snapshot_id == t.snapshots.c.id).where(
+                    t.snapshot_stocks.c.listed_on.is_not(None), t.snapshots.c.status == 'published').subquery()
+        return [{**row, 'listed_on': row['listed_on'] or row['confirmed_listed_on']} for row in connection.execute(
+            select(t.stocks, confirmed.c.listed_on.label('confirmed_listed_on')).outerjoin(confirmed,
+                (confirmed.c.stock_id == t.stocks.c.stock_id) & (confirmed.c.rank == 1))).mappings()]
+
     def search_stocks(self, query: dict[str, str], boards: tuple[str, ...]) -> dict[str, Any]:
         """搜索证券目录而非策略候选，输入仅作为参数，结果以稳定股票ID确认身份。"""
         text = query.get('search', '').strip()
@@ -232,11 +242,12 @@ class Market:
         return {'snapshot': self.snapshot_view(snapshot), 'stock': found['stock'], 'quote': found['quote'],
                 'signals': [self.signal_view(found['signalRows'][key], detail=True) for key in NAMES if key in found['signalRows']]}
 
-    def history(self, connection: Connection, snapshot: Any, stock_id: str) -> list[Bar]:
+    def history(self, connection: Connection, snapshot: Any, stock_id: str, *, since: date | None = None) -> list[Bar]:
         rows = connection.execute(select(t.bars).join(t.snapshots, t.bars.c.snapshot_id == t.snapshots.c.id).where(
             t.bars.c.stock_id == stock_id, t.bars.c.source == snapshot['source'], t.snapshots.c.status == 'published',
             t.snapshots.c.version <= snapshot['version'], t.bars.c.trade_date <= snapshot['data_date'],
-            t.bars.c.trade_date >= snapshot['history_start_date']).order_by(t.bars.c.trade_date, t.snapshots.c.version.desc())).mappings()
+            t.bars.c.trade_date >= max(snapshot['history_start_date'], since) if since else t.bars.c.trade_date >= snapshot['history_start_date'])
+            .order_by(t.bars.c.trade_date, t.snapshots.c.version.desc())).mappings()
         unique: dict[date, Bar] = {}
         for row in rows:
             if row['trade_date'] not in unique:

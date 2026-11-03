@@ -67,6 +67,27 @@ class SharedCalendarSource(CalendarCacheSource, Protocol):
     accepts_shared_calendar: bool
 
 
+@runtime_checkable
+class SecuritiesAwareSource(Protocol):
+    """基础资料更新可复用已经确认的证券身份和上市日期。"""
+
+    def use_securities(self, stocks: tuple[Stock, ...]) -> None: ...
+
+
+@runtime_checkable
+class IncrementalSource(Protocol):
+    """支持增量的渠道声明策略所需历史长度，较早历史通过快照链保留。"""
+
+    incremental_history_days: int
+
+
+@runtime_checkable
+class SnapshotScopedSource(Protocol):
+    """续跑时保持旧任务已冻结的字段来源，配置变化只影响新任务。"""
+
+    def for_snapshot(self, provenance: dict[str, Any], *, force: bool = False) -> Source: ...
+
+
 class CatalogOnlySource:
     """分类适配器的能力基类，其他任务在注册表和直接调用时均明确拒绝。"""
 

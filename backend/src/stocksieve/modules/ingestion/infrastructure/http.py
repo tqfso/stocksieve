@@ -86,7 +86,7 @@ class SourceHTTP:
         vendor = supplier(url, vendor)
         key = hashlib.sha256(json.dumps([vendor, url, params], sort_keys=True).encode()).hexdigest()
         path = self.cache_dir / (key + '.json')
-        if path.exists():
+        if path.exists() and cache_seconds > 0:
             try:
                 cached = json.loads(path.read_text())
                 if 0 <= time.time() - cached['at'] <= cache_seconds:
@@ -160,7 +160,7 @@ class SourceHTTP:
         """复用公开原文并保留实际获取时间，不能把缓存读取时间伪装成新抓取。"""
         key = hashlib.sha256(('document:' + url).encode()).hexdigest()
         path = self.cache_dir / (key + '.json')
-        if path.exists():
+        if path.exists() and cache_seconds > 0:
             try:
                 saved = json.loads(path.read_text())
                 if 0 <= time.time() - saved['at'] <= cache_seconds:

@@ -14,6 +14,7 @@ class SyncInput(Input):
     kind: Literal['initialize', 'catalog', 'daily']
     source: str = Field(min_length=1, max_length=32)
     dataDate: date | None = None
+    force: bool = Field(default=False, strict=True)
 
     @field_validator('dataDate', mode='before')
     @classmethod

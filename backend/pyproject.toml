@@ -5,7 +5,6 @@ description = "StockSieve 后端接口、行情同步、策略与分析服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "aiohttp==3.14.5",
-  "baostock>=0.9.1,<0.10",
   "deepagents>=0.7.32",
   "httpx==0.28.1",
   "langchain-openai>=1.7.3",
@@ -19,6 +18,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # 仅保留历史SDK协议的对照回归，生产镜像不安装也不连接该渠道。
+    "baostock>=0.9.1,<0.10",
     "playwright>=1.55,<2",
     "pytest==9.1.1",
     "ruff>=0.14,<1",

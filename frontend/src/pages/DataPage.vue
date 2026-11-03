@@ -58,10 +58,11 @@ async function start(kind: SyncJob['kind'], retry?: SyncJob): Promise<void> {
         const previous = submissions.get(kind);
         const key = previous?.signature === signature ? previous.key : randomId();
         submissions.set(kind, { signature, key });
+        let completed = false;
         if (retry) await sync.retry(retry.id, key);
-        else await sync.start(kind, source, day || undefined, key);
+        else completed = (await sync.start(kind, source, day || undefined, key)).status === 'succeeded';
         submissions.delete(kind);
-        ElMessage.success(retry ? '已从原任务检查点继续，已保存的数据保留。' : '任务已受理，关闭页面后仍由服务器执行。');
+        ElMessage.success(completed ? `${day ?? ''}已成功更新，无需重复执行。` : retry ? '已从原任务检查点继续，已保存的数据保留。' : '任务已受理，关闭页面后仍由服务器执行。');
     } catch (cause) {
         if (cause instanceof Error) {
             if (cause instanceof ApiError && cause.status > 0 && cause.status < 500) submissions.delete(kind);

@@ -1,9 +1,9 @@
-"""本文件批量读取百度股市通明确提供的概念归属，按任务恢复并累积覆盖，保留原行业。"""
+"""本文件批量读取百度明确提供的行业和题材，按任务恢复并保留原获取时间，兼容仅题材模式。"""
 
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode
@@ -55,14 +55,47 @@ def parse_concepts(value: Any, requested: set[str]) -> dict[str, list[dict[str, 
     return result
 
 
+def parse_industries(value: Any, requested: set[str]) -> dict[str, dict[str, str] | None]:
+    """优先明确的申万一级；源只提供国标时使用带国标标记的分类，不推断申万映射。"""
+    parse_concepts(value, requested)
+    result: dict[str, dict[str, str] | None] = {code: None for code in requested}
+    ranks: dict[str, int] = {}
+    for code, groups in value['Result'].items():
+        for group in groups or []:
+            if not isinstance(group, dict) or group.get('name') != '行业':
+                continue
+            if not isinstance(group.get('list'), list):
+                raise DomainError('DATA_INCOMPLETE', '百度行业列表结构无效。', 503)
+            for item in group['list']:
+                identifiers = parse_qs(item.get('xcx_query', '')).get('code', [])
+                name = item.get('name')
+                descriptor = item.get('describe')
+                csrc = descriptor in {'一级', '二级'} and len(identifiers) == 1 and re.fullmatch(r'[A-Z][0-9]{5}', identifiers[0])
+                if descriptor != '申万一级' and not csrc:
+                    continue
+                if len(identifiers) != 1 or not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', identifiers[0]) or not isinstance(name, str) or not name.strip():
+                    raise DomainError('DATA_INCOMPLETE', '百度一级行业缺少稳定编码或名称。', 503)
+                rank = 0 if descriptor == '申万一级' else 1 if descriptor == '二级' else 2
+                industry = {'id': ('baidu_csrc_' if csrc else 'baidu_sw_') + identifiers[0],
+                    'name': name.strip() + ('（国标）' if csrc else '')}
+                if ranks.get(code, 9) < rank:
+                    continue
+                if ranks.get(code) == rank and result[code] is not None and result[code] != industry:
+                    raise DomainError('DATA_INCOMPLETE', '同一股票返回多个一级行业，未发布分类。', 503)
+                result[code] = industry
+                ranks[code] = rank
+    return result
+
+
 class BaiduConcepts:
     """供应商每批最多20只；每个任务最多准备20批，成功归属保留原获取时间并逐步补齐。"""
 
-    def __init__(self, policy: SourcePolicy, cache: Path, batch_limit: int = 20) -> None:
-        if not 1 <= batch_limit <= 100:
-            raise ValueError('题材批次数需在1至100之间。')
+    def __init__(self, policy: SourcePolicy, cache: Path, batch_limit: int = 20, *, include_industry: bool = False) -> None:
+        if not 1 <= batch_limit <= 300:
+            raise ValueError('分类批次数需在1至300之间。')
         self.policy, self.cache, self.batch_limit = policy, cache, batch_limit
         self.path = cache / 'baidu-concepts.json'
+        self.include_industry = include_industry
 
     def save(self, state: dict[str, Any]) -> None:
         """每批完成后原子保存；等待和重启不重复取已成功股票。"""
@@ -81,7 +114,7 @@ class BaiduConcepts:
         codes = list(dict.fromkeys(stock.code for stock in stocks))
         if len(codes) != len(stocks):
             raise DomainError('DATA_INCOMPLETE', '证券代码存在歧义，不能关联题材。', 503)
-        missing = [code for code in codes if code not in records]
+        missing = [code for code in codes if code not in records or self.include_industry and not records[code].get('industry')]
         pending = missing or [code for code in codes if time.time() - records[code].get('checkedAt', records[code]['at']) >= 86400]
         operation = current_operation_id() or uuid4().hex
         batch = state['batches'].setdefault(operation, {'used': 0, 'finished': False})
@@ -106,12 +139,15 @@ class BaiduConcepts:
                         self.policy.block('baidu', 86400 if limited else 3600)
                         raise DomainError('SOURCE_RATE_LIMITED' if limited else 'SOURCE_UNAVAILABLE', '题材接口未成功返回，已暂停后续请求。', 503)
                     parsed = parse_concepts(value, set(selected))
+                    industries = parse_industries(value, set(selected)) if self.include_industry else {}
                     for code, concepts in parsed.items():
                         old = records.get(code)
                         if concepts is None and old and old.get('concepts') is not None:
                             records[code] = {**old, 'checkedAt': fetched.timestamp()}
                         else:
                             records[code] = {'concepts': concepts, 'at': fetched.timestamp(), 'checkedAt': fetched.timestamp()}
+                        if self.include_industry:
+                            records[code]['industry'] = industries.get(code)
                     batch['used'] += 1
                     self.save(state)
                     count = sum(code in records and records[code]['concepts'] is not None for code in codes)
@@ -119,24 +155,33 @@ class BaiduConcepts:
                 batch['finished'] = True
                 self.save(state)
             # 3. 仅发布已明确取得的归属，未覆盖股票保持未知，行业由业务层保留。
-            known = {stock.stock_id: records[stock.code] for stock in stocks if stock.code in records and records[stock.code]['concepts'] is not None}
-            names = {item['id'] for record in known.values() for item in record['concepts']}
-            if not known or not names:
+            known = {stock.stock_id: records[stock.code] for stock in stocks if stock.code in records and
+                (records[stock.code]['concepts'] is not None or self.include_industry and records[stock.code].get('industry') is not None)}
+            names = {item['id'] for record in known.values() for item in record['concepts'] or []}
+            if not known or not names and not self.include_industry:
                 raise DomainError('DATA_NOT_AVAILABLE', '尚未取得有效题材归属，本轮不更新分类。', 503)
-            summary = {'knownStocks': len(known), 'totalStocks': len(stocks), 'knownConcepts': len(names)}
+            concept_known = sum(record['concepts'] is not None for record in known.values())
+            summary = {'knownStocks': concept_known, 'totalStocks': len(stocks), 'knownConcepts': len(names)}
             report_progress(f'题材已覆盖{len(known)}/{len(stocks)}只股票、{len(names)}个概念；继续更新可补齐其余股票。', 95)
-            return {'stocks': {stock_id: {'concepts': record['concepts']} for stock_id, record in known.items()}, 'fields': ['concepts'],
-                    'provenance': {'concepts': 'baidu'}, 'conceptCoverage': 'complete' if len(known) == len(stocks) else 'partial',
-                    'conceptCollection': summary, 'observedAt': datetime.fromtimestamp(max(record['at'] for record in known.values()), timezone.utc).isoformat()}
+            result = {'stocks': {stock_id: {'concepts': record['concepts']} for stock_id, record in known.items()}, 'fields': ['concepts'],
+                    'provenance': {'concepts': 'baidu'}, 'conceptCoverage': 'complete' if concept_known == len(stocks) else 'partial',
+                    'conceptCollection': summary, 'observedAt': datetime.fromtimestamp(max(record['at'] for record in known.values()), UTC).isoformat()}
+            if self.include_industry:
+                result['fields'] = ['industry', 'concepts']
+                result['provenance']['industry'] = 'baidu-shenwan-with-labelled-csrc'
+                for stock_id, record in known.items():
+                    result['stocks'][stock_id]['industry'] = record.get('industry')
+                result['industryCoverage'] = {'knownStocks': sum(bool(record.get('industry')) for record in known.values()), 'totalStocks': len(stocks)}
+            return result
         finally:
             await client.close()
 
 
 class BaiduCatalogSource(CatalogOnlySource):
-    """独立可选的百度题材渠道，更新题材并保留原有行业。"""
+    """独立百度分类渠道，生产更新行业与题材，旧模式仅更新题材。"""
 
     id = 'baidu_concepts'
-    name = '百度股市通题材'
+    name = '百度股市通行业与题材'
     boards = frozenset({'SSE_MAIN', 'SZSE_MAIN', 'CHINEXT', 'STAR'})
 
     def __init__(self, provider: BaiduConcepts) -> None:

@@ -6,7 +6,6 @@ import getpass
 import json
 import os
 import secrets
-import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -38,12 +37,18 @@ def main() -> int:
     sub.add_parser('worker')
     sub.add_parser('scheduler')
     sub.add_parser('check-config', help='只读显示非敏感的历史窗口及运行模式配置')
+    dedup = sub.add_parser('reconcile-sync-duplicates', help='复用已成功结果，停止旧版本受理的重复普通收盘任务')
+    dedup.add_argument('--apply', action='store_true')
+    baidu_check = sub.add_parser('check-baidu-classifications', help='按正式频控核对全量行业与题材，保留缓存，不写分类业务表')
+    baidu_check.add_argument('--symbol', action='append', help='少量指定代码时仅核对原始行业分组')
     sync_check = sub.add_parser('inspect-sync', help='只读查看同步检查点和下一只证券，可复现取数异常')
     sync_check.add_argument('--job', required=True)
     sync_check.add_argument('--probe', action='store_true')
     sina_check = sub.add_parser('check-sina', help='沿用正式账本验证新浪四板块日线、因子、股本和交易日历，不写业务表')
     sina_check.add_argument('--date', type=date.fromisoformat, required=True)
     sina_check.add_argument('--directory', action='store_true', help='同时分页核对完整沪深目录')
+    sina_check.add_argument('--basics', action='store_true', help='少量串行请求核对新浪基础资料与行业端点')
+    sina_check.add_argument('--incremental', action='store_true', help='用真实数据库历史核对四板块增量，不写业务行情')
     retire = sub.add_parser('retire-source-jobs', help='切换默认渠道后停止旧渠道排队任务，保留已发布数据和历史日志')
     retire.add_argument('--source', required=True)
     retire.add_argument('--apply', action='store_true')
@@ -56,26 +61,19 @@ def main() -> int:
     schema.add_argument('--details', action='store_true')
     recovery = sub.add_parser('recover-history-bootstrap', help='将旧自然年配置的首次排队任务恢复为近期发布、历史回补')
     recovery.add_argument('--apply', action='store_true')
-    source_check = sub.add_parser('check-source', help='通过正式限频账本验证免费批量渠道，不写业务表')
-    source_check.add_argument('--date', required=True, type=date.fromisoformat)
-    source_check.add_argument('--adjustment', action='store_true', help='交叉核对四板块除权参考价推导的相对因子与渠道前复权行情')
     sub.add_parser('check-quote-metadata', help='只读检查免费批量市值、行业等补充字段')
     sub.add_parser('check-exchange-directory', help='只读核对深交所官方目录和新增代码板块')
     sub.add_parser('reconcile-tencent', help='核验证据后纠正已确认的本地格式误判冷却，保留真实限流和全部次数')
     metadata_check = sub.add_parser('check-tencent-metadata', help='核验指定真实证券的板块标签和总市值')
     metadata_check.add_argument('--symbol', action='append', required=True)
-    concepts_check = sub.add_parser('check-concepts', help='只读核验免费概念目录，不逐股票抓取')
-    concepts_check.add_argument('--source', choices=('baostock', 'tdx'), default='baostock')
-    slow = sub.add_parser('reconcile-slow-response', help='核验旧版接收期限误判，恢复对应已排队任务，不清空额度')
-    slow.add_argument('--job', required=True)
-    slow.add_argument('--partial-retry-policy', action='store_true', help='仅对正常成功流中断采用有界短退避，真实拒绝访问冷却保持')
     pipeline = sub.add_parser('bootstrap-data', help='通过真实HTTP完成初始化、分类和收盘发布验收，可跨中断恢复')
     pipeline.add_argument('--credentials-file', required=True, type=Path)
     pipeline.add_argument('--state-file', type=Path, default=Path('backend/.state/live-pipeline.json'))
-    pipeline.add_argument('--source', default='baostock', help='整套初始化默认Baostock；新浪收盘验收使用--source sina --only-kind daily')
+    pipeline.add_argument('--source', default='sina', help='默认新浪证券与行情；分类步骤自动使用百度行业与题材')
     pipeline.add_argument('--date', type=date.fromisoformat)
     pipeline.add_argument('--retry-failed', action='store_true')
     pipeline.add_argument('--submit-only', action='store_true', help='配合--only-kind，仅提交并保存后台任务，不等待多年历史完成')
+    pipeline.add_argument('--force', action='store_true', help='明确重新计算已发布日期，普通更新默认复用成功结果')
     scope = pipeline.add_mutually_exclusive_group()
     scope.add_argument('--skip-initialize', action='store_true', help='只刷新分类并重新发布，不重复基础初始化')
     scope.add_argument('--only-kind', choices=('initialize', 'catalog', 'daily'), help='仅验收一种任务，不重复其他已完成步骤')
@@ -88,37 +86,22 @@ def main() -> int:
     password_options.add_argument('--generate-password-file', type=Path, help='生成随机初始口令，保存到仅当前服务器用户可读的新文件，不在终端显示')
     args = parser.parse_args()
     database = None
-    wire = None
     try:
         settings = Settings.from_env()
         registry = Registry(settings.market_boards)
         policy = SourcePolicy(settings.rate_dir, settings.request_interval, settings.source_daily_limit)
         if 'sina' in settings.enabled_sources:
-            from stocksieve.modules.ingestion.infrastructure.providers.sina import SinaSource
-            from stocksieve.modules.ingestion.infrastructure.providers.tencent import TencentMetadata
+            from stocksieve.modules.ingestion.infrastructure.providers.sina import (
+                SinaSource,
+            )
             registry.register(SinaSource(policy, settings.state_dir / 'source-cache', settings.history_trading_days,
-                settings.history_max_trading_days, TencentMetadata(policy, settings.state_dir / 'source-cache')))
+                settings.history_max_trading_days))
         if 'baidu_concepts' in settings.enabled_sources:
             from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
                 BaiduCatalogSource,
                 BaiduConcepts,
             )
-            registry.register(BaiduCatalogSource(BaiduConcepts(policy, settings.state_dir / 'source-cache')))
-        if 'baostock' in settings.enabled_sources:
-            from stocksieve.modules.ingestion.infrastructure.baostock_wire import (
-                BaostockWire,
-            )
-            from stocksieve.modules.ingestion.infrastructure.providers.baostock import (
-                BaostockSource,
-            )
-            from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
-                TencentMetadata,
-            )
-            wire = BaostockWire(policy, settings.state_dir / 'baostock-wire')
-            base_source = BaostockSource(wire, settings.state_dir / 'baostock-market.sqlite',
-                history_days=settings.history_trading_days, history_max_days=settings.history_max_trading_days,
-                metadata=TencentMetadata(policy, settings.state_dir / 'source-cache'))
-            registry.register(base_source)
+            registry.register(BaiduCatalogSource(BaiduConcepts(policy, settings.state_dir / 'source-cache', batch_limit=300, include_industry=True)))
         if set(settings.enabled_sources) - registry.sources.keys():
             raise RuntimeError('请求启用的渠道尚无通过覆盖验证的适配器；不能仅靠配置将候选源标为可用。')
         database = Database(settings.database_url)
@@ -128,12 +111,59 @@ def main() -> int:
             print(json.dumps({'defaultSource': settings.default_source, 'enabledSources': list(settings.enabled_sources), 'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
                               'sourceIntervalSeconds': settings.request_interval, 'sourceDailyLimit': settings.source_daily_limit, 'sourceForegroundReserve': policy.foreground_reserve,
                               'marketBoards': list(settings.market_boards), 'aiMode': settings.ai_mode}, ensure_ascii=False))
+        elif args.command == 'reconcile-sync-duplicates':
+            from stocksieve.operations.sync_dedup import reconcile_duplicates
+            print(json.dumps(reconcile_duplicates(service.tasks, apply=args.apply), ensure_ascii=False, indent=2))
+        elif args.command == 'check-baidu-classifications':
+            from datetime import datetime
+
+            from sqlalchemy import select
+
+            import stocksieve.infrastructure.persistence.schema as tables
+            from stocksieve.modules.ingestion.application.progress import progress_sink
+            from stocksieve.modules.ingestion.application.service import stock_value
+            from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
+                BaiduConcepts,
+            )
+            with database.transaction() as connection:
+                stocks = tuple(stock_value(row) for row in connection.execute(select(tables.stocks)).mappings())
+            if args.symbol:
+                from urllib.parse import urlencode
+                async def inspect_groups() -> dict[str, Any]:
+                    client = SourceHTTP(policy, settings.state_dir / 'source-cache')
+                    try:
+                        query = {'stock': json.dumps([{'code': code, 'market': 'ab', 'type': 'stock'} for code in args.symbol], separators=(',', ':')), 'finClientType': 'pc'}
+                        raw, _ = await client.document('baidu', 'https://finance.pae.baidu.com/api/getrelatedblock?' + urlencode(query))
+                        value = json.loads(raw)
+                        return {code: [group for group in groups or [] if group.get('name') == '行业'] for code, groups in value.get('Result', {}).items()}
+                    finally:
+                        await client.close()
+                print(json.dumps(asyncio.run(inspect_groups()), ensure_ascii=False, indent=2))
+                return 0
+            provider = BaiduConcepts(policy, settings.state_dir / 'source-cache', batch_limit=300, include_industry=True)
+            def show_progress(message: str, progress: int, advanced: bool) -> None:
+                if progress % 6 == 0:
+                    print(json.dumps({'progress': progress, 'message': message}, ensure_ascii=False), flush=True)
+            with progress_sink(show_progress, operation_id='validate-baidu-classifications-v2-' + datetime.now().strftime('%Y%m%d')):
+                data = asyncio.run(provider.read(stocks))
+            print(json.dumps({'industryCoverage': data.get('industryCoverage'), 'conceptCollection': data.get('conceptCollection'),
+                'provenance': data.get('provenance'), 'samples': {key: data['stocks'].get(key) for key in
+                    ['SSE.600000', 'SZSE.000001', 'SZSE.300750', 'SSE.688981']}}, ensure_ascii=False, indent=2))
         elif args.command == 'inspect-sync':
             from stocksieve.operations.sync_check import inspect_sync
             print(json.dumps(asyncio.run(inspect_sync(service.tasks, registry, args.job, probe=args.probe)), ensure_ascii=False, indent=2))
         elif args.command == 'check-sina':
             from stocksieve.operations.sina_check import check_sina
-            print(json.dumps(asyncio.run(check_sina(settings, policy, args.date, args.directory)), ensure_ascii=False, indent=2))
+            if args.basics:
+                from stocksieve.operations.sina_check import check_basics
+                print(json.dumps(asyncio.run(check_basics(settings, policy)), ensure_ascii=False, indent=2))
+            elif args.incremental:
+                from stocksieve.operations.sina_incremental_check import (
+                    check_incremental,
+                )
+                print(json.dumps(asyncio.run(check_incremental(database, settings, policy, args.date)), ensure_ascii=False, indent=2))
+            else:
+                print(json.dumps(asyncio.run(check_sina(settings, policy, args.date, args.directory)), ensure_ascii=False, indent=2))
         elif args.command == 'retire-source-jobs':
             from stocksieve.operations.source_switch import retire_source_jobs
             registry.get(settings.default_source, 'daily')
@@ -162,59 +192,7 @@ def main() -> int:
             print(json.dumps(sync(database, apply=args.apply, details=args.details), ensure_ascii=False, indent=2))
         elif args.command == 'bootstrap-data':
             from stocksieve.operations.live_pipeline import bootstrap
-            asyncio.run(bootstrap(args.base_url, args.credentials_file, args.state_file, args.source, args.date, args.retry_failed, args.skip_initialize, args.only_kind, args.submit_only))
-        elif args.command == 'reconcile-slow-response':
-            from datetime import datetime, timezone
-
-            from sqlalchemy import select, update
-
-            import stocksieve.infrastructure.persistence.schema as tables
-            from stocksieve.modules.ingestion.infrastructure.repairs import (
-                reconcile_short_receive_deadline,
-            )
-            from stocksieve.shared.query import resource_id
-            with database.transaction(serialized=True) as connection:
-                row = connection.execute(select(tables.tasks).where(tables.tasks.c.id == resource_id(args.job, 'SYNC_JOB_NOT_FOUND'), tables.tasks.c.category == 'sync').with_for_update()).mappings().one()
-                if row['status'] != 'queued' or row['data_source'] != 'baostock' or row['lease_owner'] is not None or row['options_json'].get('sourceWaitReason') != 'SOURCE_ACCESS_WAIT':
-                    raise RuntimeError('任务不是无租约的渠道等待状态，未修改任务。')
-                if args.partial_retry_policy:
-                    from stocksieve.modules.ingestion.infrastructure.repairs import (
-                        reconcile_partial_stream_backoff,
-                    )
-                    result = reconcile_partial_stream_backoff(policy, settings.state_dir / 'baostock-wire')
-                else:
-                    result = reconcile_short_receive_deadline(policy, settings.state_dir / 'baostock-wire')
-                connection.execute(update(tables.tasks).where(tables.tasks.c.id == row['id']).values(run_after=datetime.now(timezone.utc)))
-                connection.execute(tables.logs.insert().values(task_id=row['id'], level='info', message=result['reason']))
-            print(json.dumps(result, ensure_ascii=False))
-        elif args.command == 'check-concepts':
-            if args.source == 'baostock':
-                from baostock.security.sectorinfo import query_stock_concept
-
-                from stocksieve.modules.ingestion.infrastructure.baostock_wire import (
-                    BaostockWire,
-                )
-                client = wire or BaostockWire(policy, settings.state_dir / 'baostock-wire')
-                deadline = time.monotonic() + 300
-                try:
-                    while True:
-                        try:
-                            rows = client.rows(query_stock_concept())
-                            print(json.dumps({'source': args.source, 'rows': len(rows), 'fields': list(rows[0]) if rows else [], 'sample': rows[:2]}, ensure_ascii=False))
-                            break
-                        except SourceDeferred as waiting:
-                            delay = waiting.until.timestamp() - time.time()
-                            if delay > 30 or time.monotonic() + delay > deadline:
-                                raise RuntimeError('概念验证等待渠道可执行时间：' + waiting.until.isoformat()) from None
-                            time.sleep(max(.1, delay))
-                finally:
-                    client.close()
-            else:
-                from stocksieve.modules.ingestion.infrastructure.providers.tdx import (
-                    TdxConcepts,
-                )
-                mapping = asyncio.run(TdxConcepts(policy, settings.state_dir / 'source-cache').read())
-                print(json.dumps({'source': args.source, 'mappedSecurities': len(mapping), 'concepts': len({row['id'] for values in mapping.values() for row in values}), 'sample': list(mapping.items())[:2]}, ensure_ascii=False))
+            asyncio.run(bootstrap(args.base_url, args.credentials_file, args.state_file, args.source, args.date, args.retry_failed, args.skip_initialize, args.only_kind, args.submit_only, force=args.force))
         elif args.command == 'check-tencent-metadata':
             from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
                 TencentMetadata,
@@ -253,70 +231,6 @@ def main() -> int:
                 finally:
                     await client.close()
             asyncio.run(check_metadata())
-        elif args.command == 'check-source':
-            from stocksieve.modules.ingestion.infrastructure.baostock_wire import (
-                BaostockWire,
-            )
-            client = wire or BaostockWire(policy, settings.state_dir / 'baostock-wire')
-            operations = [('daily', lambda: client.sdk.query_daily_history_k_AStock(str(args.date))),
-                          ('factors', lambda: client.sdk.query_daily_adjust_factor(str(args.date))),
-                          ('basic', lambda: client.sdk.query_stock_basic())]
-            if args.adjustment:
-                from datetime import timedelta
-                operations = []
-                for code in ('sh.600000', 'sz.000001', 'sz.300750', 'sh.688981'):
-                    for flag in ('3', '2'):
-                        operations.append((code + ':' + flag, lambda code=code, flag=flag: client.sdk.query_history_k_data_plus(code, 'date,code,open,high,low,close,preclose', str(args.date - timedelta(days=400)), str(args.date), adjustflag=flag)))
-            checked: dict[str, Any] = {}
-            deadline = time.monotonic() + 300
-            try:
-                for name, query in operations:
-                    while True:
-                        try:
-                            rows = client.rows(query())
-                            checked[name] = rows
-                            print(json.dumps({'check': name, 'count': len(rows), 'fields': list(rows[0]) if rows else [], 'sample': rows[:1]}, ensure_ascii=False), flush=True)
-                            break
-                        except SourceDeferred as waiting:
-                            delay = waiting.until.timestamp() - time.time()
-                            if delay > 30 or time.monotonic() + delay > deadline:
-                                raise RuntimeError('验证等待渠道可执行时间：' + waiting.until.isoformat()) from None
-                            time.sleep(max(.1, delay))
-                if args.adjustment:
-                    from decimal import Decimal as D
-                    for code in ('sh.600000', 'sz.000001', 'sz.300750', 'sh.688981'):
-                        raw, adjusted = checked[code + ':3'], {row['date']: row for row in checked[code + ':2']}
-                        factor = D(1)
-                        prior = None
-                        values = []
-                        for row in raw:
-                            if prior is not None and D(row['preclose']) > 0:
-                                factor *= prior / D(row['preclose'])
-                            values.append((row, factor))
-                            prior = D(row['close'])
-                        anchor = values[-1][1]
-                        qscale = D(raw[-1]['close']) / D(adjusted[raw[-1]['date']]['close'])
-                        error = max(abs(D(row[field]) * value / anchor - D(adjusted[row['date']][field]) * qscale) for row, value in values for field in ('open', 'high', 'low', 'close'))
-                        print(json.dumps({'check': 'adjustment-match', 'code': code, 'rows': len(values), 'maximumPriceDifference': str(error)}, ensure_ascii=False), flush=True)
-                        if error > D('.02'):
-                            raise RuntimeError('复权推导未通过交叉核验，不能启用。')
-                else:
-                    from stocksieve.modules.ingestion.infrastructure.providers.baostock import (
-                        BaostockSource,
-                    )
-                    from stocksieve.modules.ingestion.infrastructure.providers.tencent import (
-                        TencentMetadata,
-                    )
-                    source = BaostockSource(client, settings.state_dir / 'baostock-market.sqlite', metadata=TencentMetadata(policy, settings.state_dir / 'source-cache'))
-                    stocks = source.stocks(args.date)
-                    quotes = {row['code'] for row in checked['daily']}
-                    missing = [stock.stock_id for stock in stocks if source.vendor_code(stock) not in quotes]
-                    print(json.dumps({'check': 'four-board-coverage', 'stocks': len(stocks),
-                        'byBoard': {board: sum(stock.board == board for stock in stocks) for board in sorted(source.boards)}, 'missingDaily': len(missing), 'missingSamples': missing[:5]}, ensure_ascii=False), flush=True)
-                    if missing:
-                        raise RuntimeError('目录与批量日线覆盖不一致，不能启用。')
-            finally:
-                client.close()
         elif args.command == 'recover-history-bootstrap':
             print(json.dumps(service.tasks.recover_history_bootstrap(apply=args.apply), ensure_ascii=False))
         elif args.command == 'create-admin':
@@ -370,8 +284,6 @@ def main() -> int:
         print(str(error))
         return 2
     finally:
-        if wire:
-            wire.close()
         if database:
             database.close()
     return 0

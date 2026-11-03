@@ -174,8 +174,11 @@ class Context:
             return response.status, json.loads(response.text) if response.text else None, response.headers
         return asyncio.run(run())
 
-    def submit(self, kind: str, *, day: str | None = None) -> str:
+    def submit(self, kind: str, *, day: str | None = None, force: bool = True) -> str:
         payload = {'kind': kind, 'source': 'fixture'}
+        # 场景测试显式要求重新执行；普通接口提交的默认行为另行验证复用。
+        if kind == 'daily' and force:
+            payload['force'] = True
         if day is not None:
             payload['dataDate'] = day
         from uuid import uuid4

@@ -18,9 +18,12 @@ from stocksieve.modules.ingestion.application.ports import (
     CalendarCacheSource,
     CalendarDay,
     HistorySource,
+    IncrementalSource,
+    SecuritiesAwareSource,
     SharedCalendarSource,
     Source,
     SourceSession,
+    SnapshotScopedSource,
 )
 from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.application.registry import Registry
@@ -28,7 +31,7 @@ from stocksieve.modules.jobs.application.service import Tasks
 from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.application.queries import strategy_catalog
 from stocksieve.modules.market.domain.history import HistoryPolicy
-from stocksieve.modules.market.domain.models import BOARDS, Stock, adjusted_history
+from stocksieve.modules.market.domain.models import BOARDS, Stock, StockState, adjusted_history
 from stocksieve.modules.market.domain.strategies import SORTS, Context, evaluate
 from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.time import SHANGHAI
@@ -55,6 +58,19 @@ class Sync:
         policy = HistoryPolicy(task['options_json'].get('historyDays', 150), task['options_json'].get('historyMaxDays', 0))
         if isinstance(source, HistorySource):
             source = source.for_history(policy)
+        if isinstance(source, SnapshotScopedSource):
+            provenance = task['options_json'].get('dataProvenance', {})
+            if task['options_json'].get('historyBackfill') and not provenance:
+                with self.db.transaction() as connection:
+                    seed = connection.execute(select(t.snapshots).where(t.snapshots.c.id == task['options_json']['strategySnapshotId'])).mappings().one()
+                    provenance = (seed['coverage_json'] or {}).get('dataProvenance', {})
+            elif not provenance and task['target_date'] and task['target_date'] < self.tasks.clock().astimezone(SHANGHAI).date():
+                with self.db.transaction() as connection:
+                    prior = connection.execute(select(t.snapshots).where(t.snapshots.c.source == source.id, t.snapshots.c.status == 'published',
+                        t.snapshots.c.data_date == task['target_date']).order_by(t.snapshots.c.version.desc()).limit(1)).mappings().first()
+                if prior and (cap_source := (prior['coverage_json'] or {}).get('dataProvenance', {}).get('totalMarketCap')):
+                    provenance = {'totalMarketCap': cap_source}
+            source = source.for_snapshot(provenance, force=task['options_json'].get('force', False))
         try:
             with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id, background=task['options_json'].get('historyBackfill', False)):
                 if task['kind'] == 'initialize':
@@ -82,6 +98,9 @@ class Sync:
             raise DomainError('DATA_INCOMPLETE', '证券范围未完整覆盖本次任务的全部上市板块或包含重复记录。', 503)
 
     async def initialize(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
+        if isinstance(source, SecuritiesAwareSource):
+            with self.db.transaction() as connection:
+                source.use_securities(tuple(stock_value(row) for row in self.market.known_securities(connection)))
         data = await source.initialize()
         boards = self.tasks.boards(task)
         stocks = tuple(stock for stock in data.stocks if stock.board in boards)
@@ -109,7 +128,7 @@ class Sync:
             return
         codes = {**(old['source_codes'] if old else {}), source: stock.source_code or stock.stock_id}
         upsert(connection, t.stocks, {'stock_id': stock.stock_id}, {'code': stock.code, 'name': stock.name,
-               'exchange': stock.exchange, 'board': stock.board, 'listed_on': stock.listed_on,
+               'exchange': stock.exchange, 'board': stock.board, 'listed_on': stock.listed_on or (old['listed_on'] if old else None),
                'delisted_on': stock.delisted_on, 'source_codes': codes, 'updated_at': self.tasks.clock()})
 
     async def catalog(self, lease: Lease, source: Source) -> None:
@@ -295,7 +314,11 @@ class Sync:
             return
         if not current['options_json'].get('buildingSnapshotId'):
             with self.db.transaction() as connection:
-                known = tuple(stock_value(row) for row in connection.execute(select(t.stocks)).mappings())
+                if task['options_json'].get('historyBackfill'):
+                    known = tuple(stock_value(row) for row in connection.execute(select(t.snapshot_stocks).where(
+                        t.snapshot_stocks.c.snapshot_id == task['options_json']['strategySnapshotId'])).mappings())
+                else:
+                    known = tuple(stock_value(row) for row in self.market.known_securities(connection))
             universe = tuple(stock for stock in await source.universe(task['target_date'], known) if stock.board in self.tasks.boards(task))
             if task['options_json'].get('historyBackfill'):
                 self.tasks.yield_to_foreground(lease)
@@ -314,7 +337,16 @@ class Sync:
                 stock_row = connection.execute(select(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == snapshot['id'], t.snapshot_stocks.c.stock_id == stock_id)).mappings().one()
                 stock = stock_value(stock_row)
                 base = connection.execute(select(t.snapshots).where(t.snapshots.c.id == snapshot['base_snapshot_id'])).mappings().first() if snapshot['base_snapshot_id'] else None
-                history = self.market.history(connection, base, stock_id) if base and base['source'] == source.id else []
+                metadata_seed = base['id'] if base and options.get('historyBackfill') else options.get('metadataSnapshotId')
+                seed_quote = connection.execute(select(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == metadata_seed,
+                    t.snapshot_stocks.c.stock_id == stock_id)).mappings().first() if metadata_seed else None
+                since = None
+                if isinstance(source, IncrementalSource):
+                    open_days = sorted(date.fromisoformat(day) for day, opened in snapshot['calendar_json'][stock.exchange].items()
+                        if opened is True and day <= str(task['target_date']))
+                    count = source.incremental_history_days + 1
+                    since = open_days[-count] if len(open_days) >= count else None
+                history = self.market.history(connection, base, stock_id, since=since) if base and base['source'] == source.id else []
                 history = [bar for bar in history if bar.day <= task['target_date']]
                 floor = date.fromisoformat(options['historyCutoffDate']) if options.get('historyCutoffDate') else None
                 if floor:
@@ -328,6 +360,17 @@ class Sync:
                 await asyncio.sleep(0)
                 continue
             packet = await source.daily(stock, task['target_date'], tuple(history))
+            if seed_quote and task['options_json'].get('historyBackfill'):
+                # 历史回补只扩大窗口，当日状态及已确认市值沿用原策略快照，不套用随后取得的资料。
+                packet = replace(packet, state=StockState(seed_quote['trade_status'], seed_quote['is_st'], seed_quote['is_delisting']),
+                    bars=tuple(replace(bar, total_market_cap=seed_quote['total_market_cap']) if bar.day == task['target_date'] else bar for bar in packet.bars))
+            elif seed_quote:
+                # 历史日期没有新的已证实市值时，保留该日原收盘价对应的已确认值和原来源。
+                packet = replace(packet, state=StockState(packet.state.trade_status or seed_quote['trade_status'],
+                    packet.state.is_st if packet.state.is_st is not None else seed_quote['is_st'],
+                    packet.state.is_delisting if packet.state.is_delisting is not None else seed_quote['is_delisting']),
+                    bars=tuple(replace(bar, total_market_cap=seed_quote['total_market_cap'])
+                    if bar.day == task['target_date'] and bar.total_market_cap is None and bar.close == seed_quote['quote_price'] else bar for bar in packet.bars))
             if packet.stock.stock_id != stock_id or any(bar.day > task['target_date'] for bar in packet.bars) or len({bar.day for bar in packet.bars}) != len(packet.bars):
                 raise DomainError('DATA_INCOMPLETE', '行情身份、日期或唯一性校验失败。', 503)
             if floor:
@@ -442,6 +485,9 @@ class Sync:
                        'conceptCoverage': (catalog['result_json'] or {}).get('_conceptCoverage') if catalog else None,
                        'dataProvenance': {**getattr(source, 'provenance', {}), **((catalog['result_json'] or {}).get('_classificationProvenance', {}) if catalog else {})},
                        'catalogKnownCount': sum(stock.stock_id in classifications and classifications[stock.stock_id].get('_conceptsKnown', True) for stock in universe)}
+            if task['target_date'] < self.tasks.clock().astimezone(SHANGHAI).date():
+                options['metadataSnapshotId'] = connection.scalar(select(t.snapshots.c.id).where(t.snapshots.c.source == source.id,
+                    t.snapshots.c.status == 'published', t.snapshots.c.data_date == task['target_date']).order_by(t.snapshots.c.version.desc()).limit(1))
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(options_json=options, progress=80))
 
     def publish(self, lease: Lease) -> None:

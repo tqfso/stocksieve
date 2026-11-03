@@ -19,7 +19,7 @@ class PipelineFailure(RuntimeError):
         self.code, self.details = code, details
 
 
-async def bootstrap(base: str, credentials_file: Path, state_file: Path, source: str, target: date | None = None, retry_failed: bool = False, skip_initialize: bool = False, only_kind: str | None = None, submit_only: bool = False) -> None:
+async def bootstrap(base: str, credentials_file: Path, state_file: Path, source: str, target: date | None = None, retry_failed: bool = False, skip_initialize: bool = False, only_kind: str | None = None, submit_only: bool = False, *, force: bool = False) -> None:
     if submit_only and not only_kind:
         raise RuntimeError('仅提交后台任务需同时指定--only-kind。')
     credentials = json.loads(credentials_file.read_text())
@@ -62,12 +62,17 @@ async def bootstrap(base: str, credentials_file: Path, state_file: Path, source:
                 if job and job['status'] == 'failed':
                     if not retry_failed:
                         raise RuntimeError('既有任务失败，请核对后显式重试：' + job['error']['message'])
-                    job = None
-                    state['keys'].pop(kind, None)
+                    marker = kind + ':' + str(job.get('finishedAt'))
+                    key = state.setdefault('retryKeys', {}).setdefault(marker, 'bootstrap_retry_' + uuid4().hex)
+                    save()
+                    job = await call('POST', '/admin/sync-jobs/' + job['id'] + '/retry', {}, key)
                 if job is None:
                     key = state['keys'].setdefault(kind, 'bootstrap_' + uuid4().hex)
                     save()
-                    payload = {'kind': kind, 'source': source, **({'dataDate': state['date']} if kind == 'daily' else {})}
+                    selected_source = 'baidu_concepts' if kind == 'catalog' and source == 'sina' else source
+                    payload = {'kind': kind, 'source': selected_source, **({'dataDate': state['date']} if kind == 'daily' else {})}
+                    if kind == 'daily' and force:
+                        payload['force'] = True
                     deadline = time.monotonic() + 6 * 3600
                     while True:
                         try:

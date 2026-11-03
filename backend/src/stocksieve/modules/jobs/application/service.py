@@ -48,6 +48,8 @@ class Tasks:
                     result['progress'] = min(99.9, round(stock_progress['processedCount'] / stock_progress['totalCount'] * 100, 1))
             source_wait = (row['options_json'] or {}).get('sourceWaitReason') if row['status'] == 'queued' and not row['wait_reason'] else None
             stored = row['result_json']
+            if stored and stored.get('outcome') == 'already_synced':
+                stock_progress = None
             public_result = {key: stored.get(key) for key in ('outcome', 'totalCount', 'processedCount', 'successCount', 'skippedCount', 'failedCount', 'publishedSnapshotId')} if stored else None
             result.update(source=row['data_source'], trigger=row['trigger'], scheduledFor=stamp(row['scheduled_for']),
                           stockProgress=stock_progress,
@@ -168,17 +170,40 @@ class Tasks:
                         message='已改为先发布近期策略、后补齐历史；真实渠道预算与冷却保持。'))
             return {'applied': apply, 'taskIds': changed, 'normalizedBackfillIds': normalized}
 
+    def completed_sync(self, connection: Connection, source: str, target: date, boards: tuple[str, ...], initial: int, maximum: int) -> Any:
+        """相同日期、渠道、范围和分类仍有效时复用成功快照，不重复取数和计算。"""
+        cutoff = datetime.combine(target, datetime.max.time(), SHANGHAI)
+        exchanges = {BOARDS[board][1] for board in boards}
+        latest_closed = connection.scalar(select(func.max(t.calendar.c.trade_date)).where(t.calendar.c.exchange.in_(exchanges),
+            t.calendar.c.is_open.is_(True), t.calendar.c.close_at <= self.clock()))
+        if target == latest_closed:
+            cutoff = self.clock()
+        catalog = connection.scalar(select(t.tasks.c.id).where(t.tasks.c.kind == 'catalog', t.tasks.c.status == 'succeeded',
+            t.tasks.c.finished_at <= cutoff).order_by(func.coalesce(t.tasks.c.result_json['_catalogRevision'].as_integer(), 0).desc(), t.tasks.c.finished_at.desc()).limit(1))
+        snapshots = connection.execute(select(t.snapshots).where(t.snapshots.c.status == 'published', t.snapshots.c.source == source,
+            t.snapshots.c.data_date == target).order_by(t.snapshots.c.version.desc())).mappings()
+        for snapshot in snapshots:
+            coverage = snapshot['coverage_json'] or {}
+            policy = coverage.get('historyPolicy', {})
+            cap = policy.get('maxDays', 0)
+            if set(boards) != set(coverage.get('boards', [])) or coverage.get('catalogTaskId') != catalog:
+                continue
+            if policy.get('initialDays', 0) < initial or cap != maximum:
+                continue
+            task = connection.execute(select(t.tasks).where(t.tasks.c.id == snapshot['sync_task_id'], t.tasks.c.status == 'succeeded')).mappings().first()
+            if task:
+                return task
+        return None
+
     def submit_sync(self, user: dict[str, Any], path: str, key: str | None, data: SyncInput) -> tuple[dict[str, Any], dict[str, str]]:
         def create(connection: Connection) -> Any:
             self.registry.get(data.source, data.kind)
             if data.kind != 'daily' and 'dataDate' in data.model_fields_set:
                 raise invalid('dataDate', '该任务不接受数据日期。')
+            if data.kind != 'daily' and 'force' in data.model_fields_set:
+                raise invalid('force', '仅收盘任务接受强制重新计算。')
             if data.kind != 'initialize' and not self.initialized(connection):
                 raise DomainError('DATA_NOT_INITIALIZED', '请先初始化股票基础信息。', 409)
-            active = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.status.in_(['queued', 'running']),
-                func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False).is_(False))).first()
-            if active:
-                raise DomainError('SYNC_IN_PROGRESS', '已有未完成的数据任务。', 409, {'jobId': active.id})
             target = None
             if data.kind == 'daily':
                 target = data.dataDate or self.clock().astimezone(SHANGHAI).date()
@@ -192,8 +217,15 @@ class Tasks:
                     raise DomainError('NOT_TRADING_DAY', '目标日期为确认休市日。')
                 if any(row['is_open'] and (row['close_at'] is None or utc(row['close_at']) > self.clock()) for row in rows):
                     raise DomainError('MARKET_NOT_CLOSED', '目标交易日尚未确认收盘。', 409)
+                if not data.force and (completed := self.completed_sync(connection, data.source, target, self.settings.market_boards,
+                    self.settings.history_trading_days, self.settings.history_max_trading_days)) is not None:
+                    return completed
+            active = connection.execute(select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.status.in_(['queued', 'running']),
+                func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False).is_(False))).first()
+            if active:
+                raise DomainError('SYNC_IN_PROGRESS', '已有未完成的数据任务。', 409, {'jobId': active.id})
             return self.new(connection, category='sync', kind=data.kind, user_id=user['id'], target=target, source=data.source,
-                            options={'retryMinutes': self.settings.retry_minutes, 'readinessHours': self.settings.readiness_hours})
+                            options={'retryMinutes': self.settings.retry_minutes, 'readinessHours': self.settings.readiness_hours, 'force': data.force})
         return self.accept(user['id'], path, key, data.model_dump(mode='json', exclude_unset=True), create)
 
     def retry_sync(self, user: dict[str, Any], job_id: str, path: str, key: str | None) -> tuple[dict[str, Any], dict[str, str]]:

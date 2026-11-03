@@ -103,7 +103,7 @@ def test_quote_batches_resume_from_saved_cursor_after_restart(tmp_path: Path) ->
         values = []
         for symbol in url.split('list=')[1].split(','):
             fields = [''] * 32
-            fields[0], fields[1], fields[8], fields[30] = symbol, '10', '1000', '2026-11-02'
+            fields[0], fields[1], fields[8], fields[30], fields[31] = symbol, '10', '1000', '2026-11-02', '15:00:00'
             values.append(f'var hq_str_{symbol}="' + ','.join(fields) + '";')
         return ''.join(values).encode('gb18030'), datetime.now(UTC)
 

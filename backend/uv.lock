@@ -983,7 +983,6 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "baostock", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "deepagents", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "httpx", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "langchain-openai", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -997,6 +996,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "baostock", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "playwright", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ruff", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1005,7 +1005,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = "==3.14.5" },
-    { name = "baostock", specifier = ">=0.9.1,<0.10" },
     { name = "deepagents", specifier = ">=0.7.32" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "langchain-openai", specifier = ">=1.7.3" },
@@ -1019,6 +1018,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "baostock", specifier = ">=0.9.1,<0.10" },
     { name = "playwright", specifier = ">=1.55,<2" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = ">=0.14,<1" },

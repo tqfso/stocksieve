@@ -18,7 +18,7 @@ from sqlalchemy import delete
 from stocksieve.infrastructure.persistence import schema as t
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check, run_research_check, run_readiness_check, run_sync_progress_check, run_sync_retry_check
+from browser_check import run_access_check, run_check, run_concept_check, run_strategy_check, run_research_check, run_readiness_check, run_sync_progress_check, run_sync_retry_check, run_sync_dedup_check
 
 
 def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
@@ -146,6 +146,18 @@ def test_browser_against_deployed_research(request: Any) -> None:
     credentials = json.loads(Path(file).read_text())
     result = run_research_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/stock-research-mobile.png')
     assert result['unselectedStockAnalyzed']
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def test_browser_against_deployed_dedup(request: Any) -> None:
+    if not request.config.getoption('--deployed-strategies'):
+        pytest.skip('正式同日去重验收需--deployed-strategies。')
+    base, file = request.config.getoption('--deployed-base'), request.config.getoption('--deployed-credentials')
+    if not base or not file:
+        pytest.fail('请指定正式地址和私有凭据文件。')
+    credentials = json.loads(Path(file).read_text())
+    result = run_sync_dedup_check(base, credentials['username'], credentials['password'])
+    assert result['noNewTask']
     print(json.dumps(result, ensure_ascii=False))
 
 

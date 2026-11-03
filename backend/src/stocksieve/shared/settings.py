@@ -63,7 +63,7 @@ class Settings:
                    web_dir=Path(values.get('STOCKSIEVE_WEB_DIR', str(ROOT / 'web'))),
                    rate_dir=Path(values.get('STOCKSIEVE_RATE_DIR', str(ROOT / '.source-probe'))),
                    market_boards=tuple(filter(None, values.get('STOCKSIEVE_MARKET_BOARDS', ','.join(BOARDS)).split(','))),
-                   enabled_sources=tuple(filter(None, values.get('STOCKSIEVE_ENABLED_SOURCES', '').split(','))),
+                   enabled_sources=tuple(filter(None, values.get('STOCKSIEVE_ENABLED_SOURCES', 'sina,baidu_concepts').split(','))),
                    default_source=values.get('STOCKSIEVE_DEFAULT_SOURCE', 'sina'),
                    request_interval=float(values.get('STOCKSIEVE_SOURCE_INTERVAL_SECONDS', '0.2')),
                    source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '20000')),
