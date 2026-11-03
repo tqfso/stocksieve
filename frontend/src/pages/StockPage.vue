@@ -1,7 +1,7 @@
 <!-- 本文件按股票稳定ID和冻结快照读取真实行情、策略信号、图表及后端模拟分析。 -->
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
 import StockChart from '../components/StockChart.vue';
@@ -49,6 +49,7 @@ async function openAi(): Promise<void> { await router.replace({ query: { ...rout
 watch(activeStrategy, (value) => { if (stock.value?.strategies.includes(value) && route.query.strategy !== value) void router.replace({ query: { ...route.query, strategy: value, snapshotId: stock.value.snapshotId } }); });
 watch([() => route.params.code, () => route.query.snapshotId], () => { void load(); }, { immediate: true });
 onUnmounted(() => { ++requestId; });
+onBeforeRouteLeave(() => { ++requestId; });
 </script>
 <template>
   <router-link :to="back" class="back-link"><AppIcon name="back" :size="17" />{{ fromAnalysis ? '返回个股搜索' : '返回机会列表' }}</router-link>
@@ -65,7 +66,7 @@ onUnmounted(() => { ++requestId; });
     <div class="detail-tabs"><button :class="{ active: tab === 'rules' }" @click="tab = 'rules'">规则筛选结果</button><button :class="{ active: tab === 'chips' }" @click="tab = 'chips'">筹码分布</button><button :class="{ active: tab === 'ai' }" @click="tab = 'ai'">AI 分析报告<span class="tiny-label">按需生成</span></button></div>
     <section v-if="tab === 'rules'" class="panel signal-panel">
       <div class="section-caption"><div><strong>入选信号快照</strong><span class="muted">{{ stock.dataDate }}</span></div><div class="segment-control"><button v-for="key in stock.strategies" :key="key" :class="{ active: activeStrategy === key }" @click="activeStrategy = key">{{ STRATEGIES[key].name }}</button></div></div>
-      <StatePanel v-if="!stock.strategies.length" title="所选快照未入选任何策略" description="仍可查看行情和筹码分布，并生成完整的AI模拟分析报告。" />
+      <StatePanel v-if="!stock.strategies.length" title="所选快照未入选任何策略" description="仍可查看行情和筹码分布，并生成完整的AI分析报告。" />
       <div v-else class="signal-layout"><div><span class="eyebrow">{{ strategy.name }} · {{ strategy.subtitle }}</span><h2>为什么进入候选列表？</h2><p class="signal-reason">{{ selectionReason(stock, activeStrategy) }}</p>
         <div v-if="isWaitingStrategy(activeStrategy) && metrics.rangeLower != null && metrics.rangeUpper != null" class="waiting-range"><div class="waiting-range-heading"><strong>整理区间与现价</strong><span class="tag tag-amber">等待中</span></div><div class="waiting-range-labels"><span>下沿 <b>{{ formatNumber(metrics.rangeLower) }}</b></span><span>上沿 <b>{{ formatNumber(metrics.rangeUpper) }}</b></span></div><div class="waiting-range-track"><span :style="{ width: `${rangePosition}%` }" /><i :style="{ left: `${rangePosition}%` }" /></div><p>收盘超过 {{ formatNumber(metrics.rangeUpper) }} 元后，再检查短线全部条件。</p></div>
         <div class="signal-metrics"><div><span>{{ strategy.metricName }}</span><strong>{{ strategyMetric(stock, activeStrategy) }}</strong></div><div v-for="[key, value] in displayedMetrics" :key="key"><span>{{ metricLabels[key] }}</span><strong>{{ formatNumber(value) }}</strong></div></div>

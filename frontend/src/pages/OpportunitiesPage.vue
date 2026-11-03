@@ -1,7 +1,7 @@
 <!-- 本文件展示五类策略机会，支持筛选、排序、分页和完整请求状态。 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
 import { BOARDS, isBoard } from '../boards.ts';
@@ -28,6 +28,7 @@ const counts = ref<Partial<Record<Strategy, number>>>({});
 const industryCount = ref(0);
 let loadedFilters = '';
 let restoring = false;
+let leaving = false;
 const strategyOpen = ref(false);
 let requestId = 0;
 let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -84,6 +85,7 @@ function restore(): void {
     restoring = false;
 }
 function syncUrl(): void {
+    if (leaving || route.path !== '/opportunities') return;
     const values: Record<string, string> = { strategy: query.strategy };
     if (snapshotId.value) values.snapshotId = snapshotId.value;
     for (const key of ['search', 'industry', 'concept', 'board'] as const)
@@ -106,6 +108,7 @@ function syncUrl(): void {
     void router.replace({ query: values });
 }
 async function load(): Promise<void> {
+    if (leaving) return;
     const id = ++requestId;
     loading.value = true;
     error.value = '';
@@ -163,6 +166,7 @@ void load();
 watch(query, () => { if (restoring) return; page.value = 1; syncUrl(); clearTimeout(debounce); ++requestId; loading.value = true; debounce = setTimeout(() => { void load(); }, 220); }, { flush: 'sync' });
 watch(page, () => { if (!restoring) { syncUrl(); void load(); } }, { flush: 'sync' });
 watch(() => route.query, () => {
+    if (leaving || route.path !== '/opportunities') return;
     const before = JSON.stringify([query, page.value, snapshotId.value]);
     restore();
     if (before !== JSON.stringify([query, page.value, snapshotId.value])) {
@@ -170,6 +174,8 @@ watch(() => route.query, () => {
         void load();
     }
 });
+// 路由守卫可能异步等待会话；提前终止旧页回写，避免迟到请求取消新导航。
+onBeforeRouteLeave(() => { leaving = true; ++requestId; clearTimeout(debounce); });
 onBeforeUnmount(() => { ++requestId; clearTimeout(debounce); });
 </script>
 

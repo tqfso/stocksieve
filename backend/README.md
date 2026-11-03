@@ -9,9 +9,11 @@ Python 3.12、aiohttp、SQLAlchemy、PostgreSQL；依赖和虚拟环境统一由
 - 新浪提供沪深四板块的证券基础、日历、行情、复权和市值；百度提供行业与题材。
 - 默认先发布150个交易日策略，再回补至2500个交易日，约十年；历史范围由 env 控制。
 - 相同日期、渠道、配置和分类的成功结果直接复用；失败同步从原任务检查点继续。
-- 任意已覆盖股票均可分析。AI 保持后端模拟，不需要模型凭据，不调用真实模型或联网研究；任务、报告和权限走真实服务；统一七章报告支持Word/PDF导出，筹码为独立查询，股东户数资料待接入。
+- 任意已覆盖股票均可分析。AI支持真实模型与离线模拟；真实模式检索巨潮公告、读取HTML/PDF并使用固定金融公式，缺资料如实展示；任务、报告和权限走真实服务；统一七章报告支持Word/PDF导出，筹码为独立查询，股东户数资料待接入。
 
 `backend/.env` 是唯一配置文件，环境变量优先。参考[配置示例](.env.example)，不要提交真实凭据。
+
+真实分析设置`STOCKSIEVE_AI_MODE=live`并配置模型地址、模型、密钥及协议。模型仅可调用检索下载、文档阅读、金融计算三个工具，资料入口和查询配方集中在[股票分析技能](skills/stock-analysis/SKILL.md)。任务限制工具次数、输出长度和总耗时，记录实际Token用量；模型失败明确报错，不自动退回模拟。当前公告研究不保证穷尽事件，行业PE和结构化股东户数仍待接入。
 
 ## 命令入口
 
@@ -36,6 +38,8 @@ uv run --project backend --frozen pytest backend/tests -q
 uv run --project backend --frozen playwright install chromium
 uv run --project backend --frozen pytest backend/tests --browser -q
 ```
+
+显式真实模型验收：`uv run --project backend --frozen pytest backend/tests/test_live_analysis.py -k real_provider --live-model -q -s`。此项使用私有模型配置及共享渠道频控，产生模型用量；行情为隔离schema内受控输入，正式行情另行部署复验。普通回归使用受控供应商和模型响应。
 
 接口测试始终使用真实 PostgreSQL 和随机端口 HTTP 服务，在随机 `stocksieve_test_` schema 中执行完整初始化 SQL，结束自动清理，不向 public 写测试数据。供应商返回值使用受控输入，测试不会消耗真实渠道预算。
 

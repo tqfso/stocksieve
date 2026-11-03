@@ -2,7 +2,7 @@
 
 [模块目录](README.md) · [接口总览](../README.md) · [通用约定](../common/conventions.md)
 
-权限：登录用户。
+权限：登录用户。`analysisMode`为当前服务的`mock`或`live`模式；历史报告以自身`simulated`标识为准。
 
 成功 `200`：
 
@@ -10,6 +10,7 @@
 {
   "data": {
     "initialized": true,
+    "analysisMode": "live",
     "defaultSource": "sina",
     "marketBoards": ["SSE_MAIN", "SZSE_MAIN", "CHINEXT", "STAR"],
     "stockUpdatedAt": "2026-10-28T17:00:00+08:00",

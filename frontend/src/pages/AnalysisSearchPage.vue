@@ -1,7 +1,7 @@
 <!-- 本文件从完整股票目录搜索个股，名称和代码共用一个入口，与策略入选结果无关。 -->
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import AppIcon from '../components/AppIcon.vue';
 import StatePanel from '../components/StatePanel.vue';
 import { BOARDS } from '../boards.ts';
@@ -16,9 +16,11 @@ const total = ref(0);
 const loading = ref(false);
 const error = ref('');
 let requestId = 0;
+let leaving = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 /** 请求只查询完整目录；通过请求序号丢弃快速输入后迟到的旧结果。 */
 async function load(): Promise<void> {
+    if (leaving) return;
     clearTimeout(timer);
     const id = ++requestId;
     const text = search.value.trim();
@@ -38,21 +40,25 @@ function openStock(stock: StockMatch): void {
 }
 /** 搜索词和页码保存到URL，刷新或从详情返回时恢复查询。 */
 function syncUrl(): void {
+    if (leaving || route.path !== '/analysis') return;
     void router.replace({ query: { ...(search.value.trim() ? { search: search.value } : {}), ...(page.value > 1 ? { page: String(page.value) } : {}) } });
 }
 watch(search, () => { page.value = 1; ++requestId; loading.value = !!search.value.trim(); syncUrl(); clearTimeout(timer); timer = setTimeout(load, 250); });
 watch(page, () => { syncUrl(); void load(); });
 watch(() => route.query, () => {
+    if (leaving || route.path !== '/analysis') return;
     const text = typeof route.query.search === 'string' ? route.query.search : '';
     const nextPage = Math.max(1, Number.parseInt(String(route.query.page ?? '1'), 10) || 1);
     if (search.value !== text) search.value = text;
     if (page.value !== nextPage) page.value = nextPage;
 });
 void load();
+// 离开搜索页后停止请求和URL回写，详情页的tab及快照参数由详情自身维护。
+onBeforeRouteLeave(() => { leaving = true; ++requestId; clearTimeout(timer); });
 onBeforeUnmount(() => { ++requestId; clearTimeout(timer); });
 </script>
 <template>
-  <div class="page-heading"><div><span class="eyebrow">STOCK RESEARCH</span><h1>分析你关注的股票</h1><p>输入名称或代码，无需先入选策略。当前覆盖沪深四板块。</p></div><span class="tag tag-amber">AI 分析暂用模拟结果</span></div>
+  <div class="page-heading"><div><span class="eyebrow">STOCK RESEARCH</span><h1>分析你关注的股票</h1><p>输入名称或代码，无需先入选策略。当前覆盖沪深四板块。</p></div><span class="tag tag-amber">报告保留资料来源与日期</span></div>
   <section class="panel research-search">
     <label for="stock-research-search"><strong>股票名称或代码</strong></label>
     <el-input id="stock-research-search" v-model="search" maxlength="50" placeholder="输入股票名称或代码，如浦发银行、600000" clearable size="large" @keyup.enter="load"><template #prefix><AppIcon name="search" /></template></el-input>

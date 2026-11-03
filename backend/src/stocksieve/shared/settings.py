@@ -36,6 +36,9 @@ class Settings:
     ai_max_steps: int = 12
     ai_tools_supported: bool = True
     ai_mode: str = 'mock'
+    ai_max_output_tokens: int = 8000
+    ai_timeout_seconds: int = 300
+    ai_reasoning_effort: str | None = None
 
     @classmethod
     def from_env(cls) -> 'Settings':
@@ -70,6 +73,10 @@ class Settings:
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
                    ai_model=values.get('STOCKSIEVE_AI_MODEL'), ai_protocol=values.get('STOCKSIEVE_AI_PROTOCOL', 'chat_completions'),
                    ai_mode=values.get('STOCKSIEVE_AI_MODE', 'mock'),
+                   ai_max_steps=int(values.get('STOCKSIEVE_AI_MAX_STEPS', '20')),
+                   ai_max_output_tokens=int(values.get('STOCKSIEVE_AI_MAX_OUTPUT_TOKENS', '8000')),
+                   ai_timeout_seconds=int(values.get('STOCKSIEVE_AI_TIMEOUT_SECONDS', '300')),
+                   ai_reasoning_effort=values.get('STOCKSIEVE_AI_REASONING_EFFORT') or None,
                    ai_tools_supported=cls.boolean(values.get('STOCKSIEVE_AI_TOOLS_SUPPORTED', 'true')))
 
     @staticmethod
@@ -93,3 +100,7 @@ class Settings:
             raise ValueError('上市板块配置为空、重复或包含未知板块。')
         if self.lease_seconds <= 0 or not 1 <= self.ai_max_steps <= 50:
             raise ValueError('租约和分析调用上限配置无效。')
+        if not 512 <= self.ai_max_output_tokens <= 32000 or not 30 <= self.ai_timeout_seconds <= 600:
+            raise ValueError('模型输出或总处理时限超出允许范围。')
+        if self.ai_reasoning_effort not in {None, 'minimal', 'low', 'medium', 'high', 'xhigh'}:
+            raise ValueError('模型推理强度配置无效。')

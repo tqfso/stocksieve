@@ -1,9 +1,9 @@
 """本文件执行分析技能的资料工具、计算与报告落库，固定输入并校验引用来源。"""
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime
-from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -16,7 +16,11 @@ from stocksieve.modules.analysis.application.facts import (
     report_facts,
     shareholder_facts,
 )
-from stocksieve.modules.analysis.application.ports import AgentRuntime, SearchProvider
+from stocksieve.modules.analysis.application.ports import (
+    AgentRuntime,
+    DocumentParser,
+    SearchProvider,
+)
 from stocksieve.modules.analysis.application.reports import (
     ReductionEvidence,
     ReportDraft,
@@ -25,6 +29,7 @@ from stocksieve.modules.analysis.domain.calculations import (
     chip_distribution,
     financial_metrics,
 )
+from stocksieve.modules.analysis.domain.finance import calculate
 from stocksieve.modules.analysis.domain.trade import general_trade
 from stocksieve.modules.ingestion.application.ports import (
     PublicHTTPClient,
@@ -37,42 +42,15 @@ from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.serialization import encode
 
 
-class PageText(HTMLParser):
-    """读取页面可见正文，不运行脚本，也不把网页中的指令当成系统指令。"""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.title_parts: list[str] = []
-        self.skip = 0
-        self.in_title = False
-
-    def handle_starttag(self, tag: str, attrs: Any) -> None:
-        if tag in {'script', 'style', 'noscript'}:
-            self.skip += 1
-        if tag == 'title':
-            self.in_title = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {'script', 'style', 'noscript'}:
-            self.skip = max(0, self.skip - 1)
-        if tag == 'title':
-            self.in_title = False
-
-    def handle_data(self, data: str) -> None:
-        if not self.skip and data.strip():
-            self.parts.append(data.strip())
-            if self.in_title:
-                self.title_parts.append(data.strip())
-
-
 class AnalysisTools:
     """工具仅访问当前任务输入和批准的公开域名，所有远程读取共享供应商频控。"""
 
     def __init__(self, tasks: Tasks, lease: Lease, http: PublicHTTPClient | None = None,
-                 search: SearchProvider | None = None) -> None:
+                 search: SearchProvider | None = None, reader: DocumentParser | None = None) -> None:
         self.tasks, self.lease, self.db = tasks, lease, tasks.db
         self.http, self.search = http, search
+        self.reader = reader
+        self.downloaded: dict[str, dict[str, Any]] = {}
         self.calls = 0
         self.seen: dict[str, dict[str, Any]] = {}
         with self.db.transaction() as connection:
@@ -128,7 +106,7 @@ class AnalysisTools:
         technical = general_trade(self.history, days, self.snapshot['data_date'], StockState(row['trade_status'], row['is_st'], row['is_delisting']))
         self.facts['generalTrade'] = technical
         self.facts['averages'] = {f'ma{period}': row[f'ma{period}'] for period in (5, 10, 20, 60, 120)}
-        self.save('general_trade', 'market', '通用技术观察计算 v1（模拟规则）', technical)
+        self.save('general_trade', 'market', '通用技术观察计算 v1', technical)
         for index, missing in enumerate(technical['missing']):
             self.save(f'general_missing_{index}', 'market', '通用技术资料', missing=missing)
         try:
@@ -173,38 +151,97 @@ class AnalysisTools:
         except (SourceDeferred, DomainError):
             return self.save(key, 'research', '公开资料检索', missing='公开检索渠道暂不可用或处于频控。')
         # 搜索摘要只用于发现原文，不能直接作为财务或减持事实依据。
-        return {'status': 'discovered', 'results': [{'title': hit.title, 'url': hit.url} for hit in hits[:10]]}
+        return {'status': 'discovered', 'results': [{'title': hit.title, 'url': hit.url, 'publishedAt': hit.published_at} for hit in hits[:8]]}
 
-    async def read_public(self, url: str) -> dict[str, Any]:
-        self.budget()
+    async def download_public(self, url: str, title: str = '', published_at: str | None = None) -> dict[str, Any]:
+        """下载只接受公开披露域名；资料需经过阅读与证券身份校验后才成为可引用证据。"""
         key = 'page_' + hashlib.sha256(url.encode()).hexdigest()[:32]
         try:
             parsed = urlsplit(url)
-            port = parsed.port
+            allowed = ('sse.com.cn', 'szse.cn', 'bse.cn', 'cninfo.com.cn')
+            if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.port not in {None, 443} or not parsed.hostname or not any(parsed.hostname == host or parsed.hostname.endswith('.' + host) for host in allowed):
+                return {'status': 'missing', 'missing': '仅支持技能中列出的公开披露原文地址。'}
         except ValueError:
-            return {'status': 'missing', 'missing': '网页地址格式无效。'}
-        allowed = ('sse.com.cn', 'szse.cn', 'bse.cn', 'cninfo.com.cn')
-        if parsed.scheme != 'https' or parsed.username or parsed.password or port not in {None, 443} or not parsed.hostname or not any(parsed.hostname == host or parsed.hostname.endswith('.' + host) for host in allowed):
-            return {'status': 'missing', 'missing': '网页地址不属于已配置的公开披露渠道。'}
+            return {'status': 'missing', 'missing': '原文地址格式无效。'}
+        if key in self.downloaded or self.seen.get(key, {}).get('status') == 'available':
+            return {'materialKey': key, 'status': 'downloaded', 'title': title, 'url': url}
         if not self.http:
-            return self.save(key, 'research', parsed.hostname, missing='公开网页读取工具尚未就绪。')
-        with self.db.transaction() as connection:
-            previous = connection.execute(select(t.materials).where(t.materials.c.task_id == self.lease.id, t.materials.c.material_key == key, t.materials.c.status == 'available')).mappings().first()
-        if previous:
-            self.seen[key] = dict(previous)
-            return {'key': key, 'status': 'available', 'data': previous['content_json']}
+            return {'status': 'missing', 'missing': '公开资料下载尚未就绪。'}
         try:
-            raw, fetched_at = await self.http.document(parsed.hostname, url)
-            if raw.startswith(b'%PDF'):
-                return self.save(key, 'research', parsed.hostname, missing='资料为PDF，尚未取得可核验的文本。')
-            parser = PageText(); parser.feed(raw.decode('utf-8', errors='replace'))
-            content = '\n'.join(parser.parts)[:100000]
-            if not content.strip():
-                return self.save(key, 'research', parsed.hostname, missing='网页未取得可用正文。')
-            return self.save(key, 'research', ''.join(parser.title_parts)[:200] or parsed.hostname,
-                             {'url': url, 'text': content}, url=url, fetched_at=fetched_at)
+            raw, fetched = await self.http.document(parsed.hostname, url)
+            self.downloaded[key] = {'raw': raw, 'title': title, 'url': url, 'publishedAt': published_at, 'fetchedAt': fetched}
+            return {'materialKey': key, 'status': 'downloaded', 'title': title, 'url': url, 'publishedAt': published_at}
         except (SourceDeferred, DomainError):
-            return self.save(key, 'research', parsed.hostname, missing='该公开资料暂不可读取或处于频控。')
+            return {'status': 'missing', 'missing': '原文下载暂不可用或处于频控，未绕过冷却。'}
+
+    async def search_and_download(self, query: str, url: str = '') -> dict[str, Any]:
+        """联网工具：检索当前证券公告并下载最多三份原文，也可下载已发现的披露地址。"""
+        if url:
+            self.budget()
+            return await self.download_public(url)
+        discovered = await self.search_public(query)
+        if discovered.get('status') != 'discovered':
+            return discovered
+        documents = []
+        for hit in discovered.get('results', [])[:3]:
+            documents.append(await self.download_public(hit['url'], hit['title'], hit.get('publishedAt')))
+        return {'status': 'discovered', 'documents': documents, 'otherResults': discovered.get('results', [])[3:],
+                'note': '检索标题不是事实证据；用read_document读取正文后才能引用materialKey。'}
+
+    async def read_document(self, material_key: str, keyword: str = '', page: int = 1) -> dict[str, Any]:
+        """阅读工具：提取正文并保存，按关键词或页码返回有限片段，保持页码可追溯。"""
+        self.budget()
+        if len(keyword) > 80 or type(page) is not int or page < 1:
+            return {'status': 'missing', 'missing': '关键词最多80字，页码必须为正整数。'}
+        source = self.seen.get(material_key)
+        if not source or source['status'] != 'available':
+            downloaded = self.downloaded.get(material_key)
+            if not downloaded or not self.reader:
+                return {'status': 'missing', 'missing': '请先检索下载原文；不能读取任意服务器文件。'}
+            try:
+                document = await asyncio.to_thread(self.reader.parse, downloaded['raw'])
+                normalized = ''.join(document['text'].split())
+                if self.record['stock']['code'] not in normalized and ''.join(self.record['stock']['name'].split()) not in normalized:
+                    return self.save(material_key, 'research', downloaded['title'] or document['title'], missing='原文未匹配当前股票代码或名称，暂不作为公司事实依据。')
+                stamp = downloaded['publishedAt'] or document.get('publishedAt')
+                published = datetime.fromisoformat(stamp) if stamp else None
+                self.save(material_key, 'research', downloaded['title'] or document['title'], document,
+                          url=downloaded['url'], published_at=published, fetched_at=downloaded['fetchedAt'])
+                source = self.seen[material_key]
+            except (MissingData, ValueError) as error:
+                return self.save(material_key, 'research', downloaded['title'] or '公开原文', missing=str(error))
+        document = source['content_json']
+        pages = document.get('pages', [{'page': 1, 'text': document.get('text', '')}])
+        snippets = []
+        for item in pages:
+            text = item['text']
+            position = text.find(keyword) if keyword else 0
+            if (keyword and position >= 0) or (not keyword and page <= item['page'] < page + 2):
+                start = max(0, position - 500)
+                snippets.append({'page': item['page'], 'text': text[start:start + 4000]})
+            if len(snippets) >= 3:
+                break
+        return {'key': material_key, 'status': 'available', 'title': source['source_name'], 'url': source['source_url'],
+                'publishedAt': source['published_at'], 'pageCount': document.get('pageCount', len(pages)),
+                'truncated': document.get('truncated', False), 'snippets': snippets,
+                'note': '未命中关键词不代表不存在该事项；完整披露范围以实际读到的原文为准。'}
+
+    async def calculate_finance(self, operation: str, inputs: dict[str, Any], source_keys: list[str] | None = None) -> dict[str, Any]:
+        """计算工具：固定公式，记录输入来源和情景假设，计算结果可作为报告引用。"""
+        self.budget()
+        keys = source_keys or []
+        if any(self.seen.get(key, {}).get('status') != 'available' for key in keys):
+            return {'status': 'missing', 'missing': '计算引用了尚未取得的输入资料。'}
+        try:
+            if not keys and not inputs.get('assumption'):
+                raise ValueError('请指定已取得的输入资料键，或明确填写assumption情景假设。')
+            result = calculate(operation, inputs)
+        except (ValueError, TypeError, ArithmeticError):
+            return {'status': 'missing', 'missing': '计算输入无效；请按技能所列字段、单位和区间提供参数。'}
+        result['sourceKeys'] = keys
+        self.facts.setdefault('calculations', []).append(result)
+        key = 'calculation_' + hashlib.sha256(encode(result).encode()).hexdigest()[:24]
+        return self.save(key, 'calculation', '金融计算 · ' + operation, result)
 
     async def review_reductions(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         """股东、状态与数量语境须来自已读原文；空结果不能证明没有减持风险。"""
@@ -250,11 +287,12 @@ class Analysis:
     """成功报告、资料版本和任务终态同事务提交，模型不能改写来源与计算结果。"""
 
     def __init__(self, tasks: Tasks, runtime: AgentRuntime, http: PublicHTTPClient | None = None,
-                 search: SearchProvider | None = None) -> None:
+                 search: SearchProvider | None = None, reader: DocumentParser | None = None) -> None:
         self.tasks, self.runtime, self.http, self.search = tasks, runtime, http, search
+        self.reader = reader
 
     async def run(self, lease: Lease) -> None:
-        tools = AnalysisTools(self.tasks, lease, self.http, self.search)
+        tools = AnalysisTools(self.tasks, lease, self.http, self.search, self.reader)
         if tools.task['options_json'].get('runtime') != self.runtime.identity():
             raise DomainError('ANALYSIS_CONFIG_CHANGED', '受理后模型配置发生变化，请重新发起分析。', 503)
         identity = tools.task['options_json']['runtime']
@@ -267,6 +305,8 @@ class Analysis:
             draft = ReportDraft.model_validate(raw)
         except ValueError as error:
             raise DomainError('ANALYSIS_INVALID_REPORT', '模型返回的报告格式不符合要求。', 503) from error
+        if not simulated and draft.reductions:
+            await tools.review_reductions([item.model_dump() for item in draft.reductions])
         available = {key: value for key, value in tools.seen.items() if value['status'] == 'available'}
         if any(key not in available for key in draft.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告引用了未取得的资料。', 503)
@@ -274,8 +314,20 @@ class Analysis:
             raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '真实分析尚无核验的公司与行业资料。', 503)
         if any(key not in available for section in draft.sections for key in section.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告章节引用了未取得的资料。', 503)
+        cited = set(draft.sourceKeys) | {key for section in draft.sections for key in section.sourceKeys}
+        if not simulated and not any(available[key]['material_kind'] == 'research' for key in cited):
+            raise DomainError('ANALYSIS_INVALID_REPORT', '真实报告未引用实际阅读的公开原文。', 503)
         tools.stage('writing', 85)
         metrics, valuation = report_facts(tools.record, tools.facts, tools.snapshot['data_date'].isoformat())
+        # 页面与导出共用已保存计算，指标描述保留假设，不把盈亏比当实际胜率。
+        scenarios = [item for item in tools.facts.get('calculations', []) if item['operation'] == 'risk_reward']
+        if scenarios:
+            scenario = scenarios[-1]
+            result = scenario['result']
+            detail = (scenario['inputs'].get('assumption') or '技术价位条件情景') + '；' + scenario['limitation']
+            metrics.append({'label': '情景净盈亏比', 'value': f"{result['riskRewardRatio']:.2f} : 1", 'detail': detail})
+            if result['breakEvenWinRatePercent'] is not None:
+                metrics.append({'label': '盈亏平衡所需胜率（理论）', 'value': f"{result['breakEvenWinRatePercent']:.2f}%", 'detail': '仅为该盈亏情景的数学门槛，不是历史或预测胜率。'})
         overview = draft.overview.model_dump()
         technical = tools.facts['generalTrade']
         overview['pricePlan'] = technical['plan']
@@ -295,6 +347,10 @@ class Analysis:
         if tools.reduction_verified:
             used_keys.add('reduction_review')
             used_keys.update(record['sourceKey'] for record in tools.facts['reductions'])
+        for key, value in available.items():
+            if value['material_kind'] == 'calculation':
+                used_keys.add(key)
+                used_keys.update(value['content_json'].get('sourceKeys', []))
         ordered_keys = [key for key in available if key in used_keys]
         source_ids = {key: f'source_{index + 1}' for index, key in enumerate(ordered_keys)}
         sources = [{'id': source_ids[key], 'title': value['source_name'], 'publisher': value['source_name'],

@@ -151,7 +151,7 @@ class API:
                 if {row['exchange'] for row in all_rows} == exchanges and all(row['is_open'] is False or (row['is_open'] is True and row['close_at'] is not None and utc(row['close_at']) <= self.clock()) for row in all_rows):
                     latest = day.isoformat()
                     break
-        return success(request, {'initialized': initialized, 'stockUpdatedAt': times['initialize'], 'catalogUpdatedAt': times['catalog'], 'marketBoards': list(self.settings.market_boards),
+        return success(request, {'initialized': initialized, 'analysisMode': self.settings.ai_mode, 'stockUpdatedAt': times['initialize'], 'catalogUpdatedAt': times['catalog'], 'marketBoards': list(self.settings.market_boards),
             'latestTradingDate': latest, 'defaultSource': self.settings.default_source, 'publishedSnapshot': self.market.snapshot_view(snapshot) if snapshot else None,
             'coverage': {'totalStocks': sum(counts.values()), 'byExchange': {key: counts.get(key, 0) for key in ('SSE', 'SZSE', 'BSE')}}, 'sources': self.registry.public()})
 

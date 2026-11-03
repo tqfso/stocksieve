@@ -16,6 +16,8 @@ from stocksieve.infrastructure.persistence.schema import metadata as table_metad
 from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.infrastructure.agent import create_runtime
+from stocksieve.modules.analysis.infrastructure.reader import DocumentReader
+from stocksieve.modules.analysis.infrastructure.research import CninfoSearch
 from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
@@ -116,7 +118,8 @@ def main() -> int:
             async def run_worker() -> None:
                 http = SourceHTTP(policy, settings.state_dir / 'source-cache')
                 try:
-                    await Worker(service.tasks, Sync(service.tasks, registry), Analysis(service.tasks, runtime, http)).serve()
+                    await Worker(service.tasks, Sync(service.tasks, registry),
+                        Analysis(service.tasks, runtime, http, CninfoSearch(http), DocumentReader())).serve()
                 finally:
                     await http.close()
             asyncio.run(run_worker())

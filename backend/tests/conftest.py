@@ -196,14 +196,15 @@ class Context:
 
 
 def pytest_addoption(parser: Any) -> None:
+    parser.addoption('--live-model', action='store_true', help='显式使用私有配置调用真实模型与公开公告，产生模型用量；测试业务数据仍在隔离schema。')
     parser.addoption('--postgres-url-env', default=None, help='数据库URL环境变量名；省略则读取项目数据库配置')
     parser.addoption('--browser', action='store_true', help='使用本机浏览器验证隔离数据的前后端完整流程，需已构建前端')
-    parser.addoption('--deployed-base', default=None, help='正式部署的只读浏览器验收地址')
+    parser.addoption('--deployed-base', default=None, help='正式部署的浏览器验收地址')
     parser.addoption('--deployed-credentials', default=None, help='正式管理员私有凭据JSON文件路径，不在终端显示内容')
-    parser.addoption('--deployed-data', action='store_true', help='正式部署已发布真实行情时验收图表及后端模拟筹码报告')
+    parser.addoption('--deployed-data', action='store_true', help='验收正式图表、筹码及报告；按服务模式调用模型并保存结果')
     parser.addoption('--deployed-concepts', action='store_true', help='显式验收正式题材筛选，不生成分析报告')
     parser.addoption('--deployed-strategies', action='store_true', help='只读验收正式五类策略、空结果与筛选重置')
-    parser.addoption('--deployed-research', action='store_true', help='验收正式任意股票搜索和后端模拟报告，会保存明确标记的模拟分析')
+    parser.addoption('--deployed-research', action='store_true', help='验收正式任意股票搜索和报告；按服务模式调用模型并保存结果')
     parser.addoption('--deployed-readiness', action='store_true', help='只读验收正式收盘数据未就绪或渠道等待提示')
     parser.addoption('--deployed-retry-job', default=None, help='显式通过页面继续指定失败同步任务，沿用原检查点')
 

@@ -41,6 +41,7 @@ class ReportDraft(Input):
     sections: list[Section] = Field(min_length=7, max_length=7)
     sourceKeys: list[str] = Field(min_length=1, max_length=32)
     missingInformation: list[Short] = Field(default_factory=list, max_length=12)
+    reductions: list['ReductionEvidence'] = Field(default_factory=list, max_length=20)
 
     @field_validator('sections')
     @classmethod

@@ -11,10 +11,17 @@ if TYPE_CHECKING:
 class SearchHit:
     title: str
     url: str
+    published_at: str | None = None
 
 
 class SearchProvider(Protocol):
     async def search(self, query: str) -> list[SearchHit]: ...
+
+
+class DocumentParser(Protocol):
+    """把原文转换为带页码的文本，应用层不依赖具体PDF库。"""
+
+    def parse(self, raw: bytes) -> dict[str, Any]: ...
 
 
 class AgentRuntime(Protocol):

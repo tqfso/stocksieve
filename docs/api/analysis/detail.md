@@ -15,7 +15,7 @@
 | overview | decision含action（consider/wait/avoid）、label、reason；holding含持有判断label/reason；opportunities/risks为短句数组；pricePlan为技术观察条件和价位 |
 | summary | 报告摘要 |
 | sections | 七章，依次为company、advantages、risks、holding、buy、avoid、sell；每项含id/title/headline/text/sourceIds |
-| metrics | 实际指标的label/value/detail，缺失展示待核验，不填零代替 |
+| metrics | 实际指标的label/value/detail，缺失展示待核验；情景计算保留输入假设与费用口径，理论盈亏平衡胜率不代表实际胜率 |
 | valuation | 公司与行业PE对比，见下文 |
 | shareholders | 本期/上期股东户数、变化比例、统计与披露时间、来源及集中趋势；未采集保持null/unknown，较早报告可省略 |
 | sources | 实际引用资料，每项含id/title/publisher/url/publishedAt/fetchedAt，章节sourceIds关联此处 |
@@ -28,7 +28,7 @@
 
 `valuation`含basis（当前TTM）、companyPe、industryPe、industry、industryClassification、companyDataDate、financialPeriodEnd、industryDataDate、industryStatistic、status、explanation。未取得同口径行业估值时industryPe与行业日期为null，status=unavailable，禁止直接判断相对高低；动态与静态PE不能替代TTM。
 
-资料URL只采用实际保存的原文，未知可为null；发布日未知与未检索到资料均不意味着没有风险。当前模拟模式不联网，不虚构公告、券商目标价、行业PE或公司分类；sources可包含无外部链接的本地计算资料。报告不包含筹码图，但可引用筹码指标。
+资料URL只采用实际保存的原文，未知可为null；发布日未知与未检索到资料均不意味着没有风险。模拟模式不联网，不虚构公告、券商目标价、行业PE或公司分类；sources可包含无外部链接的本地计算资料。报告不包含筹码图，但可引用筹码指标。
 
 支持[Word/PDF导出](export.md)，导出与所选报告版本一致。
 

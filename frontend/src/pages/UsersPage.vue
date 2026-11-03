@@ -51,7 +51,7 @@ async function submit(): Promise<void> {
     <div>
       <span class="eyebrow">ACCESS MANAGEMENT</span>
       <h1>为每位研究者开放工作台</h1>
-      <p>管理员创建普通用户，普通用户可浏览机会并按需生成模拟报告。</p>
+      <p>管理员创建普通用户，普通用户可浏览机会并按需生成分析报告。</p>
     </div>
     <el-button type="primary" @click="openDialog">
       <AppIcon name="users" :size="17" />
@@ -73,7 +73,7 @@ async function submit(): Promise<void> {
         {{ users.filter(user => user.role === 'user').length }}
         <small>位</small>
       </strong>
-      <p>机会筛选、个股详情、模拟 AI 分析</p>
+      <p>机会筛选、个股详情、AI 分析报告</p>
     </div>
     <div class="summary-card">
       <span>管理员</span>

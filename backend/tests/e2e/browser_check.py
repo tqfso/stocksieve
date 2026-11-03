@@ -6,7 +6,8 @@ import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+from collections.abc import Iterator
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
@@ -36,8 +37,31 @@ def browser_page() -> Iterator[Any]:
                 browser.close()
 
 
+def wait_report(page: Any, accepted: dict[str, Any]) -> None:
+    """等待指定任务完成，防止把页面仍展示的旧报告误认为本次生成结果。"""
+    timeout = 30 if accepted['simulated'] else 330
+    deadline = time.monotonic() + timeout
+    # wait_for_function不会等待轮询谓词内部的Promise；显式等待每次fetch的结果。
+    while True:
+        task = page.evaluate("""async id => {
+            const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+            const response = await fetch('/api/v1/analyses/'+id,{headers:{Authorization:'Bearer '+token}});
+            if(!response.ok)throw new Error('读取报告状态失败');
+            return (await response.json()).data;
+        }""", accepted['id'])
+        if task['status'] == 'failed':
+            raise RuntimeError('分析任务失败：' + task['error']['code'])
+        if task['status'] == 'succeeded':
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError('等待分析任务超时。')
+        page.wait_for_timeout(2500)
+    expect(page.get_by_role('button', name='重新生成', exact=True)).to_be_enabled(timeout=15000)
+    expect(page.locator('.analysis-panel .section-caption .tag')).to_have_text('模拟分析' if accepted['simulated'] else '真实模型分析')
+
+
 def run_check(base: str, username: str, password: str, *, require_data: bool = False) -> dict[str, Any]:
-    """验证账号、行情和页面；有数据时额外生成明确标记的后端模拟分析。"""
+    """验证账号、行情和页面；有数据时额外按服务配置生成报告。"""
     __tracebackhide__ = True
     stage = '启动浏览器'
     checked: list[str] = []
@@ -79,16 +103,18 @@ def run_check(base: str, username: str, password: str, *, require_data: bool = F
                 page.get_by_role('button', name='年 K', exact=True).click()
                 expect(page.locator('.ohlc-strip')).to_be_visible()
                 checked.append('周K线和年K线')
-                stage = '独立筹码与统一模拟报告'
+                stage = '独立筹码与统一报告'
                 page.get_by_role('button', name='筹码分布', exact=True).click()
                 expect(page.locator('.chip-distribution')).to_be_visible()
                 page.get_by_role('button', name='AI 分析报告').click()
-                page.get_by_role('button', name=re.compile(r'^(生成报告|重新生成)$')).click()
-                expect(page.locator('.report-heading h2')).to_contain_text('模拟', timeout=30000)
+                with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/analyses')) as received:
+                    page.get_by_role('button', name=re.compile(r'^(生成报告|重新生成)$')).click()
+                accepted = received.value.json()['data']
+                wait_report(page, accepted)
                 expect(page.locator('.report-chapters .chapter')).to_have_count(7)
                 assert page.locator('.analysis-panel .chip-distribution').count() == 0
                 page.reload(wait_until='networkidle')
-                expect(page.locator('.report-heading h2')).to_contain_text('模拟')
+                expect(page.locator('.report-heading h2')).to_be_visible()
                 checked.append('独立筹码、统一报告及刷新恢复')
             else:
                 stage = '空库状态'
@@ -516,6 +542,7 @@ def run_sync_retry_check(base: str, username: str, password: str, job_id: str) -
 
 def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
     """验证任意个股、独立筹码、完整报告及两种真实文件下载，并检查移动布局。"""
+    __tracebackhide__ = True
     from io import BytesIO
     from tempfile import TemporaryDirectory
     from zipfile import ZipFile
@@ -562,19 +589,18 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             expect(page.locator('.chip-distribution')).to_be_visible(timeout=15000)
             expect(page.locator('.chips-panel')).not_to_contain_text('股东户数')
             assert len(analysis_posts) == before
-            stage = '统一七章模拟报告'
+            stage = '统一七章报告'
             page.get_by_role('button', name='AI 分析报告').click()
             assert page.locator('.analysis-types').count() == 0
             with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/analyses')) as received:
                 page.get_by_role('button', name=re.compile(r'^(生成报告|重新生成)$')).click()
             result = received.value.json()['data']
-            assert result['kind'] == 'report' and result['simulated'] and result['stockId'] == choice['stockId']
-            expect(page.get_by_role('button', name='重新生成', exact=True)).to_be_enabled(timeout=30000)
-            expect(page.locator('.report-heading h2')).to_contain_text('模拟', timeout=30000)
+            assert result['kind'] == 'report' and result['stockId'] == choice['stockId']
+            wait_report(page, result)
             expect(page.locator('.report-chapters .chapter')).to_have_count(7)
             expect(page.locator('.brief-grid')).to_contain_text('持有建议')
             page.locator('.chapter').first.locator('summary').click()
-            expect(page.locator('.chapter').first).to_contain_text('公司基本资料')
+            expect(page.locator('.chapter').first).to_contain_text('股票代码')
             expect(page.locator('.report-ownership')).to_contain_text('本期股东户数')
             expect(page.locator('.report-ownership')).to_contain_text('暂不能判断集中或分散')
             stage = '切换页签保留阅读位置'
@@ -584,7 +610,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             page.get_by_role('button', name='筹码分布', exact=True).click()
             expect(page.locator('.chip-distribution')).to_be_visible()
             page.get_by_role('button', name='AI 分析报告').click()
-            expect(page.locator('.report-heading h2')).to_contain_text('模拟')
+            expect(page.locator('.report-heading h2')).to_be_visible()
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
             assert page.evaluate('window.scrollY') > 50, '切换AI报告不应滚动到页面顶部'
             expect(page.locator('.valuation-details')).to_have_count(0)
@@ -593,7 +619,13 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             expect(page.locator('.analysis-panel .chip-distribution')).to_have_count(0)
             page.locator('.chapter').nth(1).locator('summary').click()
             previous_url = page.url
-            page.locator('.chapter').nth(1).locator('a').first.click()
+            citation = page.locator('.chapter').nth(1).locator('a').first
+            href = citation.get_attribute('href') or ''
+            if href.startswith('#'):
+                citation.click()
+            else:
+                # PDF原文链接可能直接触发下载，避免将它误认成下一步的Word导出。
+                assert href.startswith('https://') and citation.get_attribute('target') == '_blank'
             expect(page).to_have_url(previous_url)
             stage = 'Word与PDF下载'
             downloads = []
@@ -602,7 +634,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
                 with page.expect_download(timeout=30000) as download_info:
                     page.get_by_role('button', name=label, exact=True).click()
                 download = download_info.value
-                assert download.suggested_filename.endswith('.' + format)
+                assert download.suggested_filename.endswith('.' + format), '下载扩展名不符：' + download.suggested_filename
                 with TemporaryDirectory(prefix='stocksieve-download-') as directory:
                     file = Path(directory) / ('report.' + format)
                     download.save_as(str(file))
@@ -610,7 +642,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
                 if format == 'docx':
                     assert payload.startswith(b'PK'), '下载文件不是有效Word文档'
                     with ZipFile(BytesIO(payload)) as archive:
-                        assert '【模拟】' in archive.read('word/document.xml').decode()
+                        assert ('【模拟】' in archive.read('word/document.xml').decode()) == result['simulated'], 'Word报告的模拟标识与任务不一致'
                 else:
                     reader = PdfReader(BytesIO(payload))
                     assert '行业 PE（TTM）' in ''.join(p.extract_text() for p in reader.pages)
@@ -621,7 +653,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
                 downloads.append(format)
             stage = '刷新和移动视口'
             page.reload(wait_until='networkidle')
-            expect(page.locator('.report-heading h2')).to_contain_text('模拟')
+            expect(page.locator('.report-heading h2')).to_be_visible()
             page.set_viewport_size({'width': 390, 'height': 844})
             expect(page.locator('.report-decision')).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
@@ -632,9 +664,9 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             expect(search).to_have_value(choice['code'])
             assert not failures
             return {'stockId': choice['stockId'], 'name': choice['name'], 'unselectedStockAnalyzed': True,
-                'reportId': result['id'], 'downloads': downloads, 'refreshRestored': True, 'mobileChecked': True, 'pageErrors': len(failures)}
+                'reportId': result['id'], 'simulated': result['simulated'], 'downloads': downloads, 'refreshRestored': True, 'mobileChecked': True, 'pageErrors': len(failures)}
     except Exception as error:
-        diagnostic = (type(error).__name__ + ': ' + str(error)[:300]) if stage.startswith('导出 ') else type(error).__name__
+        diagnostic = type(error).__name__ + ': ' + str(error).replace(password, '[已隐藏]')[:600]
         raise RuntimeError('个股分析浏览器验收未通过，阶段：' + stage + '，' + diagnostic) from None
 
 

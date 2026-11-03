@@ -133,7 +133,7 @@ def test_browser_against_deployed_database(request: Any) -> None:
     base = request.config.getoption('--deployed-base')
     file = request.config.getoption('--deployed-credentials')
     if not base or not file:
-        pytest.skip('正式部署只读验收需显式指定地址和私有凭据文件。')
+        pytest.skip('正式部署验收需显式指定地址和私有凭据文件。')
     credentials = json.loads(Path(file).read_text())
     result = run_check(base, credentials['username'], credentials['password'], require_data=request.config.getoption('--deployed-data'))
     assert result['pageErrors'] == 0
@@ -167,7 +167,7 @@ def test_browser_against_deployed_strategies(request: Any) -> None:
 
 def test_browser_against_deployed_research(request: Any) -> None:
     if not request.config.getoption('--deployed-research'):
-        pytest.skip('正式个股模拟分析验收需显式--deployed-research，会保存模拟报告。')
+        pytest.skip('正式个股分析验收需显式--deployed-research，会保存报告并可能产生模型用量。')
     base = request.config.getoption('--deployed-base')
     file = request.config.getoption('--deployed-credentials')
     if not base or not file:
