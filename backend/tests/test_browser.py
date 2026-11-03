@@ -2,13 +2,11 @@
 
 import asyncio
 import json
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import HTTPServer
 from sqlalchemy import delete
 from stocksieve.infrastructure.persistence import schema as t
 from stocksieve.interfaces.http.api import API
@@ -17,8 +15,8 @@ from stocksieve.modules.analysis.infrastructure.agent import create_runtime
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'e2e'))
-from browser_check import (
+from .conftest import HTTPServer
+from .e2e.browser_check import (
     run_access_check,
     run_check,
     run_concept_check,
@@ -74,7 +72,7 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
 def test_browser_retry_from_original_checkpoint(context: Any, request: Any) -> None:
     if not request.config.getoption('--browser'):
         pytest.skip('重试交互验收需--browser。')
-    from test_sync_retry import failed_after_two
+    from .test_sync_retry import failed_after_two
     context.published()
     job, calls, state = failed_after_two(context)
     calls.clear(); state['broken'] = False
