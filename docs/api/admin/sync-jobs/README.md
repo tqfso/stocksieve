@@ -3,6 +3,7 @@
 | 方法 | 路径 | 文档 |
 | --- | --- | --- |
 | POST | `/admin/sync-jobs` | [发起任务](create.md) |
+| POST | `/admin/sync-jobs/{jobId}/retry` | [从断点继续](retry.md) |
 | GET | `/admin/sync-jobs` | [任务列表](list.md) |
 | GET | `/admin/sync-jobs/{jobId}` | [任务详情](detail.md) |
 | GET | `/admin/sync-jobs/{jobId}/logs` | [任务日志](logs.md) |

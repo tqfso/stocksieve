@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -286,6 +287,15 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
             stage = '历史回补期间日常更新入口'
             page.get_by_role('link', name='数据管理', exact=True).click()
             expect(page.get_by_role('heading', name='让研究从完整数据开始')).to_be_visible()
+            default_source = page.evaluate("""async () => {
+                const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+                const response = await fetch('/api/v1/market/status', {headers:{Authorization:'Bearer '+token}});
+                if (!response.ok) throw new Error('行情状态查询失败');
+                const status = (await response.json()).data;
+                return status.sources.find(source => source.id === status.defaultSource && source.available && source.supportedSyncKinds.includes('daily')) ?? null;
+            }""")
+            if default_source:
+                expect(page.locator('.summary-card').filter(has=page.get_by_role('heading', name='收盘行情与策略', exact=True)).locator('.el-select')).to_contain_text(default_source['name'])
             only_backfill = page.evaluate("""async () => {
                 const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
                 const response = await fetch('/api/v1/admin/sync-jobs', {headers:{Authorization:'Bearer '+token}});
@@ -301,7 +311,7 @@ def run_strategy_check(base: str, username: str, password: str) -> dict[str, Any
                     expect(controls.nth(index)).to_be_enabled()
             page.locator('.sidebar-user').click()
             page.wait_for_url('**/#/login*')
-            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill, 'sharedChartChecked': bool(stock_id), 'browserCrypto': crypto_capabilities}
+            return {'snapshotId': results['snapshotId'], 'strategyCounts': counts, 'defaultDailySource': default_source['id'] if default_source else None, 'filterResetChecked': True, 'regularUpdateAvailableDuringBackfill': only_backfill, 'sharedChartChecked': bool(stock_id), 'browserCrypto': crypto_capabilities}
     except Exception:
         raise RuntimeError('策略浏览器验收未通过，阶段：' + stage + '。') from None
 
@@ -338,6 +348,8 @@ def run_readiness_check(base: str, username: str, password: str) -> dict[str, An
             return (await response.json()).data.items.find(job => !job.historyBackfill && ['queued','running'].includes(job.status));
         }""")
         assert job
+        expect(page.locator('.active-sync')).not_to_be_visible()
+        page.locator(f'tr[data-task-id="{job["id"]}"]').get_by_role('button', name='查看详情', exact=True).click()
         panel = page.locator('.active-sync')
         expect(panel).to_contain_text(job['dataDate'])
         if job['waitReason'] == 'BOARD_DATA_NOT_READY':
@@ -352,11 +364,114 @@ def run_readiness_check(base: str, username: str, password: str) -> dict[str, An
         expect(panel).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
         page.set_viewport_size({'width': 1440, 'height': 1000})
+        page.locator('.el-drawer__close-btn').click()
         page.get_by_role('link', name='机会筛选', exact=True).click()
         expect(page.locator('.stock-name').first).to_be_visible()
         page.locator('.sidebar-user').click()
         page.wait_for_url('**/#/login*')
         return {'waitReason': job['waitReason'], 'dataDate': job['dataDate'], 'nextRetryAt': job['nextRetryAt'], 'waitingStateChecked': True}
+
+
+def run_sync_progress_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
+    """只读核对单一进度入口、按需详情与10秒实际处理速度，不提交同步任务。"""
+    __tracebackhide__ = True
+    with browser_page() as page:
+        page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+        page.get_by_placeholder('请输入账号', exact=True).fill(username)
+        page.get_by_placeholder('请输入密码', exact=True).fill(password)
+        page.get_by_role('button', name='登录工作台', exact=True).click()
+        page.wait_for_url('**/#/opportunities*')
+        expect(page.locator('.stock-name').first).to_be_visible()
+        page.get_by_role('link', name='数据管理', exact=True).click()
+        expect(page.locator('.data-table')).to_be_visible()
+        page.wait_for_load_state('networkidle')
+        expect(page.locator('.active-sync')).not_to_be_visible()
+        query = """async () => {
+            const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+            const response = await fetch('/api/v1/admin/sync-jobs?kind=daily', {headers:{Authorization:'Bearer '+token}});
+            if (!response.ok) throw new Error('任务查询失败');
+            return (await response.json()).data.items.find(job => !job.historyBackfill && job.stockProgress && ['queued','running'].includes(job.status));
+        }"""
+        first = page.evaluate(query)
+        if not first:
+            return {'singleProgressEntryChecked': True, 'activeTaskPresent': False}
+        market_requests = []
+        page.on('request', lambda request: market_requests.append(request.url) if urlsplit(request.url).path == '/api/v1/market/status' else None)
+        started = time.monotonic()
+        page.wait_for_timeout(10000)
+        after = page.evaluate(query)
+        elapsed = time.monotonic() - started
+        assert after and after['id'] == first['id']
+        saved = after['stockProgress']['processedCount']
+        previous = first['stockProgress']['processedCount']
+        assert saved > previous, '采样期间已保存股票数未增长。'
+        expected = min(99.9, round(saved / after['stockProgress']['totalCount'] * 100, 1))
+        assert after['progress'] == expected
+        assert len(market_requests) == 0, '进度轮询不应重新加载上方行情状态。'
+        page.locator(f'tr[data-task-id="{after["id"]}"]').get_by_role('button', name='查看详情', exact=True).click()
+        panel = page.locator('.active-sync')
+        expect(panel).to_be_visible()
+        expect(panel.locator('.el-progress__text')).to_be_visible()
+        displayed = float(panel.locator('.el-progress__text').inner_text().strip('%'))
+        assert abs(displayed - expected) <= .2
+        page.set_viewport_size({'width': 390, 'height': 844})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        page.locator('.el-drawer__close-btn').click()
+        expect(panel).not_to_be_visible()
+        if screenshot:
+            screenshot.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(screenshot), full_page=True)
+        page.locator('.sidebar-user').click()
+        page.wait_for_url('**/#/login*')
+        return {'singleProgressEntryChecked': True, 'detailsChecked': True, 'marketReloadsDuringPolling': len(market_requests),
+            'processedBefore': previous, 'processedAfter': saved, 'elapsedSeconds': round(elapsed, 2),
+            'stocksPerSecond': round((saved - previous) / elapsed, 2), 'actualProgress': after['progress']}
+
+
+def run_sync_retry_check(base: str, username: str, password: str, job_id: str) -> dict[str, Any]:
+    """通过页面继续指定失败任务，确认返回原ID和原进度，并越过原失败位置。"""
+    __tracebackhide__ = True
+    with browser_page() as page:
+        page.goto(base.rstrip('/') + '/#/login', wait_until='networkidle')
+        page.get_by_placeholder('请输入账号', exact=True).fill(username)
+        page.get_by_placeholder('请输入密码', exact=True).fill(password)
+        page.get_by_role('button', name='登录工作台', exact=True).click()
+        page.wait_for_url('**/#/opportunities*')
+        expect(page.locator('.stock-name').first).to_be_visible()
+        page.get_by_role('link', name='数据管理', exact=True).click()
+        expect(page.locator('.data-table')).to_be_visible()
+        query = """async id => {
+            const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
+            const response = await fetch('/api/v1/admin/sync-jobs/'+id, {headers:{Authorization:'Bearer '+token}});
+            if (!response.ok) throw new Error('任务查询失败');
+            return (await response.json()).data;
+        }"""
+        before = page.evaluate(query, job_id)
+        assert before['status'] == 'failed' and before['stockProgress']
+        row = page.locator(f'tr[data-task-id="{job_id}"]')
+        with page.expect_response(lambda response: response.request.method == 'POST' and urlsplit(response.url).path.endswith('/' + job_id + '/retry')) as response_info:
+            row.get_by_role('button', name='从断点继续', exact=True).click()
+        response = response_info.value
+        assert response.status == 202
+        accepted = response.json()['data']
+        assert accepted['id'] == job_id and accepted['stockProgress'] == before['stockProgress']
+        # 显式等待已落库股票增加；不能仅把异步predicate返回的Promise当成完成。
+        deadline = time.monotonic() + 45
+        after = page.evaluate(query, job_id)
+        while after['status'] != 'failed' and after['stockProgress']['processedCount'] <= before['stockProgress']['processedCount'] and time.monotonic() < deadline:
+            page.wait_for_timeout(1000)
+            after = page.evaluate(query, job_id)
+        assert after['status'] != 'failed', after.get('error')
+        assert after['stockProgress']['processedCount'] > before['stockProgress']['processedCount'], '未越过原失败位置。'
+        assert after['source'] == before['source'] and after['dataDate'] == before['dataDate']
+        expect(row).to_have_count(1)
+        expect(row.locator('.tag').first).not_to_contain_text('失败')
+        page.locator('.sidebar-user').click()
+        page.wait_for_url('**/#/login*')
+        return {'jobId': job_id, 'startedFrom': accepted['stockProgress']['processedCount'],
+            'processedAfter': after['stockProgress']['processedCount'], 'total': after['stockProgress']['totalCount'],
+            'sameJobResumed': True, 'passedFailurePosition': True}
 
 
 def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:

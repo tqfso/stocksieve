@@ -7,7 +7,7 @@ export interface Source { id: string; name: string; available: boolean; supporte
 export interface MarketStatus {
     initialized: boolean; stockUpdatedAt: string | null; catalogUpdatedAt: string | null;
     latestTradingDate: string | null; publishedSnapshot: Snapshot | null;
-    marketBoards?: Board[];
+    marketBoards?: Board[]; defaultSource?: string;
     coverage: { totalStocks: number; byExchange: Record<string, number> }; sources: Source[];
 }
 export interface Signal { strategy: Strategy; reason: string; metrics: Record<string, number | null>; conditionResults?: { id: string; passed: boolean }[]; invalidation?: unknown }
@@ -32,6 +32,7 @@ export interface SyncJob {
     error: { code: string; message: string } | null; result: { totalCount: number; processedCount: number; publishedSnapshotId: string | null } | null;
     message?: string | null;
     historyBackfill?: boolean;
+    stockProgress?: { processedCount: number; totalCount: number } | null;
     phase?: 'checking' | 'waiting_data' | 'syncing' | 'calculating' | null;
     waitMessage?: string | null;
     precheck?: { checkedAt: string; boards: { board: Board; status: 'ready' | 'pending' | 'market_closed' | 'unknown' | 'unsupported'; latestDataDate: string | null; message: string | null }[] } | null;
@@ -159,6 +160,7 @@ export async function getStock(stockId: string, snapshotId?: string): Promise<Li
 export function getCandles(stock: LiveStock, period: Period, before?: string): Promise<CandlePage> { return request('/stocks/' + encodeURIComponent(stock.stockId) + '/candles' + params({ snapshotId: stock.snapshotId, period, before, limit: 1000 })); }
 export async function syncJobs(): Promise<SyncJob[]> { return (await request<{ items: SyncJob[] }>('/admin/sync-jobs?pageSize=100')).items; }
 export function startSync(kind: SyncJob['kind'], source: string, dataDate?: string, key: string = randomId()): Promise<SyncJob> { return request('/admin/sync-jobs', 'POST', { kind, source, ...(dataDate ? { dataDate } : {}) }, key); }
+export function retrySync(id: string, key: string = randomId()): Promise<SyncJob> { return request('/admin/sync-jobs/' + encodeURIComponent(id) + '/retry', 'POST', {}, key); }
 export async function syncLogs(id: string): Promise<string[]> {
     let after: string | undefined; const output: string[] = [];
     do {

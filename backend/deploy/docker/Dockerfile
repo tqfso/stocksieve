@@ -22,7 +22,7 @@ COPY .docker-build/zoneinfo/ /opt/stocksieve-zoneinfo/
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-python-downloads \
-    && uv run --frozen --no-dev --no-sync python -c "import psycopg, aiohttp, pydantic, sqlalchemy, ssl, hashlib; assert hasattr(hashlib, 'scrypt')" \
+    && uv run --frozen --no-dev --no-sync python -c "import psycopg, aiohttp, pydantic, sqlalchemy, ssl, hashlib; from py_mini_racer import py_mini_racer; assert hasattr(hashlib, 'scrypt'); assert py_mini_racer.MiniRacer().eval('1+1') == 2" \
     && rm -rf /tmp/uv-cache
 
 COPY src/ ./src/

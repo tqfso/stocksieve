@@ -57,6 +57,14 @@ test('分析历史跨快照读取，重复进行中冲突恢复原任务', async
     assert.equal(task.id, 'existing'); assert.equal((calls[1]!.options.headers as Record<string, string>)['Idempotency-Key'], 'same-request-key');
     const body = JSON.parse(String(calls[1]!.options.body)); assert.equal(body.snapshotId, snapshot.id); assert.equal('strategy' in body, false); assert.equal('scenario' in body, false);
 });
+test('同步重试沿用原任务接口并发送幂等标识，不创建新任务', async () => {
+    replies.push({ status: 202, body: { data: { id: 'original-job', status: 'queued', stockProgress: { processedCount: 513, totalCount: 5222 } } } });
+    const result = await api.retrySync('original-job', 'retry-original-key');
+    assert.equal(calls[0]!.url, '/api/v1/admin/sync-jobs/original-job/retry');
+    assert.deepEqual(JSON.parse(String(calls[0]!.options.body)), {});
+    assert.equal((calls[0]!.options.headers as Record<string, string>)['Idempotency-Key'], 'retry-original-key');
+    assert.equal(result.id, 'original-job'); assert.equal(result.stockProgress?.processedCount, 513);
+});
 test('K线与均线采用服务器返回值，不重新生成或计算', async () => {
     const stock = api.mapStock(fixture(), snapshot);
     replies.push({ status: 200, body: { data: { items: [{ time: snapshot.dataDate, open: 10, high: 11, low: 9, close: 10, volume: null, ma5: null, ma20: 9.5, isComplete: false }], hasMore: true, nextBefore: snapshot.dataDate } } });

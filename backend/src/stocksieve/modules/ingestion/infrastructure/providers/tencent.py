@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from stocksieve.modules.ingestion.application.progress import report_progress
+from stocksieve.modules.ingestion.infrastructure.checkpoint import SourceCheckpoint
 from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
 from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
 from stocksieve.modules.market.domain.models import Stock, decimal_value
@@ -94,8 +95,14 @@ class TencentMetadata:
         cap = decimal_value(row['cap'])
         return cap if cap > 0 else None
 
-    async def prepare(self, stocks: tuple[Stock, ...]) -> None:
+    async def prepare(self, stocks: tuple[Stock, ...], *, checkpoint: SourceCheckpoint | None = None) -> None:
+        """按任务续接已完成的元资料批次；跨日等待不重放此前成功的请求。"""
         symbols = sorted(('sh' if stock.exchange == 'SSE' else 'sz') + stock.code for stock in stocks)
-        for index in range(0, len(symbols), 100):
-            if await self.fetch(symbols[index:index + 100]):
+        start = checkpoint.data.get('metadataIndex', 0) if checkpoint else 0
+        for index in range(start, len(symbols), 100):
+            fetched = await self.fetch(symbols[index:index + 100])
+            if checkpoint:
+                checkpoint.data['metadataIndex'] = min(index + 100, len(symbols))
+                checkpoint.save()
+            if fetched:
                 report_progress(f'已核对{min(index + 100, len(symbols))}/{len(symbols)}只股票的公开市值资料。', 70 + int(min(index + 100, len(symbols)) / len(symbols) * 10), True)

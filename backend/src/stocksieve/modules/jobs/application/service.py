@@ -39,10 +39,18 @@ class Tasks:
                                  'startedAt': stamp(row['started_at']), 'finishedAt': stamp(row['finished_at']),
                                  'error': {'code': row['error_code'], 'message': row['error_message']} if row['error_code'] else None}
         if row['category'] == 'sync':
+            options = row['options_json'] or {}
+            stock_progress = None
+            if row['kind'] == 'daily' and options.get('stockIds'):
+                stock_progress = {'processedCount': options.get('nextIndex', 0), 'totalCount': len(options['stockIds'])}
+                if row['status'] != 'succeeded':
+                    # 准备阶段的权重不代表股票完成比例；发布前最多显示99.9%。
+                    result['progress'] = min(99.9, round(stock_progress['processedCount'] / stock_progress['totalCount'] * 100, 1))
             source_wait = (row['options_json'] or {}).get('sourceWaitReason') if row['status'] == 'queued' and not row['wait_reason'] else None
             stored = row['result_json']
             public_result = {key: stored.get(key) for key in ('outcome', 'totalCount', 'processedCount', 'successCount', 'skippedCount', 'failedCount', 'publishedSnapshotId')} if stored else None
             result.update(source=row['data_source'], trigger=row['trigger'], scheduledFor=stamp(row['scheduled_for']),
+                          stockProgress=stock_progress,
                           historyBackfill=bool((row['options_json'] or {}).get('historyBackfill')),
                           phase=(row['options_json'] or {}).get('syncPhase'), waitMessage=(row['options_json'] or {}).get('sourceWaitMessage') if source_wait else None,
                           message=(row['options_json'] or {}).get('sourceProgressMessage'),
@@ -187,6 +195,47 @@ class Tasks:
             return self.new(connection, category='sync', kind=data.kind, user_id=user['id'], target=target, source=data.source,
                             options={'retryMinutes': self.settings.retry_minutes, 'readinessHours': self.settings.readiness_hours})
         return self.accept(user['id'], path, key, data.model_dump(mode='json', exclude_unset=True), create)
+
+    def retry_sync(self, user: dict[str, Any], job_id: str, path: str, key: str | None) -> tuple[dict[str, Any], dict[str, str]]:
+        """显式重试恢复原任务与未发布快照；保留已完成股票、冻结配置和历史日志。"""
+        def resume(connection: Connection) -> Any:
+            row = self.find(connection, job_id, 'sync')
+            if row['status'] != 'failed':
+                raise DomainError('SYNC_NOT_FAILED', '仅失败任务可以从断点继续。', 409)
+            self.registry.get(row['data_source'], row['kind'], self.boards(row))
+            options = dict(row['options_json'])
+            background = bool(options.get('historyBackfill'))
+            active = select(t.tasks.c.id).where(t.tasks.c.category == 'sync', t.tasks.c.status.in_(['queued', 'running']))
+            active = active.where(t.tasks.c.dedupe_key == row['dedupe_key']) if background else active.where(
+                func.coalesce(t.tasks.c.options_json['historyBackfill'].as_boolean(), False).is_(False))
+            conflict = connection.execute(active.limit(1)).first()
+            if conflict:
+                raise DomainError('SYNC_IN_PROGRESS', '已有未完成的数据任务。', 409, {'jobId': conflict.id})
+            snapshot_id = options.get('buildingSnapshotId')
+            if snapshot_id:
+                snapshot = connection.execute(select(t.snapshots).where(t.snapshots.c.id == snapshot_id,
+                    t.snapshots.c.sync_task_id == row['id'], t.snapshots.c.source == row['data_source'],
+                    t.snapshots.c.data_date == row['target_date'], t.snapshots.c.status.in_(['failed', 'building']))).mappings().first()
+                stock_ids, index = options.get('stockIds', []), options.get('nextIndex', 0)
+                count = connection.scalar(select(func.count()).select_from(t.snapshot_stocks).where(t.snapshot_stocks.c.snapshot_id == snapshot_id))
+                if not snapshot or not stock_ids or not 0 <= index <= len(stock_ids) or count != len(stock_ids):
+                    raise DomainError('SYNC_CHECKPOINT_INVALID', '原任务检查点不完整，未重新开始或改写数据。', 409)
+                connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id).values(status='building'))
+                message = f'继续原任务：已保存{index}/{len(stock_ids)}只股票，从第{index + 1}只开始。' if index < len(stock_ids) else '股票已全部保存，继续完成发布。'
+            else:
+                message = '继续原任务的资料准备，从已保存批次接续。'
+            # 人工重试建立新的恢复机会，真实供应商账本、预算和冷却均不调整。
+            options.update(networkRetryCount=0, recoveryCount=0, manualRetryCount=options.get('manualRetryCount', 0) + 1,
+                readinessPassed=False, readinessRetryPending=False, syncPhase='checking' if row['kind'] == 'daily' else options.get('syncPhase'),
+                sourceProgressMessage=message)
+            options.pop('sourceWaitReason', None)
+            options.pop('sourceWaitMessage', None)
+            connection.execute(update(t.tasks).where(t.tasks.c.id == row['id']).values(status='queued', options_json=options,
+                error_code=None, error_message=None, finished_at=None, lease_owner=None, lease_expires_at=None,
+                wait_reason=None, retry_deadline_at=None, run_after=self.clock()))
+            connection.execute(t.logs.insert().values(task_id=row['id'], time=self.clock(), level='info', message=message))
+            return self.find(connection, row['id'], 'sync')
+        return self.accept(user['id'], path, key, {'jobId': job_id}, resume)
 
     def submit_analysis(self, user: dict[str, Any], stock_id: str, path: str, key: str | None,
                         data: AnalysisInput, runtime_identity: dict[str, Any] | Callable[[], dict[str, Any] | None] | None) -> tuple[dict[str, Any], dict[str, str]]:
@@ -340,8 +389,12 @@ class Tasks:
         with self.db.transaction(serialized=True) as connection:
             row = self.assert_lease(connection, lease)
             snapshot_id = row['options_json'].get('buildingSnapshotId')
+            ids, index = row['options_json'].get('stockIds', []), row['options_json'].get('nextIndex', 0)
+            message = error.message
+            if error.code == 'TASK_EXECUTION_FAILED' and index < len(ids):
+                message = f'处理{ids[index]}时发生异常，已保存{index}/{len(ids)}只股票，可从断点继续。'
             if snapshot_id:
                 connection.execute(update(t.snapshots).where(t.snapshots.c.id == snapshot_id, t.snapshots.c.status == 'building').values(status='failed'))
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(status='failed', lease_owner=None, lease_expires_at=None,
-                               error_code=error.code, error_message=error.message, finished_at=self.clock()))
-            connection.execute(t.logs.insert().values(task_id=lease.id, time=self.clock(), level='error', message=error.message))
+                               error_code=error.code, error_message=message, finished_at=self.clock()))
+            connection.execute(t.logs.insert().values(task_id=lease.id, time=self.clock(), level='error', message=message))

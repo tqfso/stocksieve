@@ -27,6 +27,7 @@ class DailyPacket:
     stock: Stock
     state: StockState
     bars: tuple[Bar, ...]
+    excluded_reason: str | None = None
 
 
 class Source(Protocol):
@@ -59,6 +60,13 @@ class CalendarCacheSource(Protocol):
     def use_calendar(self, calendar: dict[str, dict[date, CalendarDay]], fetched_at: datetime) -> None: ...
 
 
+@runtime_checkable
+class SharedCalendarSource(CalendarCacheSource, Protocol):
+    """可采用已确认的交易所日历，价格和因子仍须来自自身渠道。"""
+
+    accepts_shared_calendar: bool
+
+
 class CatalogOnlySource:
     """分类适配器的能力基类，其他任务在注册表和直接调用时均明确拒绝。"""
 
@@ -78,12 +86,19 @@ class CatalogOnlySource:
 
 
 class SourceDeferred(Exception):
-    """频控等待由持久化任务重新调度，不能在持有执行租约时睡眠。"""
+    """额度、冷却和长等待由任务重新调度；明确的短请求间隔可在异步HTTP边界等待。"""
 
     def __init__(self, until: datetime, message: str, *, reason: str = 'SOURCE_ACCESS_WAIT') -> None:
         super().__init__(message)
         self.until = until
         self.reason = reason
+
+
+@runtime_checkable
+class SourceSession(Protocol):
+    """可持有任务内HTTP连接的渠道，执行结束或暂停时必须释放连接。"""
+
+    async def close(self) -> None: ...
 
 
 class RatePolicy(Protocol):

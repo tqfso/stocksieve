@@ -55,11 +55,12 @@ def test_one_second_shared_interval_and_daily_budget_reserved_for_regular_update
     now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc).timestamp()
     policy = SourcePolicy(tmp_path, 1, 8)
     with progress_sink(lambda *args: None, background=True):
-        for offset in range(6):
+        for offset in range(2):
             policy.reserve('baostock', now + offset)
         with pytest.raises(SourceDeferred):
-            policy.reserve('baostock', now + 6)
-    policy.reserve('tencent', now + 6)
+            policy.reserve('baostock', now + 2)
+    for offset in range(2, 7):
+        policy.reserve('tencent', now + offset)
     with pytest.raises(SourceDeferred):
         policy.reserve('baidu', now + 6.5)
     policy.reserve('baidu', now + 7)

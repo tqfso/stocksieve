@@ -22,8 +22,8 @@ class Settings:
     market_boards: tuple[str, ...] = tuple(BOARDS)
     enabled_sources: tuple[str, ...] = ()
     default_source: str = 'sina'
-    request_interval: float = 1
-    source_daily_limit: int = 1000
+    request_interval: float = 0.2
+    source_daily_limit: int = 20000
     history_trading_days: int = 150
     history_max_trading_days: int = 0
     retry_minutes: int = 10
@@ -65,8 +65,8 @@ class Settings:
                    market_boards=tuple(filter(None, values.get('STOCKSIEVE_MARKET_BOARDS', ','.join(BOARDS)).split(','))),
                    enabled_sources=tuple(filter(None, values.get('STOCKSIEVE_ENABLED_SOURCES', '').split(','))),
                    default_source=values.get('STOCKSIEVE_DEFAULT_SOURCE', 'sina'),
-                   request_interval=float(values.get('STOCKSIEVE_SOURCE_INTERVAL_SECONDS', '1')),
-                   source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '1000')),
+                   request_interval=float(values.get('STOCKSIEVE_SOURCE_INTERVAL_SECONDS', '0.2')),
+                   source_daily_limit=int(values.get('STOCKSIEVE_SOURCE_DAILY_LIMIT', '20000')),
                    history_trading_days=int(values.get('STOCKSIEVE_HISTORY_TRADING_DAYS', '150')),
                    history_max_trading_days=int(values.get('STOCKSIEVE_HISTORY_MAX_TRADING_DAYS', '0')),
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
@@ -85,8 +85,8 @@ class Settings:
             raise ValueError('STOCKSIEVE_HISTORY_TRADING_DAYS需为至少140的整数。')
         if type(self.history_max_trading_days) is not int or self.history_max_trading_days < 0 or self.history_max_trading_days and self.history_max_trading_days < self.history_trading_days:
             raise ValueError('STOCKSIEVE_HISTORY_MAX_TRADING_DAYS需为0，或不小于补齐天数。')
-        if not math.isfinite(self.request_interval) or self.request_interval < 1 or self.source_daily_limit < 1:
-            raise ValueError('默认渠道间隔不得低于1秒，日预算必须为正数。')
+        if not math.isfinite(self.request_interval) or self.request_interval < 0.2 or self.source_daily_limit < 1:
+            raise ValueError('渠道间隔不得低于0.2秒，日预算必须为正数。')
         if self.ai_protocol not in {'chat_completions', 'responses'}:
             raise ValueError('AI 协议配置无效。')
         if self.ai_mode not in {'mock', 'live'}:

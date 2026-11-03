@@ -1,7 +1,8 @@
 """本文件提供 /api/v1 接口，控制层只校验权限和参数并调用业务服务。"""
 
-from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, Protocol
 
 from aiohttp import web
 from sqlalchemy import func, select, text
@@ -17,7 +18,11 @@ from stocksieve.modules.identity.application.commands import (
 )
 from stocksieve.modules.identity.application.service import Auth
 from stocksieve.modules.ingestion.application.registry import Registry
-from stocksieve.modules.jobs.application.commands import AnalysisInput, SyncInput
+from stocksieve.modules.jobs.application.commands import (
+    AnalysisInput,
+    SyncInput,
+    SyncRetryInput,
+)
 from stocksieve.modules.jobs.application.service import Tasks
 from stocksieve.modules.market.application.queries import Market, strategy_catalog
 from stocksieve.modules.market.domain.models import BOARDS
@@ -36,7 +41,7 @@ class API:
     def __init__(self, database: Database, settings: Settings, registry: Registry | None = None,
                  runtime: Runtime | None = None, clock: Callable[[], datetime] | None = None) -> None:
         self.db, self.settings = database, settings
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: datetime.now(UTC))
         self.registry = registry or Registry(settings.market_boards)
         self.runtime = runtime
         self.auth = Auth(database, self.clock)
@@ -54,6 +59,7 @@ class API:
             web.get('/api/v1/stocks/{stockId}', self.stock), web.get('/api/v1/stocks/{stockId}/candles', self.candles),
             web.post('/api/v1/admin/sync-jobs', self.submit_sync), web.get('/api/v1/admin/sync-jobs', self.sync_list),
             web.get('/api/v1/admin/sync-jobs/{jobId}', self.sync_detail), web.get('/api/v1/admin/sync-jobs/{jobId}/logs', self.sync_logs),
+            web.post('/api/v1/admin/sync-jobs/{jobId}/retry', self.retry_sync),
             web.post('/api/v1/stocks/{stockId}/analyses', self.submit_analysis),
             web.get('/api/v1/analyses', self.analysis_list), web.get('/api/v1/analyses/{analysisId}', self.analysis_detail),
         ])
@@ -140,7 +146,7 @@ class API:
                     latest = day.isoformat()
                     break
         return success(request, {'initialized': initialized, 'stockUpdatedAt': times['initialize'], 'catalogUpdatedAt': times['catalog'], 'marketBoards': list(self.settings.market_boards),
-            'latestTradingDate': latest, 'publishedSnapshot': self.market.snapshot_view(snapshot) if snapshot else None,
+            'latestTradingDate': latest, 'defaultSource': self.settings.default_source, 'publishedSnapshot': self.market.snapshot_view(snapshot) if snapshot else None,
             'coverage': {'totalStocks': sum(counts.values()), 'byExchange': {key: counts.get(key, 0) for key in ('SSE', 'SZSE', 'BSE')}}, 'sources': self.registry.public()})
 
     async def filters(self, request: web.Request) -> web.Response:
@@ -171,6 +177,12 @@ class API:
         known_query(request.query, set())
         data = await body(request, SyncInput)
         result, headers = self.tasks.submit_sync(request[USER], request.path, request.headers.get('Idempotency-Key'), data)
+        return success(request, result, status=202, headers=headers)
+
+    async def retry_sync(self, request: web.Request) -> web.Response:
+        known_query(request.query, set())
+        await body(request, SyncRetryInput)
+        result, headers = self.tasks.retry_sync(request[USER], request.match_info['jobId'], request.path, request.headers.get('Idempotency-Key'))
         return success(request, result, status=202, headers=headers)
 
     async def sync_list(self, request: web.Request) -> web.Response:

@@ -19,8 +19,8 @@ from stocksieve.shared.time import SHANGHAI
 class SourcePolicy:
     """正式阶段使用配置的每日预算；探测工具仍使用更小预算，共用同一账本与锁。"""
 
-    def __init__(self, directory: Path, interval: float = 1, daily_limit: int = 1000) -> None:
-        if not math.isfinite(interval) or interval < 1 or daily_limit < 1:
+    def __init__(self, directory: Path, interval: float = 0.2, daily_limit: int = 20000) -> None:
+        if not math.isfinite(interval) or interval < 0.2 or daily_limit < 1:
             raise ValueError('请求间隔和预算无效。')
         directory.mkdir(parents=True, exist_ok=True)
         self.directory, self.interval, self.daily_limit = directory, interval, daily_limit
@@ -46,8 +46,8 @@ class SourcePolicy:
 
     @property
     def foreground_reserve(self) -> int:
-        """为日常更新保留最多100次请求，小预算时预留约四分之一。"""
-        return min(100, max(1, self.daily_limit // 4))
+        """为逐股日常更新预留80%预算；回补使用其余部分，全部实际请求仍计数。"""
+        return max(1, self.daily_limit * 4 // 5)
 
     def reserve(self, vendor: str, now: float | None = None) -> None:
         instant = time.time() if now is None else now
@@ -61,13 +61,15 @@ class SourcePolicy:
             if counts.get(vendor, 0) >= self.daily_limit or sum(counts.values()) >= budget:
                 until = max(until, datetime.combine(day + timedelta(days=1), datetime.min.time(), SHANGHAI).timestamp())
             if until > instant:
+                reason = 'SOURCE_ACCESS_WAIT'
                 if state.get('cooldown', {}).get(vendor, 0) > instant:
                     message = '数据源暂处访问冷却，尚不能完成行情检查。'
                 elif sum(counts.values()) >= budget:
                     message = '当日取数额度已用尽或已为日常更新预留，等待次日额度。'
                 else:
                     message = '等待数据源请求间隔后继续。'
-                raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), message)
+                    reason = 'SOURCE_REQUEST_INTERVAL'
+                raise SourceDeferred(datetime.fromtimestamp(until, timezone.utc), message, reason=reason)
             counts[vendor] = counts.get(vendor, 0) + 1
             state['next_at'] = instant + self.interval
 

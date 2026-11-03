@@ -35,14 +35,21 @@ export const useSync = defineStore('sync', () => {
     const catalogUpdatedAt = computed(() => market.status?.catalogUpdatedAt ?? null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let refreshing: Promise<void> | undefined;
-    async function refresh(): Promise<void> {
+    async function refresh(refreshMarket = true): Promise<void> {
         if (refreshing) return refreshing;
         refreshing = (async () => {
-            try { const [items] = await Promise.all([api.syncJobs(), market.refresh()]); jobs.value = items; error.value = ''; }
+            try {
+                const statusRequest = refreshMarket || !market.status ? market.refresh() : undefined;
+                const [items] = await Promise.all([api.syncJobs(), statusRequest]);
+                const completed = items.some(job => job.status === 'succeeded' && !jobs.value.some(previous => previous.id === job.id && previous.status === 'succeeded'));
+                jobs.value = items; error.value = '';
+                // 轮询只更新任务行；任务成功后再刷新基础信息和已发布快照。
+                if (!statusRequest && completed) await market.refresh();
+            }
             catch (cause) { error.value = (cause as Error).message; }
             finally {
                 clearTimeout(timer); refreshing = undefined;
-                if (api.currentUser()?.role === 'admin' && running.value) timer = setTimeout(() => { void refresh(); }, 2500);
+                if (api.currentUser()?.role === 'admin' && running.value) timer = setTimeout(() => { void refresh(false); }, 2500);
             }
         })();
         return refreshing;
@@ -52,6 +59,11 @@ export const useSync = defineStore('sync', () => {
         try { await api.startSync(kind, source, dataDate, key); await refresh(); }
         finally { loading.value = false; }
     }
+    async function retry(id: string, key: string): Promise<void> {
+        loading.value = true;
+        try { await api.retrySync(id, key); await refresh(); }
+        finally { loading.value = false; }
+    }
     if (typeof window !== 'undefined') window.addEventListener('stocksieve:session-expired', () => { clearTimeout(timer); jobs.value = []; market.status = null; });
-    return { initialized, stockUpdatedAt, catalogUpdatedAt, jobs, running, busy, loading, error, refresh, start };
+    return { initialized, stockUpdatedAt, catalogUpdatedAt, jobs, running, busy, loading, error, refresh, start, retry };
 });

@@ -55,13 +55,19 @@ class Worker:
                 with self.tasks.db.transaction() as connection:
                     task = self.tasks.assert_lease(connection, lease)
                     deadline = utc(task['retry_deadline_at']) if task['retry_deadline_at'] and task['options_json'].get('readinessRetryPending') else None
+                if deferred.reason == 'BOARD_DATA_NOT_READY':
+                    deadline = utc(task['retry_deadline_at']) if task['retry_deadline_at'] else self.tasks.clock() + timedelta(hours=task['options_json']['readinessHours'])
                 if deadline and deadline <= self.tasks.clock():
                     self.fail_if_owned(lease, DomainError('DATA_READY_TIMEOUT', '等待收盘数据已达到截止时间。', 503))
                 else:
                     retry = min(deferred.until, deadline) if deadline else deferred.until
-                    self.tasks.patch(lease, {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': retry,
-                                            'options_json': {**task['options_json'], 'sourceWaitReason': deferred.reason, 'sourceWaitMessage': str(deferred)}},
-                                     str(deferred) if deferred.reason == 'FOREGROUND_SYNC_PENDING' else f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
+                    options = {**task['options_json'], 'sourceWaitReason': deferred.reason, 'sourceWaitMessage': str(deferred)}
+                    values = {'status': 'queued', 'lease_owner': None, 'lease_expires_at': None, 'run_after': retry}
+                    if deferred.reason == 'BOARD_DATA_NOT_READY':
+                        options.update(syncPhase='waiting_data', sourceProgressMessage=str(deferred), readinessPassed=False, readinessRetryPending=True)
+                        values['retry_deadline_at'] = deadline
+                    self.tasks.patch(lease, {**values, 'options_json': options},
+                                     str(deferred) if deferred.reason in {'FOREGROUND_SYNC_PENDING', 'BOARD_DATA_NOT_READY'} else f'遵循渠道频控，下次可执行时间：{retry.isoformat()}。')
             else:
                 self.fail_if_owned(lease, DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '资料渠道暂处于频控等待，请稍后重新发起分析。', 503))
         except DomainError as error:

@@ -18,7 +18,9 @@ from stocksieve.modules.ingestion.application.ports import (
     CalendarCacheSource,
     CalendarDay,
     HistorySource,
+    SharedCalendarSource,
     Source,
+    SourceSession,
 )
 from stocksieve.modules.ingestion.application.progress import progress_sink
 from stocksieve.modules.ingestion.application.registry import Registry
@@ -53,13 +55,17 @@ class Sync:
         policy = HistoryPolicy(task['options_json'].get('historyDays', 150), task['options_json'].get('historyMaxDays', 0))
         if isinstance(source, HistorySource):
             source = source.for_history(policy)
-        with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id, background=task['options_json'].get('historyBackfill', False)):
-            if task['kind'] == 'initialize':
-                await self.initialize(lease, source, task)
-            elif task['kind'] == 'catalog':
-                await self.catalog(lease, source)
-            else:
-                await self.daily(lease, source, task)
+        try:
+            with progress_sink(lambda message, progress, advanced: self.tasks.source_progress(lease, message, progress, advanced), operation_id=lease.id, background=task['options_json'].get('historyBackfill', False)):
+                if task['kind'] == 'initialize':
+                    await self.initialize(lease, source, task)
+                elif task['kind'] == 'catalog':
+                    await self.catalog(lease, source)
+                else:
+                    await self.daily(lease, source, task)
+        finally:
+            if isinstance(source, SourceSession):
+                await source.close()
 
     def finish(self, connection: Connection, lease: Lease, outcome: str, total: int,
                *, snapshot_id: str | None = None, skipped: int = 0, internal: dict[str, Any] | None = None) -> None:
@@ -213,7 +219,7 @@ class Sync:
         retry_count = task['retry_count'] + int(retry_pending)
         with self.db.transaction() as connection:
             latest_options = self.tasks.assert_lease(connection, lease)['options_json']
-        options = {**latest_options, 'readinessRetryPending': False}
+        options = {**latest_options, 'readinessRetryPending': False, 'readinessPassed': False}
         self.tasks.patch(lease, {'precheck_json': precheck, 'retry_count': retry_count, 'options_json': options}, '已完成本次覆盖板块的就绪检查。')
         if any(item['status'] == 'unsupported' for item in normalized):
             raise DomainError('BOARD_DATA_UNSUPPORTED', '所选渠道不支持某个开市板块。', 503)
@@ -235,7 +241,7 @@ class Sync:
             return False
         if not background:
             options['sourceProgressMessage'] = f'{target}收盘资料检查通过，正在同步行情。'
-        self.tasks.patch(lease, {'wait_reason': None, 'options_json': {**options, 'syncPhase': 'syncing'}}, '所有开市板块已就绪。')
+        self.tasks.patch(lease, {'wait_reason': None, 'options_json': {**options, 'readinessPassed': True, 'syncPhase': 'syncing'}}, '所有开市板块已就绪。')
         return True
 
     async def extend_history_calendar(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
@@ -253,7 +259,10 @@ class Sync:
         if present == exchanges and all(earliest.get(exchange) is not None and earliest[exchange] <= start for exchange in exchanges):
             if isinstance(source, CalendarCacheSource):
                 with self.db.transaction() as connection:
-                    rows = connection.execute(select(t.calendar).where(t.calendar.c.exchange.in_(exchanges), t.calendar.c.source == source.id)).mappings().all()
+                    query = select(t.calendar).where(t.calendar.c.exchange.in_(exchanges))
+                    if not isinstance(source, SharedCalendarSource) or not source.accepts_shared_calendar:
+                        query = query.where(t.calendar.c.source == source.id)
+                    rows = connection.execute(query).mappings().all()
                 calendar: dict[str, dict[date, CalendarDay]] = {exchange: {} for exchange in exchanges}
                 for row in rows:
                     calendar[row['exchange']][row['trade_date']] = CalendarDay(row['is_open'], utc(row['close_at']) if row['close_at'] else None)
@@ -274,7 +283,8 @@ class Sync:
 
     async def daily(self, lease: Lease, source: Source, task: dict[str, Any]) -> None:
         await self.extend_history_calendar(lease, source, task)
-        if not await self.precheck(lease, source, task):
+        # 已通过的同一任务预检在频控续跑时复用；个股未就绪会显式使该标记失效。
+        if not task['options_json'].get('readinessPassed') and not await self.precheck(lease, source, task):
             return
         with self.db.transaction() as connection:
             current = dict(self.tasks.assert_lease(connection, lease))
@@ -327,9 +337,11 @@ class Sync:
             data = sorted(merged.values(), key=lambda bar: bar.day)
             dates = [date.fromisoformat(key) for key, opened in snapshot['calendar_json'][stock.exchange].items() if opened is True]
             current_bar = merged.get(task['target_date'])
-            if packet.state.trade_status == 'trading' and (current_bar is None or current_bar.amount is None or current_bar.factor is None):
+            if packet.state.trade_status == 'trading' and (current_bar is None or current_bar.amount is None or current_bar.factor is None and packet.excluded_reason != 'ADJUSTMENT_UNAVAILABLE'):
                 raise DomainError('DATA_INCOMPLETE', '开市股票的当日行情、成交额或复权因子缺失。', 503)
             evaluation = evaluate(data, dates, task['target_date'], packet.state)
+            if packet.excluded_reason:
+                evaluation = replace(evaluation, signals=(), excluded_reason=packet.excluded_reason)
             quote = {'trade_status': packet.state.trade_status, 'is_st': packet.state.is_st, 'is_delisting': packet.state.is_delisting,
                      'quote_price': current_bar.close if current_bar else None, 'amount': current_bar.amount if current_bar else None,
                      'turnover': current_bar.turnover if current_bar else None, 'total_market_cap': current_bar.total_market_cap if current_bar else None,

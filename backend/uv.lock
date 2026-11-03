@@ -760,6 +760,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py-mini-racer"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/97/a578b918b2e5923dd754cb60bb8b8aeffc85255ffb92566e3c65b148ff72/py_mini_racer-0.6.0.tar.gz", hash = "sha256:f71e36b643d947ba698c57cd9bd2232c83ca997b0802fc2f7f79582377040c11", size = 5994836, upload-time = "2021-04-22T07:58:35.993Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/a9/8ce0ca222ef04d602924a1e099be93f5435ca6f3294182a30574d4159ca2/py_mini_racer-0.6.0-py2.py3-none-manylinux1_x86_64.whl", hash = "sha256:42896c24968481dd953eeeb11de331f6870917811961c9b26ba09071e07180e2", size = 5416149, upload-time = "2021-04-22T07:58:25.615Z" },
+]
+
+[[package]]
 name = "pyasn1"
 version = "0.6.5"
 source = { registry = "https://pypi.org/simple" }
@@ -980,6 +989,7 @@ dependencies = [
     { name = "langchain-openai", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "openpyxl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "py-mini-racer", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pytdx", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "sqlalchemy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1001,6 +1011,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.7.3" },
     { name = "openpyxl", specifier = ">=3.1,<4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "py-mini-racer", specifier = ">=0.6,<0.7" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pytdx", specifier = ">=1.72,<2" },
     { name = "sqlalchemy", specifier = "==2.1.6" },

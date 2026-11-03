@@ -36,6 +36,7 @@
 | GET | `/analyses` | [本人分析历史](analysis/list.md) | 登录用户 |
 | GET | `/analyses/{analysisId}` | [分析状态和报告](analysis/detail.md) | 报告所属用户 |
 | POST | `/admin/sync-jobs` | [发起数据任务](admin/sync-jobs/create.md) | 管理员 |
+| POST | `/admin/sync-jobs/{jobId}/retry` | [继续失败任务](admin/sync-jobs/retry.md) | 管理员 |
 | GET | `/admin/sync-jobs` | [任务记录](admin/sync-jobs/list.md) | 管理员 |
 | GET | `/admin/sync-jobs/{jobId}` | [同步状态](admin/sync-jobs/detail.md) | 管理员 |
 | GET | `/admin/sync-jobs/{jobId}/logs` | [任务日志](admin/sync-jobs/logs.md) | 管理员 |

@@ -6,10 +6,13 @@
       "type": "debugpy",
       "request": "launch",
       "cwd": "${workspaceFolder}/backend",
-      "program": "${file}",
+      "envFile": "${workspaceFolder}/.env",
+      // "program": "${file}",
+      "program": "${workspaceFolder}/backend/run.py",
       "args": "${command:pickArgs}",
       "console": "integratedTerminal",
       "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend/src"
       },
     }
   ]

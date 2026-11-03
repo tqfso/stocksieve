@@ -207,6 +207,7 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption('--deployed-strategies', action='store_true', help='只读验收正式五类策略、空结果与筛选重置')
     parser.addoption('--deployed-research', action='store_true', help='验收正式任意股票搜索和后端模拟报告，会保存明确标记的模拟分析')
     parser.addoption('--deployed-readiness', action='store_true', help='只读验收正式收盘数据未就绪或渠道等待提示')
+    parser.addoption('--deployed-retry-job', default=None, help='显式通过页面继续指定失败同步任务，沿用原检查点')
 
 
 def pytest_report_header(config: Any) -> str:

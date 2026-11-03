@@ -1,12 +1,13 @@
 """本文件实现公开HTTP读取、供应商归一化、缓存及受控请求。"""
 
+import asyncio
 import base64
 import hashlib
 import json
 import math
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -58,9 +59,9 @@ class RateGate:
                 until = max(until, midnight.timestamp())
             if until > instant:
                 try:
-                    blocked_date = datetime.fromtimestamp(until, timezone.utc)
+                    blocked_date = datetime.fromtimestamp(until, UTC)
                 except (OverflowError, OSError, ValueError):
-                    blocked_date = datetime.max.replace(tzinfo=timezone.utc)
+                    blocked_date = datetime.max.replace(tzinfo=UTC)
                 raise SourceDeferred(blocked_date, '渠道正处于限频、预算等待或冷却。')
             connection.execute('INSERT INTO gates VALUES (?,?,?,?,?) ON CONFLICT(vendor) DO UPDATE SET day=excluded.day,used=excluded.used,next_at=excluded.next_at,blocked_until=excluded.blocked_until',
                                (vendor, day.isoformat(), used + 1, instant + self.interval, blocked))
@@ -125,10 +126,22 @@ class SourceHTTP:
             self.gate.block(vendor, 3600)
             raise DomainError('SOURCE_UNAVAILABLE', '渠道未返回有效响应。', 503)
 
+    async def reserve(self, vendor: str) -> None:
+        """短间隔最多异步等待两轮；每轮重新核对共享账本，预算与真实冷却仍交回任务排队。"""
+        for attempt in range(3):
+            try:
+                self.gate.reserve(vendor)
+                return
+            except SourceDeferred as wait:
+                delay = wait.until.timestamp() - time.time()
+                if attempt == 2 or wait.reason != 'SOURCE_REQUEST_INTERVAL' or delay > 1:
+                    raise
+                await asyncio.sleep(max(.001, delay))
+
     async def get_bytes(self, vendor: str, url: str, params: dict[str, Any] | None = None) -> bytes:
         """在流读取过程中限制响应大小，网页读取与行情请求复用同一限频入口。"""
         vendor = supplier(url, vendor)
-        self.gate.reserve(vendor)
+        await self.reserve(vendor)
         try:
             async with self.client.stream('GET', url, params=params, follow_redirects=False) as response:
                 self.check_status(vendor, response)
@@ -151,7 +164,7 @@ class SourceHTTP:
             try:
                 saved = json.loads(path.read_text())
                 if 0 <= time.time() - saved['at'] <= cache_seconds:
-                    return base64.b64decode(saved['body'], validate=True), datetime.fromtimestamp(saved['at'], timezone.utc)
+                    return base64.b64decode(saved['body'], validate=True), datetime.fromtimestamp(saved['at'], UTC)
             except (ValueError, KeyError, OSError):
                 pass
         content = await self.get_bytes(vendor, url)
@@ -159,7 +172,7 @@ class SourceHTTP:
         temporary = path.with_suffix('.' + uuid4().hex + '.tmp')
         temporary.write_text(json.dumps({'at': instant, 'body': base64.b64encode(content).decode()}))
         temporary.replace(path)
-        return content, datetime.fromtimestamp(instant, timezone.utc)
+        return content, datetime.fromtimestamp(instant, UTC)
 
     async def close(self) -> None:
         await self.client.aclose()

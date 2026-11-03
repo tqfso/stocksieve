@@ -38,6 +38,15 @@ def main() -> int:
     sub.add_parser('worker')
     sub.add_parser('scheduler')
     sub.add_parser('check-config', help='只读显示非敏感的历史窗口及运行模式配置')
+    sync_check = sub.add_parser('inspect-sync', help='只读查看同步检查点和下一只证券，可复现取数异常')
+    sync_check.add_argument('--job', required=True)
+    sync_check.add_argument('--probe', action='store_true')
+    sina_check = sub.add_parser('check-sina', help='沿用正式账本验证新浪四板块日线、因子、股本和交易日历，不写业务表')
+    sina_check.add_argument('--date', type=date.fromisoformat, required=True)
+    sina_check.add_argument('--directory', action='store_true', help='同时分页核对完整沪深目录')
+    retire = sub.add_parser('retire-source-jobs', help='切换默认渠道后停止旧渠道排队任务，保留已发布数据和历史日志')
+    retire.add_argument('--source', required=True)
+    retire.add_argument('--apply', action='store_true')
     check = sub.add_parser('check-db')
     check.add_argument('--counts', action='store_true', help='只读显示public关键业务表行数与剩余临时测试schema数量')
     check.add_argument('--constraints', action='store_true', help='只读显示真实任务约束，核对现有数据库与初始化定义是否一致')
@@ -63,7 +72,7 @@ def main() -> int:
     pipeline = sub.add_parser('bootstrap-data', help='通过真实HTTP完成初始化、分类和收盘发布验收，可跨中断恢复')
     pipeline.add_argument('--credentials-file', required=True, type=Path)
     pipeline.add_argument('--state-file', type=Path, default=Path('backend/.state/live-pipeline.json'))
-    pipeline.add_argument('--source', default='baostock')
+    pipeline.add_argument('--source', default='baostock', help='整套初始化默认Baostock；新浪收盘验收使用--source sina --only-kind daily')
     pipeline.add_argument('--date', type=date.fromisoformat)
     pipeline.add_argument('--retry-failed', action='store_true')
     pipeline.add_argument('--submit-only', action='store_true', help='配合--only-kind，仅提交并保存后台任务，不等待多年历史完成')
@@ -84,6 +93,11 @@ def main() -> int:
         settings = Settings.from_env()
         registry = Registry(settings.market_boards)
         policy = SourcePolicy(settings.rate_dir, settings.request_interval, settings.source_daily_limit)
+        if 'sina' in settings.enabled_sources:
+            from stocksieve.modules.ingestion.infrastructure.providers.sina import SinaSource
+            from stocksieve.modules.ingestion.infrastructure.providers.tencent import TencentMetadata
+            registry.register(SinaSource(policy, settings.state_dir / 'source-cache', settings.history_trading_days,
+                settings.history_max_trading_days, TencentMetadata(policy, settings.state_dir / 'source-cache')))
         if 'baidu_concepts' in settings.enabled_sources:
             from stocksieve.modules.ingestion.infrastructure.providers.baidu import (
                 BaiduCatalogSource,
@@ -111,9 +125,19 @@ def main() -> int:
         runtime = create_runtime(settings)
         service = API(database, settings, registry, runtime)
         if args.command == 'check-config':
-            print(json.dumps({'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
+            print(json.dumps({'defaultSource': settings.default_source, 'enabledSources': list(settings.enabled_sources), 'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
                               'sourceIntervalSeconds': settings.request_interval, 'sourceDailyLimit': settings.source_daily_limit, 'sourceForegroundReserve': policy.foreground_reserve,
                               'marketBoards': list(settings.market_boards), 'aiMode': settings.ai_mode}, ensure_ascii=False))
+        elif args.command == 'inspect-sync':
+            from stocksieve.operations.sync_check import inspect_sync
+            print(json.dumps(asyncio.run(inspect_sync(service.tasks, registry, args.job, probe=args.probe)), ensure_ascii=False, indent=2))
+        elif args.command == 'check-sina':
+            from stocksieve.operations.sina_check import check_sina
+            print(json.dumps(asyncio.run(check_sina(settings, policy, args.date, args.directory)), ensure_ascii=False, indent=2))
+        elif args.command == 'retire-source-jobs':
+            from stocksieve.operations.source_switch import retire_source_jobs
+            registry.get(settings.default_source, 'daily')
+            print(json.dumps(retire_source_jobs(database, args.source, settings.default_source, apply=args.apply), ensure_ascii=False, indent=2))
         elif args.command == 'check-db':
             inspector = inspect(database.engine)
             for name, table in table_metadata.tables.items():

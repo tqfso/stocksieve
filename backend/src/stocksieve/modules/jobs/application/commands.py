@@ -25,6 +25,10 @@ class SyncInput(Input):
         return date.fromisoformat(value)
 
 
+class SyncRetryInput(Input):
+    """重试只接受空对象，原任务的渠道、日期、范围和检查点不可由客户端改写。"""
+
+
 class AnalysisInput(Input):
     kind: Literal['fundamental', 'chips', 'trade']
     snapshotId: str | None = Field(default=None, min_length=1)

@@ -109,6 +109,14 @@ uv run --project backend --frozen python backend/run.py bootstrap-data --credent
 
 长期回补允许分多日完成。基础初始化和行业同步成功后，可用`--only-kind daily --submit-only`仅提交收盘任务并返回；任务由worker跨日执行，不需要终端持续连接。近期策略发布后页面即可使用，日常更新优先于较早历史回补；停止或重建应用容器不会清空已保存进度。
 
+已有基础数据时，默认行情改为新浪；CLI提交同样显式选源：
+
+```bash
+uv run --project backend --frozen python backend/run.py bootstrap-data --base-url http://127.0.0.1:24048 --credentials-file backend/.state/initial-admin.json --state-file backend/.state/sina-live-pipeline.json --source sina --date YYYY-MM-DD --only-kind daily --submit-only
+```
+
+新浪不提供行业题材分类，整套初始化验收仍显式使用Baostock；页面与定时收盘默认使用新浪。
+
 正式服务已有快照后，可加`--only-kind initialize`、`catalog`或`daily`只执行单种任务。相同状态文件恢复原任务；需要新一轮更新时指定新的`--state-file`。
 
 题材更新在管理页选择“百度股市通题材”；该渠道只修改题材并保留原行业，每轮最多400只，继续更新会补齐其他股票。分类成功后再更新收盘行情，新分类才进入最新筛选。行情渠道继续选择Baostock组合。
@@ -132,4 +140,10 @@ docker compose -f backend/compose.yaml logs --tail=100 api worker scheduler
 
 数据库卷和后端状态卷均为external，统一Compose停止或移除容器仍保留数据。首次迁移备份位于`backend/.state/backups/compose-*.dump`。重启不取消已受理任务，不删除频控账本或成功缓存。
 
-`STOCKSIEVE_SOURCE_INTERVAL_SECONDS=1`和`STOCKSIEVE_SOURCE_DAILY_LIMIT=1000`控制共享请求间隔与本项目日预算，不是上游公布的限额。回补预留最多100次给日常更新；更小的预算预留约四分之一。日常更新可在历史回补期间提交并优先执行；403/429及其他真实冷却仍会暂停对应渠道。
+`STOCKSIEVE_DEFAULT_SOURCE=sina`控制页面和定时任务默认行情渠道；`STOCKSIEVE_ENABLED_SOURCES=sina,baidu_concepts,baostock`启用新浪行情、百度题材和Baostock备选。更改默认值后重建应用容器才能生效。
+
+`STOCKSIEVE_SOURCE_INTERVAL_SECONDS=0.2`和`STOCKSIEVE_SOURCE_DAILY_LIMIT=20000`控制共享间隔和项目日预算，不是上游许可额度。80%预留给日常更新；新浪全市场约5222只，日线、因子和股本每只最多3次，另有少量目录与批量元数据请求。首次切换约需数小时，缓存命中不计次，任务按股票恢复；十年回补复用完整响应。403/429及现有冷却照常暂停对应渠道。
+
+新浪实测：`uv run --frozen --project backend python backend/run.py check-sina --date YYYY-MM-DD --directory`。切换时旧排队任务不会自动改写渠道；核对后可运行`retire-source-jobs --source baostock --apply`停止其等待，原日志、检查点及已发布数据保留。运行中的任务须先释放租约。
+
+失败定位：`uv run --frozen --project backend python backend/run.py inspect-sync --job UUID`只读显示检查点和下一只证券；加`--probe`按正式频控复现该证券取数，不修改任务或业务表。页面“从断点继续”恢复原任务，修复后无需重新从第一只开始。

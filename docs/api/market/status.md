@@ -10,6 +10,7 @@
 {
   "data": {
     "initialized": true,
+    "defaultSource": "sina",
     "marketBoards": ["SSE_MAIN", "SZSE_MAIN", "CHINEXT", "STAR"],
     "stockUpdatedAt": "2026-10-28T17:00:00+08:00",
     "catalogUpdatedAt": "2026-10-28T17:10:00+08:00",
@@ -24,7 +25,7 @@
     "coverage": { "totalStocks": 5223, "byExchange": { "SSE": 2318, "SZSE": 2905, "BSE": 0 } },
     "sources": [
       { "id": "baostock", "name": "沪深免费组合（Baostock行情 / 腾讯市值）", "available": true, "supportedSyncKinds": ["catalog", "daily", "initialize"] },
-      { "id": "sina", "name": "Sina", "available": false, "supportedSyncKinds": [] }
+      { "id": "sina", "name": "新浪行情（沪深四板块）", "available": true, "supportedSyncKinds": ["daily", "initialize"] }
     ]
   },
   "requestId": "req_example"
@@ -36,3 +37,5 @@
 `initialized` 仅表示股票基础信息已准备。`stockUpdatedAt`、`catalogUpdatedAt` 分别为股票基础信息、分类关系最近一次同步成功时间，未成功或历史记录缺失时为 `null`；失败或其他类型任务不会改写该时间。`supportedSyncKinds` 按渠道能力返回 `initialize`、`catalog`、`daily` 的子集。
 
 `marketBoards`为当前配置覆盖范围，当前先上线沪深四板块；北交所数量0表示未纳入，不表示市场没有北交所股票。已发布快照的历史范围以自身`boards`为准，不随配置改变。
+
+`defaultSource`为默认渠道，页面优先选中支持当前任务的默认渠道；不支持时选其他可用渠道。任务仍显式提交`source`，已受理任务保留原渠道。
