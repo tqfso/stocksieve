@@ -1,4 +1,4 @@
-"""本文件验证真实浏览器、HTTP和隔离数据库，以及正式部署的行情与模拟分析链路。"""
+"""本文件验证真实浏览器、HTTP和隔离数据库，以及正式部署的行情与分析链路。"""
 
 import asyncio
 import json
@@ -11,10 +11,10 @@ from sqlalchemy import delete
 from stocksieve.infrastructure.persistence import schema as t
 from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.service import Analysis
-from stocksieve.modules.analysis.infrastructure.agent import create_runtime
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
 
+from .analysis_fixtures import FixtureAnalysisRuntime
 from .conftest import HTTPServer
 from .e2e.browser_check import (
     run_access_check,
@@ -29,7 +29,7 @@ from .e2e.browser_check import (
 )
 
 
-def test_browser_against_isolated_market_and_mock_analysis(context: Any, request: Any) -> None:
+def test_browser_against_isolated_market_and_analysis(context: Any, request: Any) -> None:
     if not request.config.getoption('--browser'):
         pytest.skip('浏览器验收需显式--browser。')
     if context.server is None:
@@ -43,7 +43,7 @@ def test_browser_against_isolated_market_and_mock_analysis(context: Any, request
     if not (web / 'index.html').exists():
         pytest.fail('请先构建前端。')
     settings = replace(context.api.settings, web_dir=web)
-    runtime = create_runtime(settings)
+    runtime = FixtureAnalysisRuntime()
     api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
     api.app.freeze()
     server = HTTPServer(api.app)
@@ -73,7 +73,7 @@ def test_browser_unified_report_and_downloads(context: Any, request: Any) -> Non
     with context.api.db.transaction() as connection:
         connection.execute(delete(t.signals).where(t.signals.c.stock_id == context.source.universe_stocks[1].stock_id))
     settings = replace(context.api.settings, web_dir=Path(__file__).resolve().parents[2] / 'frontend/dist')
-    runtime = create_runtime(settings)
+    runtime = FixtureAnalysisRuntime()
     api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
     api.app.freeze()
     server = HTTPServer(api.app)
@@ -96,7 +96,8 @@ def test_browser_retry_from_original_checkpoint(context: Any, request: Any) -> N
     from .test_sync_retry import failed_after_two
     context.published()
     job, calls, state = failed_after_two(context)
-    calls.clear(); state['broken'] = False
+    calls.clear()
+    state['broken'] = False
     settings = replace(context.api.settings, web_dir=Path(__file__).resolve().parents[2] / 'frontend/dist')
     api = API(context.api.db, settings, context.api.registry, clock=context.clock.now)
     api.app.freeze()

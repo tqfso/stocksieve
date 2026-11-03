@@ -1,4 +1,4 @@
-"""本文件计算不依赖策略入选的通用技术观察参考，供模拟报告使用，不生成交易指令。"""
+"""本文件计算不依赖策略入选的通用技术观察参考，供分析报告使用，不生成交易指令。"""
 
 from datetime import date
 from decimal import Decimal

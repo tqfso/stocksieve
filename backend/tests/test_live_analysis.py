@@ -14,13 +14,13 @@ from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.ports import SearchHit
 from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.domain.finance import calculate
-from stocksieve.modules.analysis.infrastructure.agent import create_runtime
-from stocksieve.modules.analysis.infrastructure.mock_runtime import MockAnalysisRuntime
+from stocksieve.modules.analysis.infrastructure.agent import LangGraphRuntime
 from stocksieve.modules.analysis.infrastructure.reader import DocumentReader
 from stocksieve.modules.analysis.infrastructure.research import CninfoSearch
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.jobs.application.worker import Worker
 
+from .analysis_fixtures import FixtureAnalysisRuntime
 from .conftest import HTTPServer
 
 
@@ -129,8 +129,8 @@ def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protoc
     app.freeze()
     server = HTTPServer(app)
     try:
-        settings = replace(context.api.settings, ai_mode='live', ai_api_key='fixture-private-key', ai_model='fixture', ai_protocol=protocol, ai_base_url=server.base_url + '/v1')
-        runtime = create_runtime(settings)
+        settings = replace(context.api.settings, ai_api_key='fixture-private-key', ai_model='fixture', ai_protocol=protocol, ai_base_url=server.base_url + '/v1')
+        runtime = LangGraphRuntime(settings)
         api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
         context.api.runtime = runtime
         path = f'/api/v1/stocks/{context.source.universe_stocks[0].stock_id}/analyses'
@@ -154,16 +154,19 @@ def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protoc
 def test_live_report_requires_citation_of_public_evidence(context: Any) -> None:
     """取得资料却未在报告引用时必须拒绝，不能只凭联网成功标记研究完成。"""
     context.published()
-    settings = replace(context.api.settings, ai_mode='live', ai_api_key='fixture', ai_model='fixture')
-    identity = create_runtime(settings).identity()
+    settings = replace(context.api.settings, ai_api_key='fixture', ai_model='fixture')
+    identity = LangGraphRuntime(settings).identity()
 
-    class MissingCitation(MockAnalysisRuntime):
+    class MissingCitation(FixtureAnalysisRuntime):
         def identity(self) -> Any:
             return identity
 
         async def execute(self, tools: Any) -> Any:
-            tools.save('uncited', 'research', '取得但未引用的公告', {'text': '受控原文'}, url='https://www.sse.com.cn/fixture')
-            return await super().execute(tools)
+            report, usage = await super().execute(tools)
+            report['sourceKeys'] = ['snapshot']
+            for section in report['sections']:
+                section['sourceKeys'] = ['snapshot']
+            return report, usage
 
     runtime = MissingCitation()
     api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
@@ -193,10 +196,10 @@ def test_real_provider_and_public_documents(context: Any, request: Any) -> None:
     context.source.universe_stocks = (replace(first, name='浦发银行'), *context.source.universe_stocks[1:])
     context.published()
     private = Settings.from_env()
-    settings = replace(context.api.settings, ai_mode='live', ai_base_url=private.ai_base_url,
+    settings = replace(context.api.settings, ai_base_url=private.ai_base_url,
         ai_api_key=private.ai_api_key, ai_model=private.ai_model, ai_protocol=private.ai_protocol,
         ai_reasoning_effort=private.ai_reasoning_effort, ai_max_steps=20)
-    runtime = create_runtime(settings)
+    runtime = LangGraphRuntime(settings)
     api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
     context.api.runtime = runtime
     path = f'/api/v1/stocks/{first.stock_id}/analyses'

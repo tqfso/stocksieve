@@ -60,6 +60,7 @@ class Tasks:
                           retryDeadlineAt=stamp(row['retry_deadline_at']), retryCount=row['retry_count'], precheck=row['precheck_json'], result=public_result)
         else:
             options = row['options_json'] or {}
+            # 仅识别已有历史任务的原标识；新任务不再保存或选择模拟模式。
             result.update(stockId=row['stock_id'], strategy=row['strategy_code'], snapshotId=row['input_snapshot_id'],
                           stage=options.get('stage', 'queued'), simulated=options.get('runtime', {}).get('mode') == 'mock')
             if include_report:

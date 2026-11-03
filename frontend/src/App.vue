@@ -92,7 +92,7 @@ watch(() => session.user?.id, (id) => { market.status = null; if (id) void marke
           <strong>{{ route.meta.title }}</strong>
         </div>
         <div class="topbar-actions">
-          <span class="mock-label">
+          <span class="status-label">
             <i />
             收盘工作台
           </span>

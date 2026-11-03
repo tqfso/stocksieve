@@ -1,4 +1,4 @@
-<!-- 本文件按股票稳定ID和冻结快照读取真实行情、策略信号、图表及后端模拟分析。 -->
+<!-- 本文件按股票稳定ID和冻结快照读取真实行情、策略信号、图表及后端AI分析。 -->
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';

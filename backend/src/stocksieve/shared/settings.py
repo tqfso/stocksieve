@@ -35,7 +35,6 @@ class Settings:
     ai_protocol: str = 'chat_completions'
     ai_max_steps: int = 12
     ai_tools_supported: bool = True
-    ai_mode: str = 'mock'
     ai_max_output_tokens: int = 8000
     ai_timeout_seconds: int = 300
     ai_reasoning_effort: str | None = None
@@ -72,7 +71,6 @@ class Settings:
                    history_max_trading_days=int(values.get('STOCKSIEVE_HISTORY_MAX_TRADING_DAYS', '0')),
                    ai_base_url=values.get('STOCKSIEVE_AI_BASE_URL'), ai_api_key=values.get('STOCKSIEVE_AI_API_KEY'),
                    ai_model=values.get('STOCKSIEVE_AI_MODEL'), ai_protocol=values.get('STOCKSIEVE_AI_PROTOCOL', 'chat_completions'),
-                   ai_mode=values.get('STOCKSIEVE_AI_MODE', 'mock'),
                    ai_max_steps=int(values.get('STOCKSIEVE_AI_MAX_STEPS', '20')),
                    ai_max_output_tokens=int(values.get('STOCKSIEVE_AI_MAX_OUTPUT_TOKENS', '8000')),
                    ai_timeout_seconds=int(values.get('STOCKSIEVE_AI_TIMEOUT_SECONDS', '300')),
@@ -94,8 +92,6 @@ class Settings:
             raise ValueError('渠道间隔不得低于0.2秒，日预算必须为正数。')
         if self.ai_protocol not in {'chat_completions', 'responses'}:
             raise ValueError('AI 协议配置无效。')
-        if self.ai_mode not in {'mock', 'live'}:
-            raise ValueError('AI 运行模式需为 mock 或 live。')
         if not self.market_boards or len(set(self.market_boards)) != len(self.market_boards) or set(self.market_boards) - BOARDS.keys():
             raise ValueError('上市板块配置为空、重复或包含未知板块。')
         if self.lease_seconds <= 0 or not 1 <= self.ai_max_steps <= 50:

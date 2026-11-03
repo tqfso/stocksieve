@@ -15,7 +15,7 @@ from stocksieve.infrastructure.persistence.database import Database
 from stocksieve.infrastructure.persistence.schema import metadata as table_metadata
 from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.service import Analysis
-from stocksieve.modules.analysis.infrastructure.agent import create_runtime
+from stocksieve.modules.analysis.infrastructure.agent import LangGraphRuntime
 from stocksieve.modules.analysis.infrastructure.reader import DocumentReader
 from stocksieve.modules.analysis.infrastructure.research import CninfoSearch
 from stocksieve.modules.ingestion.application.registry import Registry
@@ -65,12 +65,12 @@ def main() -> int:
         if set(settings.enabled_sources) - registry.sources.keys():
             raise RuntimeError('请求启用的渠道尚无通过覆盖验证的适配器；不能仅靠配置将候选源标为可用。')
         database = Database(settings.database_url)
-        runtime = create_runtime(settings)
+        runtime = LangGraphRuntime(settings)
         service = API(database, settings, registry, runtime)
         if args.command == 'check-config':
             print(json.dumps({'defaultSource': settings.default_source, 'enabledSources': list(settings.enabled_sources), 'historyTradingDays': settings.history_trading_days, 'historyMaxTradingDays': settings.history_max_trading_days,
                               'sourceIntervalSeconds': settings.request_interval, 'sourceDailyLimit': settings.source_daily_limit, 'sourceForegroundReserve': policy.foreground_reserve,
-                              'marketBoards': list(settings.market_boards), 'aiMode': settings.ai_mode}, ensure_ascii=False))
+                              'marketBoards': list(settings.market_boards), 'aiModel': settings.ai_model}, ensure_ascii=False))
         elif args.command == 'check-db':
             inspector = inspect(database.engine)
             for name, table in table_metadata.tables.items():

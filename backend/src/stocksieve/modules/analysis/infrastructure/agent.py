@@ -7,20 +7,13 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
-from stocksieve.modules.analysis.application.ports import AgentRuntime
 from stocksieve.modules.analysis.application.reports import ReportDraft
 from stocksieve.modules.analysis.application.service import AnalysisTools
-from stocksieve.modules.analysis.infrastructure.mock_runtime import MockAnalysisRuntime
 from stocksieve.shared.errors import DomainError
 from stocksieve.shared.serialization import encode
 from stocksieve.shared.settings import ROOT, Settings
 
 SKILL = ROOT / 'skills/stock-analysis/SKILL.md'
-
-
-def create_runtime(settings: Settings) -> AgentRuntime:
-    """真实模式缺配置或执行失败时明确报错，不能自动切回模拟。"""
-    return MockAnalysisRuntime() if settings.ai_mode == 'mock' else LangGraphRuntime(settings)
 
 
 class LangGraphRuntime:
@@ -38,6 +31,7 @@ class LangGraphRuntime:
         parsed = urlsplit(url)
         if parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise DomainError('ANALYSIS_CONFIGURATION_INVALID', '模型服务地址配置无效。', 503)
+        # 固定标识沿用已受理真实任务的格式，不再提供模式选择。
         return {'provider': parsed.hostname[:32], 'model': self.settings.ai_model, 'mode': 'live',
                 'protocol': self.settings.ai_protocol, 'baseUrl': url, 'toolsSupported': self.settings.ai_tools_supported,
                 'skillVersion': 'skill-' + hashlib.sha256(SKILL.read_bytes()).hexdigest()[:16],

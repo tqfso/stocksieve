@@ -50,7 +50,7 @@ test('退出通过后端撤销，会话不会仅由浏览器角色切换', async
 });
 test('分析历史跨快照读取，重复进行中冲突恢复原任务', async () => {
     const stock = api.mapStock(fixture(), snapshot);
-    replies.push({ status: 200, body: { data: { items: [] } } }, { status: 409, body: { error: { code: 'ANALYSIS_IN_PROGRESS', message: '已有任务', details: { analysisId: 'existing' } } } }, { status: 200, body: { data: { id: 'existing', status: 'queued', simulated: true } } });
+    replies.push({ status: 200, body: { data: { items: [] } } }, { status: 409, body: { error: { code: 'ANALYSIS_IN_PROGRESS', message: '已有任务', details: { analysisId: 'existing' } } } }, { status: 200, body: { data: { id: 'existing', status: 'queued', simulated: false } } });
     await api.analysesFor(stock);
     assert.equal(new URL(calls[0]!.url, 'http://test.invalid').searchParams.has('snapshotId'), false);
     const task = await api.startAnalysis(stock, 'same-request-key');

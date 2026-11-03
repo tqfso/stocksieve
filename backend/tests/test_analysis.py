@@ -7,12 +7,11 @@ from zipfile import ZipFile
 
 from pypdf import PdfReader
 from stocksieve.infrastructure.persistence import schema as t
-from stocksieve.modules.analysis.infrastructure.mock_runtime import MockAnalysisRuntime
 
-from .test_mock_analysis import generate
+from .analysis_fixtures import FixtureAnalysisRuntime, generate
 
 
-class EvidenceRuntime(MockAnalysisRuntime):
+class EvidenceRuntime(FixtureAnalysisRuntime):
     """受控资料验证链接在页面与文件中都来自实际保存内容。"""
 
     async def execute(self, tools: Any) -> Any:
@@ -64,7 +63,7 @@ def test_unavailable_citation_and_incomplete_report_are_rejected(context: Any) -
     from stocksieve.modules.ingestion.application.service import Sync
     from stocksieve.modules.jobs.application.worker import Worker
 
-    class InvalidRuntime(MockAnalysisRuntime):
+    class InvalidRuntime(FixtureAnalysisRuntime):
         """模拟模型违规输出，仍须经过相同的报告校验。"""
 
         invalid = 'source'

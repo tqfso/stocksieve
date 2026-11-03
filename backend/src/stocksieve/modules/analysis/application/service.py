@@ -296,7 +296,6 @@ class Analysis:
         if tools.task['options_json'].get('runtime') != self.runtime.identity():
             raise DomainError('ANALYSIS_CONFIG_CHANGED', '受理后模型配置发生变化，请重新发起分析。', 503)
         identity = tools.task['options_json']['runtime']
-        simulated = identity.get('mode') == 'mock'
         await tools.snapshot_facts()
         await tools.financial_facts()
         tools.stage('analyzing', 40)
@@ -305,17 +304,17 @@ class Analysis:
             draft = ReportDraft.model_validate(raw)
         except ValueError as error:
             raise DomainError('ANALYSIS_INVALID_REPORT', '模型返回的报告格式不符合要求。', 503) from error
-        if not simulated and draft.reductions:
+        if draft.reductions:
             await tools.review_reductions([item.model_dump() for item in draft.reductions])
         available = {key: value for key, value in tools.seen.items() if value['status'] == 'available'}
         if any(key not in available for key in draft.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告引用了未取得的资料。', 503)
-        if not simulated and not any(value['material_kind'] == 'research' for value in available.values()):
+        if not any(value['material_kind'] == 'research' for value in available.values()):
             raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '真实分析尚无核验的公司与行业资料。', 503)
         if any(key not in available for section in draft.sections for key in section.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告章节引用了未取得的资料。', 503)
         cited = set(draft.sourceKeys) | {key for section in draft.sections for key in section.sourceKeys}
-        if not simulated and not any(available[key]['material_kind'] == 'research' for key in cited):
+        if not any(available[key]['material_kind'] == 'research' for key in cited):
             raise DomainError('ANALYSIS_INVALID_REPORT', '真实报告未引用实际阅读的公开原文。', 503)
         tools.stage('writing', 85)
         metrics, valuation = report_facts(tools.record, tools.facts, tools.snapshot['data_date'].isoformat())
@@ -331,7 +330,7 @@ class Analysis:
         overview = draft.overview.model_dump()
         technical = tools.facts['generalTrade']
         overview['pricePlan'] = technical['plan']
-        # 模拟文字不构成真实持有或买入判断，价格仅采用已计算的技术观察范围。
+        # 价格采用冻结的技术计算；事件证据缺失时限制当前判断。
         if not tools.reduction_verified:
             overview['decision'] = {'action': 'wait', 'label': '先核验风险', 'reason': '公司基本面、诉讼与减持尚未核验，当前只提供技术观察参考。'}
         missing = list(dict.fromkeys([value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available'] + draft.missingInformation
@@ -357,13 +356,13 @@ class Analysis:
                     'url': value['source_url'], 'publishedAt': utc(value['published_at']).isoformat() if value['published_at'] else None,
                     'fetchedAt': utc(value['fetched_at']).isoformat()} for key, value in available.items() if key in used_keys]
         instant = self.tasks.clock()
-        report = {'title': ('【模拟】' if simulated else '') + tools.record['stock']['name'] + ' · AI分析报告',
+        report = {'title': tools.record['stock']['name'] + ' · AI分析报告',
                   'stock': tools.record['stock'], 'snapshotId': tools.snapshot['id'], 'dataDate': tools.snapshot['data_date'].isoformat(),
                   'overview': overview, 'summary': draft.summary,
                   'sections': [{**section.model_dump(exclude={'sourceKeys'}), 'sourceIds': [source_ids[key] for key in section.sourceKeys]} for section in draft.sections],
                   'metrics': metrics, 'valuation': valuation, 'shareholders': shareholder_facts(), 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
-                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': simulated,
-                  'researchStatus': 'not_searched' if simulated else 'researched'}
+                  'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': False,
+                  'researchStatus': 'researched'}
         with self.tasks.db.transaction(serialized=True) as connection:
             task = self.tasks.assert_lease(connection, lease)
             connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=3,

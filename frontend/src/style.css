@@ -1,4 +1,4 @@
-/* 本文件定义模拟评审版的视觉系统、页面布局与响应式适配。 */
+/* 本文件定义应用视觉系统、页面布局与响应式适配。 */
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 360px; font-size: var(--font-size-body); line-height: 1.6; }
 a { color: inherit; text-decoration: none; }
@@ -49,8 +49,8 @@ button svg, .el-button svg { flex-shrink: 0; }
 .breadcrumb span { margin: 0 13px; color: var(--muted); }
 .breadcrumb strong { font-weight: 500; color: var(--ink); }
 .topbar-actions { display: flex; align-items: center; gap: 20px; }
-.mock-label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: var(--font-size-small); letter-spacing: .3px; white-space: nowrap; }
-.mock-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+.status-label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: var(--font-size-small); letter-spacing: .3px; white-space: nowrap; }
+.status-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
 .demo-strip { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--font-size-small); min-height: 34px; padding: 8px 36px; background: var(--surface-muted); }
 .demo-date { margin-left: auto; white-space: nowrap; }
 .workspace { width: 100%; max-width: 1650px; margin: 0 auto; padding: 34px 36px 20px; flex: 1; }
@@ -320,7 +320,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .login-story-footer { display: flex; justify-content: space-between; font-size: var(--font-size-small); color: #d5e7fb; z-index: 1; }
 .login-story-footer span { color: #d5e7fb; }
 .login-form-side { display: flex; flex-direction: column; align-items: center; background: var(--surface); padding: 44px; }
-.login-form-side > .mock-label { align-self: end; }
+.login-form-side > .status-label { align-self: end; }
 .login-card { width: 100%; max-width: 365px; margin: auto 0; padding: 50px 0; }
 .login-card h2 { font-size: 26px; font-weight: 600; margin: 16px 0 12px; letter-spacing: 0; }
 .login-card > .muted { font-size: var(--font-size-small); margin-bottom: 33px; }
@@ -376,7 +376,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .workspace { padding: 24px 16px 15px; }
   .topbar { padding: 0 15px; gap: 8px; }
   .topbar-actions { gap: 8px; }
-  .topbar-actions > .mock-label { display: none; }
+  .topbar-actions > .status-label { display: none; }
   .breadcrumb span { margin: 0 7px; }
   .demo-strip { padding: 8px 16px; font-size: var(--font-size-small); line-height: 1.6; }
   .demo-strip > svg { flex-shrink: 0; }

@@ -5,22 +5,24 @@ from typing import Any
 from sqlalchemy import delete
 from stocksieve.infrastructure.persistence import schema as t
 
-from .test_mock_analysis import generate
+from .analysis_fixtures import generate
 
 
 def test_directory_search_is_independent_of_signals(context: Any) -> None:
-    context.submit('initialize'); context.run()
+    context.submit('initialize')
+    context.run()
     stock = context.source.universe_stocks[0]
     path = '/api/v1/stocks?search=' + stock.code
     assert context.request('GET', path)[1]['data']['items'][0]['dataStatus'] == 'pending'
-    context.submit('daily'); context.run()
+    context.submit('daily')
+    context.run()
     with context.api.db.transaction() as connection:
         connection.execute(delete(t.signals).where(t.signals.c.stock_id == stock.stock_id))
     for search in (stock.name, stock.code, stock.stock_id):
         result = context.request('GET', '/api/v1/stocks?search=' + search)[1]['data']
         assert result['total'] == 1 and result['items'][0]['dataStatus'] == 'ready'
     task = generate(context)
-    assert task['report']['overview']['holding']['label'] == '暂不判断持有'
+    assert task['stockId'] == stock.stock_id and len(task['report']['sections']) == 7
     assert context.request('GET', '/api/v1/stocks?search=不存在的股票')[1]['data']['total'] == 0
     assert context.request('GET', path, token=None)[0] == 401
 

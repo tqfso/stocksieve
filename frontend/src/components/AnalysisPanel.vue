@@ -3,7 +3,6 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { BOARDS } from '../boards.ts';
-import { useMarket } from '../stores.ts';
 import { randomId } from '../ids.ts';
 import AppIcon from './AppIcon.vue';
 import StatePanel from './StatePanel.vue';
@@ -11,12 +10,11 @@ import { ApiError, analysesFor, downloadReport, formatNumber, formatTime, getAna
 import type { AnalysisTask, LiveStock } from '../api.ts';
 import type { ReportSource } from '../types.ts';
 const props = defineProps<{ stock: LiveStock }>();
-const market = useMarket();
 const tasks = ref<AnalysisTask[]>([]);
 const selected = ref('');
 const detail = ref<AnalysisTask | null>(null);
 const report = computed(() => detail.value?.report);
-const simulated = computed(() => report.value?.simulated ?? task.value?.simulated ?? market.status?.analysisMode !== 'live');
+const simulated = computed(() => report.value?.simulated ?? task.value?.simulated ?? false);
 const reports = computed(() => tasks.value.filter(item => item.status === 'succeeded'));
 const task = computed(() => tasks.value.find(item => item.snapshotId === props.stock.snapshotId && ['queued', 'running'].includes(item.status)) ?? tasks.value.find(item => item.snapshotId === props.stock.snapshotId));
 const running = computed(() => task.value?.status === 'queued' || task.value?.status === 'running');
@@ -106,7 +104,7 @@ onUnmounted(() => { ++contextVersion; ++reportVersion; clearTimeout(timer); });
 <template>
   <section id="ai-panel" class="panel analysis-panel">
     <div class="section-caption"><div><strong><AppIcon name="spark" :size="19" />AI 分析报告</strong><span class="muted">一次了解公司、风险与参与条件</span></div><span class="tag" :class="simulated ? 'tag-amber' : 'tag-green'">{{ simulated ? '模拟分析' : '真实模型分析' }}</span></div>
-    <p class="analysis-intro">{{ market.status?.analysisMode === 'live' ? '结合已同步行情、公开原文和金融计算生成报告；资料覆盖与结论依据见所选报告。' : '当前采用模拟报告，未调用真实模型或联网检索。' }}</p>
+    <p class="analysis-intro">结合已同步行情、公开原文和金融计算生成报告；资料覆盖与结论依据见所选报告。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="analysis-error" />
     <div class="report-toolbar report-actions-toolbar"><div><el-select v-if="reports.length" v-model="selected" aria-label="报告历史" style="width: 240px"><el-option v-for="item in reports" :key="item.id" :label="`${item.dataDate} · ${formatTime(item.createdAt).slice(5)}${item.simulated ? ' · 模拟' : ''}`" :value="item.id" /></el-select><el-button v-if="report" @click="copy()">复制摘要</el-button><el-button type="primary" :loading="submitting" :disabled="running" @click="generate">{{ running ? '生成中' : reports.length ? '重新生成' : '生成报告' }}</el-button></div></div>
     <div v-if="task && task.status !== 'succeeded'" class="analysis-task" :class="{ 'task-failed': task.status === 'failed' }" role="status" :aria-busy="running"><div class="analysis-task-heading"><strong>{{ task.status === 'failed' ? '本次报告未完成' : stages[task.stage] }}</strong><span class="tag">{{ task.progress }}%</span></div><p v-if="task.error">{{ task.error.message }}</p><p v-else>服务器正在生成，离开页面后也可以回来查看。</p><el-button v-if="task.status === 'failed'" @click="generate">重试生成</el-button></div>

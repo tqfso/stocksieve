@@ -69,7 +69,7 @@ async function submit(): Promise<void> {
       </div>
     </section>
     <section class="login-form-side">
-      <span class="mock-label">
+      <span class="status-label">
         <i />
         StockSieve 工作台
       </span>

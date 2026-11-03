@@ -7,7 +7,7 @@ export interface Source { id: string; name: string; available: boolean; supporte
 export interface MarketStatus {
     initialized: boolean; stockUpdatedAt: string | null; catalogUpdatedAt: string | null;
     latestTradingDate: string | null; publishedSnapshot: Snapshot | null;
-    marketBoards?: Board[]; defaultSource?: string; analysisMode?: 'mock' | 'live';
+    marketBoards?: Board[]; defaultSource?: string;
     coverage: { totalStocks: number; byExchange: Record<string, number> }; sources: Source[];
 }
 export interface Signal { strategy: Strategy; reason: string; metrics: Record<string, number | null>; conditionResults?: { id: string; passed: boolean }[]; invalidation?: unknown }
