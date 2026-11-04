@@ -12,7 +12,10 @@ from sqlalchemy import select, update
 import stocksieve.infrastructure.persistence.schema as t
 from stocksieve.infrastructure.persistence.database import utc
 from stocksieve.infrastructure.persistence.operations import upsert
+from stocksieve.modules.analysis.application.evidence import verify_facts
 from stocksieve.modules.analysis.application.facts import (
+    complete_financial_facts,
+    financial_gap,
     report_facts,
     shareholder_facts,
 )
@@ -40,6 +43,7 @@ from stocksieve.modules.jobs.domain.models import Lease
 from stocksieve.modules.market.domain.models import StockState
 from stocksieve.shared.errors import DomainError, MissingData
 from stocksieve.shared.serialization import encode
+from stocksieve.shared.time import SHANGHAI
 
 
 class AnalysisTools:
@@ -51,6 +55,8 @@ class AnalysisTools:
         self.http, self.search = http, search
         self.reader = reader
         self.downloaded: dict[str, dict[str, Any]] = {}
+        self.read_pages: dict[str, set[int]] = {}
+        self.research_retry_at: datetime | None = None
         self.calls = 0
         self.seen: dict[str, dict[str, Any]] = {}
         with self.db.transaction() as connection:
@@ -92,7 +98,6 @@ class AnalysisTools:
         return {'key': key, 'status': record['status'], 'data': record['content_json'], 'missing': record['missing_reason']}
 
     async def snapshot_facts(self) -> dict[str, Any]:
-        self.budget()
         self.stage('researching', 15)
         record = {key: value for key, value in self.record.items() if key != 'signalRows'}
         record['snapshot'] = self.tasks.market.snapshot_view(self.snapshot)
@@ -118,7 +123,6 @@ class AnalysisTools:
         return result
 
     async def financial_facts(self) -> dict[str, Any]:
-        self.budget()
         with self.db.transaction() as connection:
             reports = connection.execute(select(t.financials).where(t.financials.c.stock_id == self.task['stock_id'],
                 t.financials.c.fetched_at <= self.tasks.clock(), t.financials.c.period_end <= self.tasks.clock().date())
@@ -129,8 +133,8 @@ class AnalysisTools:
             metrics = financial_metrics(reports, cap)
             if metrics['revenueTtm'] is None or metrics['netProfitParentTtm'] is None:
                 raise MissingData('核心累计收入或归母净利润字段缺失。')
-        except MissingData as error:
-            return self.save('financial', 'financial', '合并财报资料', missing=str(error))
+        except MissingData:
+            return self.save('financial', 'financial', 'TTM计算资料', missing='尚未取得可计算TTM的完整期间数据。')
         used = [row for row in reports if row['id'] in metrics['reportIds']]
         for row in used:
             self.save('financial_' + row['id'], 'financial', f"{row['source']} · {row['period_end']}", row['raw_payload_json'],
@@ -147,11 +151,19 @@ class AnalysisTools:
         if self.search is None:
             return self.save(key, 'research', '公开资料检索', missing='尚未配置通过可用性与限频验证的免费检索渠道。')
         try:
-            hits = await self.search.search(query)
-        except (SourceDeferred, DomainError):
-            return self.save(key, 'research', '公开资料检索', missing='公开检索渠道暂不可用或处于频控。')
+            hits = await self.search.search(query, exchange=self.record['stock']['exchange'])
+        except SourceDeferred as wait:
+            self.research_retry_at = wait.until
+            message = '公告资料暂时无法更新，可在' + wait.until.astimezone(SHANGHAI).strftime('%m月%d日%H:%M') + '后重试。'
+            return self.save(key, 'research', '公开资料检索', {'query': query, 'retryAt': wait.until.isoformat()}, missing=message)
+        except DomainError:
+            return self.save(key, 'research', '公开资料检索', {'query': query}, missing='公告资料暂时无法更新，请稍后重试。')
+        warnings = list(dict.fromkeys(hit.cache_warning for hit in hits if hit.cache_warning))
+        if warnings:
+            self.facts.setdefault('researchLimitations', []).extend(item for item in warnings if item not in self.facts.get('researchLimitations', []))
+            self.save(key, 'research', '公告检索范围', {'query': query}, missing='；'.join(warnings))
         # 搜索摘要只用于发现原文，不能直接作为财务或减持事实依据。
-        return {'status': 'discovered', 'results': [{'title': hit.title, 'url': hit.url, 'publishedAt': hit.published_at} for hit in hits[:8]]}
+        return {'status': 'discovered', 'limitations': warnings, 'results': [{'title': hit.title, 'url': hit.url, 'publishedAt': hit.published_at, 'indexFetchedAt': hit.index_fetched_at} for hit in hits[:8]]}
 
     async def download_public(self, url: str, title: str = '', published_at: str | None = None) -> dict[str, Any]:
         """下载只接受公开披露域名；资料需经过阅读与证券身份校验后才成为可引用证据。"""
@@ -183,9 +195,10 @@ class AnalysisTools:
         if discovered.get('status') != 'discovered':
             return discovered
         documents = []
-        for hit in discovered.get('results', [])[:3]:
+        limit = 1 if '季度报告' in query or '年度报告' in query else 3
+        for hit in discovered.get('results', [])[:limit]:
             documents.append(await self.download_public(hit['url'], hit['title'], hit.get('publishedAt')))
-        return {'status': 'discovered', 'documents': documents, 'otherResults': discovered.get('results', [])[3:],
+        return {'status': 'discovered', 'documents': documents, 'limitations': discovered.get('limitations', []), 'otherResults': discovered.get('results', [])[limit:],
                 'note': '检索标题不是事实证据；用read_document读取正文后才能引用materialKey。'}
 
     async def read_document(self, material_key: str, keyword: str = '', page: int = 1) -> dict[str, Any]:
@@ -221,10 +234,11 @@ class AnalysisTools:
                 snippets.append({'page': item['page'], 'text': text[start:start + 4000]})
             if len(snippets) >= 3:
                 break
+        self.read_pages.setdefault(material_key, set()).update(item['page'] for item in snippets)
         return {'key': material_key, 'status': 'available', 'title': source['source_name'], 'url': source['source_url'],
                 'publishedAt': source['published_at'], 'pageCount': document.get('pageCount', len(pages)),
                 'truncated': document.get('truncated', False), 'snippets': snippets,
-                'note': '未命中关键词不代表不存在该事项；完整披露范围以实际读到的原文为准。'}
+                'note': '未命中不代表不存在。将累计财务数值与报告期末股东户数连同逐字原文、页码、单位、统计期写入facts，不能只写正文；单位须使用原文单位，数值不要换算或四舍五入。'}
 
     async def calculate_finance(self, operation: str, inputs: dict[str, Any], source_keys: list[str] | None = None) -> dict[str, Any]:
         """计算工具：固定公式，记录输入来源和情景假设，计算结果可作为报告引用。"""
@@ -245,7 +259,6 @@ class AnalysisTools:
 
     async def review_reductions(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         """股东、状态与数量语境须来自已读原文；空结果不能证明没有减持风险。"""
-        self.budget()
         verified = []
         if not 1 <= len(records) <= 20:
             return self.save('reduction_review', 'reduction', '股东减持核验', missing='未取得足够的减持原文证据。')
@@ -298,43 +311,73 @@ class Analysis:
         identity = tools.task['options_json']['runtime']
         await tools.snapshot_facts()
         await tools.financial_facts()
+        if self.search is not None and self.http is not None and self.reader is not None:
+            # 公告尽量先准备；缺少公告时继续分析已有资料，不阻断整份报告。
+            month = self.tasks.clock().astimezone(SHANGHAI).month
+            topic = '三季度报告' if month >= 10 or month <= 3 else '年度报告' if month == 4 else '一季度报告' if month <= 7 else '半年度报告'
+            prepared = await tools.search_and_download(tools.record['stock']['code'] + ' ' + topic)
+            excerpts = []
+            for document in prepared.get('documents', [])[:2]:
+                key = document.get('materialKey')
+                if key:
+                    excerpt = await tools.read_document(key, keyword='主要会计')
+                    if excerpt.get('status') == 'available':
+                        excerpts.append(excerpt)
+                        excerpts.append(await tools.read_document(key, keyword='普通股股东总数'))
+                        break
+            tools.facts['researchBrief'] = excerpts
+        tools.facts['researchCoverage'] = {
+            'publicDocumentsAvailable': any(value['material_kind'] == 'research' and value['status'] == 'available' for value in tools.seen.values()),
+            'financialsAvailable': bool(tools.facts.get('financial')),
+            'instruction': '优先分析已有资料。缺少公告时，依据真实行情、均线、筹码及已同步财务形成判断；不根据记忆补造公司业务、业绩或事件。'}
         tools.stage('analyzing', 40)
         raw, usage = await self.runtime.execute(tools)
         try:
             draft = ReportDraft.model_validate(raw)
         except ValueError as error:
             raise DomainError('ANALYSIS_INVALID_REPORT', '模型返回的报告格式不符合要求。', 503) from error
+        tools.facts['verifiedFacts'] = verify_facts(draft.facts, tools.seen, self.tasks.clock().date())
+        if complete_financial_facts(tools.record, tools.facts):
+            tools.save('financial', 'financial', '已读财报TTM计算', tools.facts['financial'])
         if draft.reductions:
             await tools.review_reductions([item.model_dump() for item in draft.reductions])
         available = {key: value for key, value in tools.seen.items() if value['status'] == 'available'}
         if any(key not in available for key in draft.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告引用了未取得的资料。', 503)
-        if not any(value['material_kind'] == 'research' for value in available.values()):
-            raise DomainError('ANALYSIS_SOURCES_UNAVAILABLE', '真实分析尚无核验的公司与行业资料。', 503)
+        public_documents = {key for key, value in available.items() if value['material_kind'] == 'research'}
         if any(key not in available for section in draft.sections for key in section.sourceKeys):
             raise DomainError('ANALYSIS_INVALID_REPORT', '报告章节引用了未取得的资料。', 503)
         cited = set(draft.sourceKeys) | {key for section in draft.sections for key in section.sourceKeys}
-        if not any(available[key]['material_kind'] == 'research' for key in cited):
+        if public_documents and not public_documents.intersection(cited):
             raise DomainError('ANALYSIS_INVALID_REPORT', '真实报告未引用实际阅读的公开原文。', 503)
         tools.stage('writing', 85)
         metrics, valuation = report_facts(tools.record, tools.facts, tools.snapshot['data_date'].isoformat())
-        # 页面与导出共用已保存计算，指标描述保留假设，不把盈亏比当实际胜率。
-        scenarios = [item for item in tools.facts.get('calculations', []) if item['operation'] == 'risk_reward']
-        if scenarios:
-            scenario = scenarios[-1]
-            result = scenario['result']
-            detail = (scenario['inputs'].get('assumption') or '技术价位条件情景') + '；' + scenario['limitation']
-            metrics.append({'label': '情景净盈亏比', 'value': f"{result['riskRewardRatio']:.2f} : 1", 'detail': detail})
-            if result['breakEvenWinRatePercent'] is not None:
-                metrics.append({'label': '盈亏平衡所需胜率（理论）', 'value': f"{result['breakEvenWinRatePercent']:.2f}%", 'detail': '仅为该盈亏情景的数学门槛，不是历史或预测胜率。'})
         overview = draft.overview.model_dump()
         technical = tools.facts['generalTrade']
         overview['pricePlan'] = technical['plan']
-        # 价格采用冻结的技术计算；事件证据缺失时限制当前判断。
-        if not tools.reduction_verified:
-            overview['decision'] = {'action': 'wait', 'label': '先核验风险', 'reason': '公司基本面、诉讼与减持尚未核验，当前只提供技术观察参考。'}
-        missing = list(dict.fromkeys([value['missing_reason'] for value in tools.seen.values() if value['status'] != 'available'] + draft.missingInformation
-            + ([] if tools.reduction_verified else ['股东减持计划与实际进展尚未核验。'])))
+        # 只限制确实缺失的资料，不用减持核验状态覆盖整份模型判断。
+        shareholders = shareholder_facts(tools.facts)
+        coverage = []
+        critical = list(dict.fromkeys(tools.facts.get('researchLimitations', [])))
+        if not public_documents:
+            critical.append('本次侧重已有行情、技术条件和已同步资料，经营与重大事项尚未通过公告补齐')
+        reductions = tools.facts.get('reductions', [])
+        planned = {item['shareholder'] for item in reductions if item['status'] == 'planned'}
+        followed = {item['shareholder'] for item in reductions if item['status'] != 'planned'}
+        missing_reductions = any('减持' in item and any(word in item for word in ('未', '缺', '待')) for item in draft.missingInformation)
+        if not tools.reduction_verified or planned - followed or missing_reductions:
+            critical.append('减持实施结果尚未完整核验')
+        if any('诉讼' in item or '处罚' in item for item in draft.missingInformation):
+            critical.append('诉讼或处罚尚未专项核验')
+        financial = tools.facts.get('financial') or {}
+        if financial.get('netProfitParentTtm') is None:
+            coverage.append(financial_gap(tools.facts))
+        elif financial['netProfitParentTtm'] <= 0:
+            coverage.append('最近12个月归母净利润非正，公司市盈率不适用。')
+        if shareholders['latestCount'] is None:
+            coverage.append('股东户数尚未取得。')
+        coverage.append('行业估值资料尚未取得，暂不作行业估值比较。')
+        missing = list(dict.fromkeys(critical + coverage + draft.missingInformation))
         # 引用地址与时间只采用后端保存记录，不能接受模型自己编写的URL。
         used_keys = set(draft.sourceKeys) | {key for section in draft.sections for key in section.sourceKeys}
         if 'financial' in used_keys:
@@ -350,22 +393,31 @@ class Analysis:
             if value['material_kind'] == 'calculation':
                 used_keys.add(key)
                 used_keys.update(value['content_json'].get('sourceKeys', []))
+        used_keys.update(item['sourceKey'] for item in tools.facts['verifiedFacts'])
         ordered_keys = [key for key in available if key in used_keys]
         source_ids = {key: f'source_{index + 1}' for index, key in enumerate(ordered_keys)}
         sources = [{'id': source_ids[key], 'title': value['source_name'], 'publisher': value['source_name'],
                     'url': value['source_url'], 'publishedAt': utc(value['published_at']).isoformat() if value['published_at'] else None,
-                    'fetchedAt': utc(value['fetched_at']).isoformat()} for key, value in available.items() if key in used_keys]
+                    'fetchedAt': utc(value['fetched_at']).isoformat(),
+                    'pages': sorted(tools.read_pages.get(key, set()) | {item['page'] for item in tools.facts['verifiedFacts'] if item['sourceKey'] == key})}
+                   for key, value in available.items() if key in used_keys]
         instant = self.tasks.clock()
+        section_titles = {'company': '已知公司资料', 'advantages': '行情与已有资料观察', 'risks': '当前风险'} if not public_documents else {}
         report = {'title': tools.record['stock']['name'] + ' · AI分析报告',
                   'stock': tools.record['stock'], 'snapshotId': tools.snapshot['id'], 'dataDate': tools.snapshot['data_date'].isoformat(),
                   'overview': overview, 'summary': draft.summary,
-                  'sections': [{**section.model_dump(exclude={'sourceKeys'}), 'sourceIds': [source_ids[key] for key in section.sourceKeys]} for section in draft.sections],
-                  'metrics': metrics, 'valuation': valuation, 'shareholders': shareholder_facts(), 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
+                  'sections': [{**section.model_dump(exclude={'sourceKeys'}), 'title': section_titles.get(section.id, section.title),
+                                'sourceIds': [source_ids[key] for key in section.sourceKeys]} for section in draft.sections],
+                  'metrics': metrics, 'valuation': valuation, 'shareholders': shareholders, 'sources': sources, 'dataQuality': 'partial' if missing else 'complete',
                   'missingInformation': missing, 'materialsAsOfAt': instant.isoformat(), 'simulated': False,
-                  'researchStatus': 'researched'}
+                  'researchStatus': 'researched' if public_documents else 'unavailable', 'reportScope': 'company' if public_documents else 'available_data',
+                  'schemaVersion': 4, 'criticalNotes': critical, 'coverageNotes': coverage,
+                  'verifiedFacts': [{**{name: value for name, value in item.items() if name != 'sourceKey'},
+                                     'sourceId': source_ids[item['sourceKey']]} for item in tools.facts['verifiedFacts']],
+                  'calculationDetails': tools.facts.get('calculations', [])}
         with self.tasks.db.transaction(serialized=True) as connection:
             task = self.tasks.assert_lease(connection, lease)
-            connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=3,
+            connection.execute(t.results.insert().values(task_id=lease.id, payload_json=report, schema_version=4,
                 provider=identity['provider'], model_name=identity['model'], prompt_version=identity.get('skillVersion', 'stock-analysis-v1'), calculation_version='v1',
                 usage_json=usage, materials_as_of_at=instant, generated_at=instant))
             connection.execute(update(t.tasks).where(t.tasks.c.id == lease.id).values(status='succeeded', progress=100, finished_at=instant,

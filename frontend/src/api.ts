@@ -46,8 +46,10 @@ export interface LiveReport {
     sections: { id: string; title: string; headline: string; text: string; sourceIds: string[] }[]; sources: ReportSource[]; simulated: boolean;
     dataQuality: 'complete' | 'partial'; missingInformation: string[]; materialsAsOfAt: string; generatedAt: string;
     stock: { code: string; name: string; board: Board | null; industry: { name: string } | null };
-    snapshotId: string; dataDate: string; researchStatus: 'not_searched' | 'researched';
+    snapshotId: string; dataDate: string; researchStatus: 'not_searched' | 'researched' | 'unavailable'; reportScope?: 'company' | 'available_data';
     shareholders?: Shareholders;
+    schemaVersion?: number; criticalNotes?: string[]; coverageNotes?: string[];
+    calculationDetails?: { operation: string; result: Record<string, unknown>; limitation: string }[];
     valuation: { basis: string; companyPe: number | null; industryPe: number | null; industry: string | null; companyDataDate: string; industryDataDate: string | null; industryClassification: string; industryStatistic: string | null; explanation: string };
 }
 export interface ServerCandle extends Omit<Candle, 'volume'> { volume: number | null; ma5: number | null; ma10: number | null; ma20: number | null; ma60: number | null; ma120: number | null; isComplete: boolean }
@@ -179,7 +181,7 @@ export async function startAnalysis(stock: LiveStock, key: string): Promise<Anal
     catch (error) { if (error instanceof ApiError && error.code === 'ANALYSIS_IN_PROGRESS' && typeof error.details.analysisId === 'string') return getAnalysis(error.details.analysisId); throw error; }
 }
 export interface ChipDistribution { currentPrice: number; bins: ChipBin[]; averageCost: number; profitableRatio: number; cost70: [number, number]; cost90: [number, number]; support: ChipBin | null; resistance: ChipBin | null }
-export interface Shareholders { status: 'unavailable'; latestCount: number | null; previousCount: number | null; changePercent: number | null; asOf: string | null; previousAsOf: string | null; publishedAt: string | null; sourceUrl: string | null; trend: 'unknown'; trendLabel: string; explanation: string }
+export interface Shareholders { status: 'unavailable' | 'partial' | 'available'; basis?: 'A' | 'all' | null; latestCount: number | null; previousCount: number | null; changePercent: number | null; asOf: string | null; previousAsOf: string | null; publishedAt: string | null; sourceUrl: string | null; trend: 'unknown' | 'decreasing' | 'increasing' | 'unchanged'; trendLabel: string; explanation: string }
 export interface ChipsResult { stockId: string; snapshotId: string; dataDate: string; distribution: ChipDistribution | null; method: string; missingInformation: string[] }
 
 export function getChips(stock: LiveStock): Promise<ChipsResult> { return request('/stocks/' + encodeURIComponent(stock.stockId) + '/chips' + params({ snapshotId: stock.snapshotId })); }

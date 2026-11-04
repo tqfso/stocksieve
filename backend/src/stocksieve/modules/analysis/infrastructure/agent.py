@@ -4,9 +4,15 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
+from stocksieve.modules.analysis.application.evidence import verify_facts
+from stocksieve.modules.analysis.application.facts import (
+    complete_financial_facts,
+    shareholder_facts,
+)
 from stocksieve.modules.analysis.application.reports import ReportDraft
 from stocksieve.modules.analysis.application.service import AnalysisTools
 from stocksieve.shared.errors import DomainError
@@ -21,6 +27,7 @@ class LangGraphRuntime:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.last_failure: dict[str, Any] = {}
 
     def identity(self) -> dict[str, Any] | None:
         if not self.settings.ai_api_key or not self.settings.ai_model:
@@ -65,6 +72,10 @@ class LangGraphRuntime:
             StructuredTool.from_function(coroutine=tools.calculate_finance, name='calculate_finance',
                 description='固定金融公式。operation为risk_reward/growth/valuation/expected_return/scenarios；inputs字段见技能，source_keys为已读资料或本地资料键。禁止编造胜率。'),
         ]
+        public_ready = any(value['material_kind'] == 'research' and value['status'] == 'available' for value in tools.seen.values())
+        if not public_ready and (tools.search is None or tools.research_retry_at is not None):
+            # 来源确实不可用时只保留计算能力，避免反复检索拖累已有数据分析。
+            functions = [item for item in functions if item.name == 'calculate_finance']
         # 输入由后端准备；模型无需另行调用行情、数据库或服务器文件工具。
         facts = dict(tools.facts)
         if facts.get('chips'):
@@ -73,8 +84,9 @@ class LangGraphRuntime:
                    'dataDate': tools.task['target_date'], 'materialsAsOfAt': tools.tasks.clock(), 'facts': facts,
                    'availableMaterials': [{'key': key, 'status': value['status'], 'title': value['source_name'],
                        'missing': value['missing_reason']} for key, value in tools.seen.items()],
-                   'reportSchema': ReportDraft.model_json_schema()}
+                   'reportSchema': ReportDraft.model_json_schema(), 'availableTools': [item.name for item in functions]}
         messages: list[Any] = [{'role': 'system', 'content': skill}, {'role': 'user', 'content': encode(request)}]
+        started = time.monotonic()
         try:
             if self.settings.ai_tools_supported:
                 bound = model.bind_tools(functions, parallel_tool_calls=False)
@@ -110,18 +122,72 @@ class LangGraphRuntime:
         except DomainError:
             raise
         except Exception as error:
-            raise DomainError('ANALYSIS_PROVIDER_FAILED', '模型调用或工具执行未完成，请稍后重试或检查服务配置。', 503) from error
-        content = history[-1].content
-        if isinstance(content, list):
-            content = ''.join(item.get('text', '') for item in content if isinstance(item, dict) and item.get('type') in {'text', 'output_text'})
-        try:
-            text = content.strip()
-            if text.startswith('```json') and text.endswith('```'):
-                text = text[7:-3].strip()
-            report = json.loads(text)
-        except (ValueError, TypeError, AttributeError) as error:
-            raise DomainError('ANALYSIS_INVALID_REPORT', '模型未返回有效JSON报告。', 503) from error
-        usage = {'inputTokens': 0, 'outputTokens': 0, 'toolCalls': tools.calls}
+            self.last_failure = {'type': type(error).__name__, 'status': getattr(error, 'status_code', None),
+                                 'causeType': type(error.__cause__).__name__ if error.__cause__ else None}
+            raise DomainError('ANALYSIS_PROVIDER_FAILED', '报告暂未生成，请稍后重试；若持续失败请联系管理员。', 503) from error
+        repairs = 0
+        for attempt in range(2):
+            try:
+                content = history[-1].content
+                if isinstance(content, list):
+                    content = ''.join(item.get('text', '') for item in content if isinstance(item, dict) and item.get('type') in {'text', 'output_text'})
+                text = content.strip()
+                if text.startswith('```json') and text.endswith('```'):
+                    text = text[7:-3].strip()
+                report = json.loads(text)
+                draft = ReportDraft.model_validate(report)
+                verify_facts(draft.facts, tools.seen, tools.tasks.clock().date())
+                break
+            except (ValueError, TypeError, AttributeError, DomainError) as error:
+                if attempt:
+                    raise DomainError('ANALYSIS_INVALID_REPORT', '报告结构或事实摘录未通过校验，请稍后重试。', 503) from error
+                # 只允许一次最终纠正，复用已读证据，不重新联网或无限增加模型调用。
+                remaining = self.settings.ai_timeout_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise DomainError('ANALYSIS_TIMEOUT', '分析超过处理时限。', 503) from error
+                context = history if self.settings.ai_tools_supported else [*messages, *history]
+                diagnostic = error.message if isinstance(error, DomainError) else str(error)[:1200]
+                correction = {'role': 'user', 'content': '最终JSON未通过校验：' + diagnostic + '。仅纠正完整JSON，六章正文各不超过240字，摘要不超过200字。facts只复制已读原文的原始值、单位与对应累计期间。无法可靠核对的事实须从facts和正文同时删除；不要调用新工具，不要编造。'}
+                try:
+                    repaired = await asyncio.wait_for(model.ainvoke([*context, correction]), timeout=remaining)
+                except TimeoutError as failed:
+                    raise DomainError('ANALYSIS_TIMEOUT', '报告纠正超过处理时限。', 503) from failed
+                except Exception as failed:
+                    raise DomainError('ANALYSIS_PROVIDER_FAILED', '模型未完成报告纠正。', 503) from failed
+                history.append(repaired)
+                repairs += 1
+        # 派生出新TTM或户数变化时，带着程序结果精简定稿，避免正文仍把已知数据写成缺失。
+        verified = verify_facts(draft.facts, tools.seen, tools.tasks.clock().date())
+        derived = {'verifiedFacts': verified}
+        financial_ready = complete_financial_facts(tools.record, derived)
+        holders = shareholder_facts(derived)
+        reviews = 0
+        if financial_ready or holders['previousCount'] is not None:
+            remaining = self.settings.ai_timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise DomainError('ANALYSIS_TIMEOUT', '报告整理超过处理时限。', 503)
+            context = history if self.settings.ai_tools_supported else [*messages, *history]
+            prompt = ('后端已核对事实并完成派生计算：' + encode({'financial': derived.get('financial'), 'shareholders': holders})
+                + '。请据此精简定稿，只返回overview、summary、sections、missingInformation四个JSON字段。不要重写facts、sourceKeys或其他字段；保留实际引用。'
+                  '已计算出的指标不能再写成缺失，行业估值缺失仍需保留。摘要最多200字，六章正文各最多240字，不重复列出数字与限制。')
+            try:
+                final = await asyncio.wait_for(model.ainvoke([*context, {'role': 'user', 'content': prompt}]), timeout=remaining)
+                content = final.content
+                if isinstance(content, list):
+                    content = ''.join(item.get('text', '') for item in content if isinstance(item, dict))
+                text = content.strip()
+                if text.startswith('```json') and text.endswith('```'):
+                    text = text[7:-3].strip()
+                patch = json.loads(text)
+                report = {**report, **{key: patch[key] for key in ('overview', 'summary', 'sections', 'missingInformation')}}
+                ReportDraft.model_validate(report)
+                history.append(final)
+                reviews = 1
+            except TimeoutError as error:
+                raise DomainError('ANALYSIS_TIMEOUT', '报告整理超过处理时限。', 503) from error
+            except Exception as error:
+                raise DomainError('ANALYSIS_INVALID_REPORT', '报告整理未完成，请稍后重试。', 503) from error
+        usage = {'inputTokens': 0, 'outputTokens': 0, 'toolCalls': tools.calls, 'repairs': repairs, 'reviews': reviews}
         for message in history:
             values = getattr(message, 'usage_metadata', None) or {}
             usage['inputTokens'] += values.get('input_tokens', 0)

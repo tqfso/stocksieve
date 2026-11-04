@@ -130,5 +130,12 @@ class RatePolicy(Protocol):
 class PublicHTTPClient(Protocol):
     """公开资料读取端口，由网络适配器实现；应用服务不依赖具体HTTP客户端。"""
 
-    async def document(self, vendor: str, url: str, cache_seconds: int = 86400) -> tuple[bytes, datetime]: ...
+    async def document(self, vendor: str, url: str, cache_seconds: int = 86400, stale_seconds: int = 0) -> tuple[bytes, datetime]: ...
     async def close(self) -> None: ...
+
+
+class AnnouncementHTTPClient(PublicHTTPClient, Protocol):
+    """公告索引的受控POST读取，沿用同一缓存和供应商频控。"""
+
+    async def post_document(self, vendor: str, url: str, data: dict[str, Any], cache_seconds: int = 3600,
+                            stale_seconds: int = 0) -> tuple[bytes, datetime]: ...

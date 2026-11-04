@@ -31,7 +31,7 @@ def supplier(url: str, fallback: str) -> str:
 
 
 class SourceHTTP:
-    """GET 请求统一计费限频，无自动重试、代理轮换或隐含重定向。"""
+    """公开读取统一计费限频，无自动重试、代理轮换或隐含重定向。"""
 
     def __init__(self, gate: RatePolicy, cache_dir: Path, client: httpx.AsyncClient | None = None) -> None:
         self.gate, self.cache_dir = gate, cache_dir
@@ -71,36 +71,60 @@ class SourceHTTP:
                     raise
                 await asyncio.sleep(max(.001, delay))
 
-    async def get_bytes(self, vendor: str, url: str, params: dict[str, Any] | None = None) -> bytes:
+    async def get_bytes(self, vendor: str, url: str, params: dict[str, Any] | None = None, *, max_bytes: int = 8 * 1024 * 1024) -> bytes:
         """在流读取过程中限制响应大小，网页读取与行情请求复用同一限频入口。"""
+        return await self.request_bytes('GET', vendor, url, params=params, max_bytes=max_bytes)
+
+    async def request_bytes(self, method: str, vendor: str, url: str, *, params: dict[str, Any] | None = None,
+                            data: dict[str, Any] | None = None, max_bytes: int = 8 * 1024 * 1024) -> bytes:
+        """POST仅供固定公告适配器使用，不能由模型构造任意请求。"""
         vendor = supplier(url, vendor)
         await self.reserve(vendor)
         try:
-            async with self.client.stream('GET', url, params=params, follow_redirects=False) as response:
+            async with self.client.stream(method, url, params=params, json=data, follow_redirects=False) as response:
                 self.check_status(vendor, response)
                 content = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=65536):
-                    if len(content) + len(chunk) > 8 * 1024 * 1024:
-                        self.gate.block(vendor, 86400)
-                        raise DomainError('DATA_NOT_AVAILABLE', '渠道响应超过大小限制，已暂停访问。', 503)
+                    if len(content) + len(chunk) > max_bytes:
+                        raise DomainError('DATA_NOT_AVAILABLE', '本次文档超过大小上限，未读取；其他渠道请求仍遵守原有频控。', 503)
                     content.extend(chunk)
                 return bytes(content)
         except httpx.HTTPError as error:
             self.gate.block(vendor, 3600)
             raise DomainError('SOURCE_TIMEOUT', '渠道访问失败，已暂停请求。', 503) from error
 
-    async def document(self, vendor: str, url: str, cache_seconds: int = 86400) -> tuple[bytes, datetime]:
+    async def document(self, vendor: str, url: str, cache_seconds: int = 86400, stale_seconds: int = 0) -> tuple[bytes, datetime]:
         """复用公开原文并保留实际获取时间，不能把缓存读取时间伪装成新抓取。"""
-        key = hashlib.sha256(('document:' + url).encode()).hexdigest()
+        return await self.cached_document('GET', vendor, url, None, cache_seconds, stale_seconds)
+
+    async def post_document(self, vendor: str, url: str, data: dict[str, Any], cache_seconds: int = 3600,
+                            stale_seconds: int = 0) -> tuple[bytes, datetime]:
+        """公告POST查询按固定参数缓存，同证券相同查询不会重复访问上游。"""
+        return await self.cached_document('POST', vendor, url, data, cache_seconds, stale_seconds)
+
+    async def cached_document(self, method: str, vendor: str, url: str, data: dict[str, Any] | None,
+                              cache_seconds: int, stale_seconds: int) -> tuple[bytes, datetime]:
+        identity = 'document:' + url if method == 'GET' else 'post-document:' + url + json.dumps(data, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        key = hashlib.sha256(identity.encode()).hexdigest()
         path = self.cache_dir / (key + '.json')
-        if path.exists() and cache_seconds > 0:
+        cached = None
+        if path.exists() and max(cache_seconds, stale_seconds) > 0:
             try:
                 saved = json.loads(path.read_text())
-                if 0 <= time.time() - saved['at'] <= cache_seconds:
-                    return base64.b64decode(saved['body'], validate=True), datetime.fromtimestamp(saved['at'], UTC)
+                age = time.time() - saved['at']
+                if 0 <= age <= max(cache_seconds, stale_seconds):
+                    cached = base64.b64decode(saved['body'], validate=True), datetime.fromtimestamp(saved['at'], UTC)
+                    if age <= cache_seconds:
+                        return cached
             except (ValueError, KeyError, OSError):
                 pass
-        content = await self.get_bytes(vendor, url)
+        try:
+            content = await self.request_bytes(method, vendor, url, data=data, max_bytes=16 * 1024 * 1024)
+        except (SourceDeferred, DomainError):
+            # 只在调用方显式允许时使用有限旧缓存，原获取时间和渠道冷却保持不变。
+            if cached is not None and stale_seconds > 0:
+                return cached
+            raise
         instant = time.time()
         temporary = path.with_suffix('.' + uuid4().hex + '.tmp')
         temporary.write_text(json.dumps({'at': instant, 'body': base64.b64encode(content).decode()}))

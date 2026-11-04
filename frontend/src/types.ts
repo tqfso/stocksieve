@@ -45,6 +45,7 @@ export interface ReportOverview {
     holding: { label: string; reason: string };
     decision: { action: 'consider' | 'wait' | 'avoid'; label: string; reason: string };
     opportunities: string[];
+    watch?: string[];
     risks: string[];
     pricePlan?: {
         waiting: boolean;
@@ -65,4 +66,5 @@ export interface ReportSource {
     url: string | null;
     publishedAt: string | null;
     fetchedAt: string;
+    pages?: number[];
 }

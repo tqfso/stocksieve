@@ -58,7 +58,7 @@ onBeforeRouteLeave(() => { leaving = true; ++requestId; clearTimeout(timer); });
 onBeforeUnmount(() => { ++requestId; clearTimeout(timer); });
 </script>
 <template>
-  <div class="page-heading"><div><span class="eyebrow">STOCK RESEARCH</span><h1>分析你关注的股票</h1><p>输入名称或代码，无需先入选策略。当前覆盖沪深四板块。</p></div><span class="tag tag-amber">报告保留资料来源与日期</span></div>
+  <div class="page-heading"><div><span class="eyebrow">STOCK RESEARCH</span><h1>分析你关注的股票</h1><p>输入名称或代码，无需先入选策略。当前覆盖沪深四板块。</p></div></div>
   <section class="panel research-search">
     <label for="stock-research-search"><strong>股票名称或代码</strong></label>
     <el-input id="stock-research-search" v-model="search" maxlength="50" placeholder="输入股票名称或代码，如浦发银行、600000" clearable size="large" @keyup.enter="load"><template #prefix><AppIcon name="search" /></template></el-input>

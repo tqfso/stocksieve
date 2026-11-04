@@ -117,7 +117,7 @@ watch(() => session.user?.id, (id) => { market.status = null; if (id) void marke
       </main>
       <footer class="app-footer">
         <span>StockSieve · 收盘后选股工作台</span>
-        <span>按收盘数据研究 · AI结果按报告标识展示</span>
+        <span>按收盘数据研究 · 资料依据可追溯</span>
       </footer>
     </div>
   </div>

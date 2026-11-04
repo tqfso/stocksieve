@@ -52,7 +52,7 @@ def test_saved_financials_produce_ttm_pe_but_do_not_invent_industry_pe(context: 
     report = generate(context)['report']
     assert report['valuation']['companyPe'] == 40
     assert report['valuation']['industryPe'] is None and report['valuation']['status'] == 'unavailable'
-    assert any(item['label'] == '公司 PE（TTM）' and item['value'] == '40.00 倍' for item in report['metrics'])
+    assert any(item['label'] == '市盈率（最近12个月）' and item['value'] == '40.00 倍' for item in report['metrics'])
     assert any(item['url'] == 'https://www.sse.com.cn/fixture/financial' for item in report['sources'])
 
 
@@ -73,7 +73,7 @@ def test_unavailable_citation_and_incomplete_report_are_rejected(context: Any) -
             if self.invalid == 'source':
                 result['sections'][0]['sourceKeys'] = ['invented-material']
             else:
-                result['sections'] = result['sections'][:6]
+                result['sections'] = result['sections'][:5]
             return result, usage
 
     context.published()

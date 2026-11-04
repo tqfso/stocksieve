@@ -22,7 +22,7 @@ def test_directory_search_is_independent_of_signals(context: Any) -> None:
         result = context.request('GET', '/api/v1/stocks?search=' + search)[1]['data']
         assert result['total'] == 1 and result['items'][0]['dataStatus'] == 'ready'
     task = generate(context)
-    assert task['stockId'] == stock.stock_id and len(task['report']['sections']) == 7
+    assert task['stockId'] == stock.stock_id and len(task['report']['sections']) == 6
     assert context.request('GET', '/api/v1/stocks?search=不存在的股票')[1]['data']['total'] == 0
     assert context.request('GET', path, token=None)[0] == 401
 
@@ -36,8 +36,8 @@ def test_missing_history_keeps_a_limited_report_and_no_chip_graph(context: Any) 
     assert chips['distribution'] is None and chips['missingInformation']
     report = generate(context)['report']
     assert report['overview']['pricePlan']['entryPrice'] == '暂无可靠参考'
-    assert report['dataQuality'] == 'partial' and len(report['sections']) == 7
-    assert next(item['value'] for item in report['metrics'] if item['label'] == '技术盈亏比（赔率）') == '暂无可靠参考'
+    assert report['dataQuality'] == 'partial' and len(report['sections']) == 6
+    assert next(item['value'] for item in report['metrics'] if item['label'] == '技术情景盈亏比') == '暂无可靠参考'
 
 
 def test_report_input_and_list_reject_removed_types_and_strategy_modes(context: Any) -> None:

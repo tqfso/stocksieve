@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterator
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
@@ -57,7 +57,9 @@ def wait_report(page: Any, accepted: dict[str, Any]) -> None:
             raise RuntimeError('等待分析任务超时。')
         page.wait_for_timeout(2500)
     expect(page.get_by_role('button', name='重新生成', exact=True)).to_be_enabled(timeout=15000)
-    expect(page.locator('.analysis-panel .section-caption .tag')).to_have_text('模拟分析' if accepted['simulated'] else '真实模型分析')
+    assert not accepted['simulated']
+    expect(page.get_by_text('真实模型分析', exact=True)).to_have_count(0)
+    expect(page.get_by_text('模拟分析', exact=True)).to_have_count(0)
 
 
 def run_check(base: str, username: str, password: str, *, require_data: bool = False) -> dict[str, Any]:
@@ -111,7 +113,7 @@ def run_check(base: str, username: str, password: str, *, require_data: bool = F
                     page.get_by_role('button', name=re.compile(r'^(生成报告|重新生成)$')).click()
                 accepted = received.value.json()['data']
                 wait_report(page, accepted)
-                expect(page.locator('.report-chapters .chapter')).to_have_count(7)
+                expect(page.locator('.report-chapters .chapter')).to_have_count(6)
                 assert page.locator('.analysis-panel .chip-distribution').count() == 0
                 page.reload(wait_until='networkidle')
                 expect(page.locator('.report-heading h2')).to_be_visible()
@@ -540,7 +542,7 @@ def run_sync_retry_check(base: str, username: str, password: str, job_id: str) -
             'sameJobResumed': True, 'passedFailurePosition': True}
 
 
-def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None) -> dict[str, Any]:
+def run_research_check(base: str, username: str, password: str, *, screenshot: Path | None = None, stock_id: str | None = None) -> dict[str, Any]:
     """验证任意个股、独立筹码、完整报告及两种真实文件下载，并检查移动布局。"""
     __tracebackhide__ = True
     from io import BytesIO
@@ -561,16 +563,23 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             page.get_by_placeholder('请输入密码', exact=True).fill(password)
             page.get_by_role('button', name='登录工作台', exact=True).click()
             page.wait_for_url('**/#/opportunities*')
-            choice = page.evaluate("""async () => {
+            choice = page.evaluate("""async stockId => {
                 const token = JSON.parse(sessionStorage.getItem('stocksieve.auth.v1')).accessToken;
                 const get = async path => {const r=await fetch('/api/v1'+path,{headers:{Authorization:'Bearer '+token}});if(!r.ok)throw new Error('接口未成功');return(await r.json()).data;};
+                if(stockId){
+                    const directory=await get('/stocks?search='+encodeURIComponent(stockId)+'&pageSize=100');
+                    const stock=directory.items.find(item=>item.stockId===stockId && item.dataStatus==='ready');
+                    if(!stock)throw new Error('指定股票尚未就绪');
+                    const detail=await get('/stocks/'+stockId);
+                    return {...stock,unselected:!detail.signals.length};
+                }
                 const directory=await get('/stocks?pageSize=100');
                 for(const stock of directory.items.filter(row=>row.dataStatus==='ready')){
                     const detail=await get('/stocks/'+stock.stockId);
-                    if(!detail.signals.length && detail.quote?.price != null)return stock;
+                    if(!detail.signals.length && detail.quote?.price != null)return {...stock,unselected:true};
                 }
                 throw new Error('需要未入选的已同步个股');
-            }""")
+            }""", stock_id)
             page.get_by_role('link', name='个股分析', exact=True).click()
             search = page.get_by_placeholder('输入股票名称或代码，如浦发银行、600000', exact=True)
             search.fill('__no_stock_matches__')
@@ -589,7 +598,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             expect(page.locator('.chip-distribution')).to_be_visible(timeout=15000)
             expect(page.locator('.chips-panel')).not_to_contain_text('股东户数')
             assert len(analysis_posts) == before
-            stage = '统一七章报告'
+            stage = '统一六章报告'
             page.get_by_role('button', name='AI 分析报告').click()
             assert page.locator('.analysis-types').count() == 0
             with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/analyses')) as received:
@@ -597,12 +606,12 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             result = received.value.json()['data']
             assert result['kind'] == 'report' and result['stockId'] == choice['stockId']
             wait_report(page, result)
-            expect(page.locator('.report-chapters .chapter')).to_have_count(7)
-            expect(page.locator('.brief-grid')).to_contain_text('持有建议')
+            expect(page.locator('.report-chapters .chapter')).to_have_count(6)
+            expect(page.locator('.brief-grid')).to_contain_text('已有持仓')
             page.locator('.chapter').first.locator('summary').click()
             expect(page.locator('.chapter').first).to_contain_text('股票代码')
             expect(page.locator('.report-ownership')).to_contain_text('本期股东户数')
-            expect(page.locator('.report-ownership')).to_contain_text('暂不能判断集中或分散')
+            expect(page.locator('.report-ownership .ownership-metrics strong').first).not_to_contain_text('待核验')
             stage = '切换页签保留阅读位置'
             page.set_viewport_size({'width': 1440, 'height': 800})
             page.locator('.detail-tabs').evaluate("element => element.scrollIntoView({block:'center'})")
@@ -615,7 +624,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             assert page.evaluate('window.scrollY') > 50, '切换AI报告不应滚动到页面顶部'
             expect(page.locator('.valuation-details')).to_have_count(0)
             page.get_by_text('查看关键指标', exact=True).click()
-            expect(page.locator('.report-metrics')).to_contain_text('技术盈亏比（赔率）')
+            expect(page.locator('.report-metrics')).to_contain_text('技术情景盈亏比')
             expect(page.locator('.analysis-panel .chip-distribution')).to_have_count(0)
             page.locator('.chapter').nth(1).locator('summary').click()
             previous_url = page.url
@@ -645,7 +654,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
                         assert ('【模拟】' in archive.read('word/document.xml').decode()) == result['simulated'], 'Word报告的模拟标识与任务不一致'
                 else:
                     reader = PdfReader(BytesIO(payload))
-                    assert '行业 PE（TTM）' in ''.join(p.extract_text() for p in reader.pages)
+                    assert '行业估值资料' in ''.join(p.extract_text() for p in reader.pages)
                 if screenshot:
                     destination = screenshot.parent / ('unified-report.' + format)
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -663,7 +672,7 @@ def run_research_check(base: str, username: str, password: str, *, screenshot: P
             page.get_by_role('link', name='返回个股搜索', exact=True).click()
             expect(search).to_have_value(choice['code'])
             assert not failures
-            return {'stockId': choice['stockId'], 'name': choice['name'], 'unselectedStockAnalyzed': True,
+            return {'stockId': choice['stockId'], 'name': choice['name'], 'unselectedStockAnalyzed': choice['unselected'],
                 'reportId': result['id'], 'simulated': result['simulated'], 'downloads': downloads, 'refreshRestored': True, 'mobileChecked': True, 'pageErrors': len(failures)}
     except Exception as error:
         diagnostic = type(error).__name__ + ': ' + str(error).replace(password, '[已隐藏]')[:600]

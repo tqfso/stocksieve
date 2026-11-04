@@ -174,8 +174,9 @@ def test_browser_against_deployed_research(request: Any) -> None:
     if not base or not file:
         pytest.fail('请指定正式地址与私有凭据文件。')
     credentials = json.loads(Path(file).read_text())
-    result = run_research_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/stock-research-mobile.png')
-    assert result['unselectedStockAnalyzed']
+    stock = request.config.getoption('--deployed-stock')
+    result = run_research_check(base, credentials['username'], credentials['password'], screenshot=Path(__file__).resolve().parents[1] / '.state/stock-research-mobile.png', stock_id=stock)
+    assert result['stockId'] == stock if stock else result['unselectedStockAnalyzed']
     print(json.dumps(result, ensure_ascii=False))
 
 

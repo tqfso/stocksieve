@@ -31,10 +31,10 @@ class Research:
         self.code = code
         self.url = 'https://static.cninfo.com.cn/finalpage/2026-10-29/fixture.PDF'
 
-    async def search(self, query: str) -> list[SearchHit]:
+    async def search(self, query: str, exchange: str | None = None) -> list[SearchHit]:
         return [SearchHit('测试证券定期报告', self.url, '2026-10-29T00:00:00+08:00')]
 
-    async def document(self, vendor: str, url: str, cache_seconds: int = 86400) -> Any:
+    async def document(self, vendor: str, url: str, cache_seconds: int = 86400, stale_seconds: int = 0) -> Any:
         from datetime import UTC, datetime
         if 'fulltextSearch' in url:
             return json.dumps({'announcements': [
@@ -73,12 +73,14 @@ def test_reader_extracts_pdf_pages_and_search_filters_securities() -> None:
     assert 'secret' not in html['text'] and html['title'] == 'report'
     hits = asyncio.run(CninfoSearch(Research('600000')).search('600000 三季度报告'))
     assert len(hits) == 1 and hits[0].url.startswith('https://static.cninfo.com.cn/')
-    assert asyncio.run(CninfoSearch(Research('600000')).search('600000 2026年第三季度报告')) == hits
+    again = asyncio.run(CninfoSearch(Research('600000')).search('600000 2026年第三季度报告'))
+    assert [(item.title, item.url, item.published_at) for item in again] == [(item.title, item.url, item.published_at) for item in hits]
     assert not asyncio.run(CninfoSearch(Research('600000')).search('600000 2025年第三季度报告'))
 
 
 @pytest.mark.parametrize('protocol', ['chat_completions', 'responses'])
-def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protocol: str) -> None:
+@pytest.mark.parametrize('repair_invalid', [False, True])
+def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protocol: str, repair_invalid: bool) -> None:
     context.published()
     code = context.source.universe_stocks[0].code
     research = Research(code)
@@ -89,9 +91,12 @@ def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protoc
         nonlocal material
         body = await request.json()
         model_calls.append(body)
-        exposed = body['tools']
-        names = {tool['function']['name'] if 'function' in tool else tool['name'] for tool in exposed}
-        assert names == {'search_and_download', 'read_document', 'calculate_finance'}
+        exposed = body.get('tools', [])
+        if exposed:
+            names = {tool['function']['name'] if 'function' in tool else tool['name'] for tool in exposed}
+            assert names == {'search_and_download', 'read_document', 'calculate_finance'}
+        else:
+            assert repair_invalid and len(model_calls) == 5
         # 从真正的模型协议请求中读取工具返回，下一步才能使用资料键。
         encoded = json.dumps(body, ensure_ascii=False)
         if len(model_calls) == 1:
@@ -104,9 +109,11 @@ def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protoc
             name, args = 'calculate_finance', {'operation': 'risk_reward', 'inputs': {'entry': 10, 'stop': 9, 'target': 12, 'assumption': '条件情景'}, 'source_keys': ['general_trade']}
         else:
             sections = [{'id': key, 'title': title, 'headline': '依据原文和计算观察', 'text': '已读定期报告第1页，仍需核验事件风险。', 'sourceKeys': [material]}
-                        for key, title in zip(('company', 'advantages', 'risks', 'holding', 'buy', 'avoid', 'sell'), ('公司基本资料', '优势', '风险', '持有', '买入', '不买', '卖出'), strict=True)]
+                        for key, title in zip(('company', 'advantages', 'risks', 'holding', 'entry', 'sell'), ('公司做什么', '优势', '风险', '持有', '买入判断', '卖出'), strict=True)]
             report = {'overview': {'decision': {'action': 'wait', 'label': '等待', 'reason': '事件风险仍需核验'}, 'holding': {'label': '观察', 'reason': '需要更多证据'}, 'opportunities': [], 'risks': ['事件风险待核验']},
                       'summary': '真实协议受控报告', 'sections': sections, 'sourceKeys': [material, 'general_trade'], 'missingInformation': ['行业PE未取得']}
+            if repair_invalid and len(model_calls) == 4:
+                report['sections'][0]['text'] = '长' * 241
             content = json.dumps(report, ensure_ascii=False)
             if protocol == 'responses':
                 return web.json_response({'id': 'resp_fixture', 'object': 'response', 'created_at': 1793332800, 'model': 'fixture', 'status': 'completed',
@@ -141,7 +148,7 @@ def test_live_graph_uses_three_tools_and_preserves_evidence(context: Any, protoc
         result = context.request('GET', '/api/v1/analyses/' + body['data']['id'])[1]['data']
         assert result['status'] == 'succeeded', result
         assert not result['simulated'] and not result['report']['simulated']
-        assert len(model_calls) == 4
+        assert len(model_calls) == (5 if repair_invalid else 4)
         source = next(item for item in result['report']['sources'] if item['url'] == research.url)
         assert source['publishedAt'] and source['id'] in result['report']['sections'][0]['sourceIds']
         status, raw, _ = context.request('GET', '/api/v1/analyses/' + result['id'] + '/export?format=pdf')
@@ -185,16 +192,21 @@ def test_real_provider_and_public_documents(context: Any, request: Any) -> None:
         pytest.skip('真实模型与公开资料验收需显式--live-model。')
     from datetime import UTC, datetime
 
+    from stocksieve.modules.analysis.infrastructure.exchange_research import SzseSearch
+    from stocksieve.modules.analysis.infrastructure.research_registry import (
+        ResearchRegistry,
+    )
     from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
     from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
     from stocksieve.shared.settings import Settings
 
     # 使用真实证券身份和受控测试行情；正式行情另在部署后复验。
+    first = context.source.universe_stocks[1]
+    target = replace(first, stock_id='SZSE.002517', code='002517', name='恺英网络')
+    context.source.universe_stocks = (context.source.universe_stocks[0], target, *context.source.universe_stocks[2:])
+    context.published()
     context.clock.value = datetime.now(UTC)
     context.token = context.api.auth.login('admin', 'testpass123')['accessToken']
-    first = context.source.universe_stocks[0]
-    context.source.universe_stocks = (replace(first, name='浦发银行'), *context.source.universe_stocks[1:])
-    context.published()
     private = Settings.from_env()
     settings = replace(context.api.settings, ai_base_url=private.ai_base_url,
         ai_api_key=private.ai_api_key, ai_model=private.ai_model, ai_protocol=private.ai_protocol,
@@ -202,14 +214,17 @@ def test_real_provider_and_public_documents(context: Any, request: Any) -> None:
     runtime = LangGraphRuntime(settings)
     api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
     context.api.runtime = runtime
-    path = f'/api/v1/stocks/{first.stock_id}/analyses'
+    path = f'/api/v1/stocks/{target.stock_id}/analyses'
     status, body, _ = context.request('POST', path, {}, key='real-provider-check')
     assert status == 202
 
     async def run() -> None:
         http = SourceHTTP(SourcePolicy(private.rate_dir, private.request_interval, private.source_daily_limit), private.state_dir / 'source-cache')
+        registry = ResearchRegistry()
+        registry.register('szse', SzseSearch(http), frozenset({'SZSE'}))
+        registry.register('cninfo', CninfoSearch(http), frozenset({'SSE', 'SZSE'}))
         try:
-            worker = Worker(api.tasks, Sync(api.tasks, api.registry), Analysis(api.tasks, runtime, http, CninfoSearch(http), DocumentReader()))
+            worker = Worker(api.tasks, Sync(api.tasks, api.registry), Analysis(api.tasks, runtime, http, registry, DocumentReader()))
             assert await worker.run_once('analysis')
         finally:
             await http.close()
@@ -218,5 +233,34 @@ def test_real_provider_and_public_documents(context: Any, request: Any) -> None:
     result = context.request('GET', '/api/v1/analyses/' + body['data']['id'])[1]['data']
     assert result['status'] == 'succeeded', result.get('error')
     assert not result['report']['simulated']
-    assert any(item['url'] and item['url'].startswith('https://static.cninfo.com.cn/') for item in result['report']['sources'])
+    assert any(item['url'] and item['url'].startswith('https://disc.static.szse.cn/') for item in result['report']['sources'])
     print(json.dumps({'realModel': settings.ai_model, 'sections': len(result['report']['sections']), 'sourceCount': len(result['report']['sources']), 'simulated': result['simulated']}, ensure_ascii=False))
+
+
+def test_real_model_generates_without_public_documents(context: Any, request: Any) -> None:
+    if not request.config.getoption('--live-model'):
+        pytest.skip('真实模型有限资料验收需显式--live-model。')
+    from datetime import UTC, datetime
+
+    from stocksieve.shared.settings import Settings
+
+    context.published()
+    context.clock.value = datetime.now(UTC)
+    context.token = context.api.auth.login('admin', 'testpass123')['accessToken']
+    private = Settings.from_env()
+    settings = replace(context.api.settings, ai_base_url=private.ai_base_url, ai_api_key=private.ai_api_key,
+        ai_model=private.ai_model, ai_protocol=private.ai_protocol, ai_reasoning_effort=private.ai_reasoning_effort, ai_max_steps=20)
+    runtime = LangGraphRuntime(settings)
+    api = API(context.api.db, settings, context.api.registry, runtime, context.clock.now)
+    context.api.runtime = runtime
+    stock = context.source.universe_stocks[0].stock_id
+    accepted = context.request('POST', f'/api/v1/stocks/{stock}/analyses', {}, key='real-available-data-test')[1]['data']
+    worker = Worker(api.tasks, Sync(api.tasks, api.registry), Analysis(api.tasks, runtime))
+    assert asyncio.run(worker.run_once('analysis'))
+    task = context.request('GET', '/api/v1/analyses/' + accepted['id'])[1]['data']
+    assert task['status'] == 'succeeded', (task.get('error'), getattr(runtime, 'last_failure', {}))
+    report = task['report']
+    assert report['reportScope'] == 'available_data' and report['researchStatus'] == 'unavailable'
+    assert len(report['sections']) == 6 and not report['verifiedFacts']
+    assert all(item['url'] is None for item in report['sources'])
+    print(json.dumps({'limitedDataReport': True, 'sections': 6, 'sources': len(report['sources'])}, ensure_ascii=False))

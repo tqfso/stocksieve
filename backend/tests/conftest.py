@@ -205,6 +205,7 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption('--deployed-concepts', action='store_true', help='显式验收正式题材筛选，不生成分析报告')
     parser.addoption('--deployed-strategies', action='store_true', help='只读验收正式五类策略、空结果与筛选重置')
     parser.addoption('--deployed-research', action='store_true', help='验收正式任意股票搜索和报告；按服务模式调用模型并保存结果')
+    parser.addoption('--deployed-stock', default=None, help='报告专项指定已同步股票ID；省略则选择未入选股票')
     parser.addoption('--deployed-readiness', action='store_true', help='只读验收正式收盘数据未就绪或渠道等待提示')
     parser.addoption('--deployed-retry-job', default=None, help='显式通过页面继续指定失败同步任务，沿用原检查点')
 

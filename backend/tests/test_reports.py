@@ -25,12 +25,12 @@ def test_report_has_seven_answers_actual_metrics_and_no_invented_research(contex
     report = task['report']
     assert task['kind'] == 'report' and task['snapshotId'] == snapshot
     assert not report['simulated'] and not report['title'].startswith('【模拟】')
-    assert [section['id'] for section in report['sections']] == ['company', 'advantages', 'risks', 'holding', 'buy', 'avoid', 'sell']
+    assert [section['id'] for section in report['sections']] == ['company', 'advantages', 'risks', 'holding', 'entry', 'sell']
     assert 'chipDistribution' not in report
-    assert report['shareholders']['latestCount'] is None and report['shareholders']['trend'] == 'unknown'
-    assert report['sections'][0]['title'] == '公司基本资料'
+    assert report['shareholders']['latestCount'] == 88254 and report['shareholders']['trend'] == 'unknown'
+    assert report['sections'][0]['title'] == '公司做什么'
     metrics = {item['label']: item['value'] for item in report['metrics']}
-    assert all(metrics[key] != '待核验' for key in ['收盘价', 'MA5', 'MA10', 'MA20', 'MA60', '筹码平均成本'])
+    assert all(metrics[key] != '待核验' for key in ['收盘价', '5日平均价', '10日平均价', '20日平均价', '60日平均价', '筹码平均成本'])
     assert report['valuation']['industryPe'] is None and report['valuation']['companyPe'] is None
     assert report['researchStatus'] == 'researched' and report['dataQuality'] == 'partial'
     assert any(source['url'] == 'https://www.sse.com.cn/fixture/disclosure' for source in report['sources'])
@@ -38,7 +38,7 @@ def test_report_has_seven_answers_actual_metrics_and_no_invented_research(contex
     assert '暂无' not in report['overview']['pricePlan']['entryPrice']
     with context.api.db.transaction() as connection:
         saved = connection.execute(select(t.results).where(t.results.c.task_id == task['id'])).mappings().one()
-        assert saved['schema_version'] == 3 and saved['provider'] == 'fixture'
+        assert saved['schema_version'] == 4 and saved['provider'] == 'fixture'
         assert saved['usage_json']['inputTokens'] == saved['usage_json']['outputTokens'] == 10
 
 
@@ -71,14 +71,14 @@ def test_exports_are_valid_documents_keep_saved_content_and_do_not_reanalyse(con
         assert '【模拟】' not in xml and task['report']['title'] in xml
         for section in task['report']['sections']:
             assert section['title'] in xml
-        assert '股东户数与筹码集中观察' in xml
-        assert '行业 PE（TTM）' in xml and task['dataDate'] in xml
+        assert '本期股东户数' in xml
+        assert '行业估值资料' in xml and task['dataDate'] in xml
     status, pdf, headers = context.request('GET', path + '?format=pdf')
     assert status == 200 and pdf.startswith(b'%PDF') and headers['Content-Type'] == 'application/pdf'
     reader = PdfReader(BytesIO(pdf))
     content = ''.join(page.extract_text() for page in reader.pages)
-    assert '股东户数与筹码集中观察' in content
-    assert len(reader.pages) >= 2 and '【模拟】' not in content and '行业 PE（TTM）' in content
+    assert '本期股东户数' in content
+    assert len(reader.pages) >= 2 and '【模拟】' not in content and '行业估值资料' in content
     for section in task['report']['sections']:
         assert section['title'] in content
     with context.api.db.transaction() as connection:
@@ -151,14 +151,14 @@ def test_technical_risk_reward_is_based_on_current_price_and_valid_reference_ran
     context.source.daily = daily
     context.published()
     task = generate(context)
-    metric = next(item for item in task['report']['metrics'] if item['label'] == '技术盈亏比（赔率）')
+    metric = next(item for item in task['report']['metrics'] if item['label'] == '技术情景盈亏比')
     assert metric['value'] == expected
     assert task['report']['overview']['decision']['action'] == 'wait'
     path = '/api/v1/analyses/' + task['id'] + '/export'
     word = context.request('GET', path + '?format=docx')[1]
     with ZipFile(BytesIO(word)) as archive:
         content = archive.read('word/document.xml').decode()
-        assert '技术盈亏比（赔率）' in content and expected in content
+        assert '技术情景盈亏比' in content and expected in content
     pdf = PdfReader(BytesIO(context.request('GET', path + '?format=pdf')[1]))
     content = ''.join(page.extract_text() for page in pdf.pages)
-    assert '技术盈亏比（赔率）' in content and expected in content
+    assert '技术情景盈亏比' in content and expected in content

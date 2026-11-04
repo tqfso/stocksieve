@@ -1,12 +1,18 @@
 """本文件验证正式限频继承探测次数与冷却、跨进程锁和损坏状态保护。"""
 
+import asyncio
+import base64
+import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import pytest
 from stocksieve.modules.ingestion.application.ports import SourceDeferred
 from stocksieve.modules.ingestion.application.progress import progress_sink
+from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
 from stocksieve.modules.ingestion.infrastructure.rate_policy import SourcePolicy
 from stocksieve.shared.errors import DomainError
 
@@ -54,3 +60,75 @@ def test_one_second_shared_interval_and_daily_budget_reserved_for_regular_update
         policy.reserve('sina', now + 8)
     saved = json.loads((tmp_path / 'state.json').read_text())
     assert sum(saved['daily']['2026-10-31'].values()) == 8
+
+
+def test_recent_stale_cache_preserves_cooldown_and_original_fetch_time(tmp_path: Path) -> None:
+    url = 'https://www.cninfo.com.cn/fixture'
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    original = time.time() - 7200
+    file = cache / (hashlib.sha256(('document:' + url).encode()).hexdigest() + '.json')
+    file.write_text(json.dumps({'at': original, 'body': base64.b64encode(b'cached-index').decode()}))
+    policy = SourcePolicy(tmp_path / 'rate', .2, 20000)
+    policy.block('cninfo', 3600)
+    before = json.loads((tmp_path / 'rate/state.json').read_text())
+
+    def network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError('冷却期间不应发送网络请求')
+
+    async def run() -> None:
+        http = SourceHTTP(policy, cache, httpx.AsyncClient(transport=httpx.MockTransport(network)))
+        try:
+            body, stamp = await http.document('cninfo', url, cache_seconds=3600, stale_seconds=86400)
+            assert body == b'cached-index' and stamp.timestamp() == pytest.approx(original, abs=1e-6, rel=0)
+            with pytest.raises(SourceDeferred):
+                await http.document('cninfo', url, cache_seconds=3600, stale_seconds=4000)
+        finally:
+            await http.close()
+
+    asyncio.run(run())
+    after = json.loads((tmp_path / 'rate/state.json').read_text())
+    assert after['cooldown'] == before['cooldown']
+    assert json.loads(file.read_text())['at'] == original
+
+
+def test_local_size_limit_does_not_block_whole_supplier(tmp_path: Path) -> None:
+    policy = SourcePolicy(tmp_path / 'rate', .2, 20000)
+
+    async def run() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b'12345')))
+        http = SourceHTTP(policy, tmp_path / 'cache', client)
+        try:
+            with pytest.raises(DomainError) as error:
+                await http.get_bytes('cninfo', 'https://www.cninfo.com.cn/fixture', max_bytes=4)
+            assert error.value.code == 'DATA_NOT_AVAILABLE'
+        finally:
+            await http.close()
+
+    asyncio.run(run())
+    saved = json.loads((tmp_path / 'rate/state.json').read_text())
+    assert not saved.get('cooldown', {}).get('cninfo')
+
+
+def test_post_queries_are_cached_by_body_and_preserve_fetch_time(tmp_path: Path) -> None:
+    seen = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        assert request.method == 'POST'
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={'code': seen[-1]['stock'][0]})
+
+    async def run() -> None:
+        http = SourceHTTP(SourcePolicy(tmp_path / 'rate', .2, 20000), tmp_path / 'cache',
+                          httpx.AsyncClient(transport=httpx.MockTransport(transport)))
+        try:
+            first, stamp = await http.post_document('szse', 'https://www.szse.cn/fixture', {'stock': ['002517']})
+            again, cached = await http.post_document('szse', 'https://www.szse.cn/fixture', {'stock': ['002517']})
+            second, _ = await http.post_document('szse', 'https://www.szse.cn/fixture', {'stock': ['300026']})
+            assert first == again and stamp == cached
+            assert json.loads(second)['code'] == '300026'
+        finally:
+            await http.close()
+
+    asyncio.run(run())
+    assert len(seen) == 2

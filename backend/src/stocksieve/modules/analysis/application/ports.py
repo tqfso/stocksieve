@@ -12,10 +12,12 @@ class SearchHit:
     title: str
     url: str
     published_at: str | None = None
+    index_fetched_at: str | None = None
+    cache_warning: str | None = None
 
 
 class SearchProvider(Protocol):
-    async def search(self, query: str) -> list[SearchHit]: ...
+    async def search(self, query: str, exchange: str | None = None) -> list[SearchHit]: ...
 
 
 class DocumentParser(Protocol):

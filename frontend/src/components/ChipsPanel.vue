@@ -21,7 +21,7 @@ onUnmounted(() => { ++version; });
 </script>
 <template>
   <section class="panel chips-panel">
-    <div class="section-caption"><div><strong>筹码分布</strong><span class="muted">估算成本 · 行情截至 {{ stock.dataDate }}</span></div><span class="tag">无需 AI 分析</span></div>
+    <div class="section-caption"><div><strong>筹码分布</strong><span class="muted">估算成本 · 行情截至 {{ stock.dataDate }}</span></div></div>
     <StatePanel v-if="loading" kind="loading" title="正在计算筹码分布" />
     <StatePanel v-else-if="error" kind="error" title="暂时无法读取筹码" :description="error" action="重试" @action="load" />
     <template v-else-if="result"><ChipDistributionChart v-if="result.distribution" :distribution="result.distribution" /><StatePanel v-else title="筹码资料不足" :description="result.missingInformation.join('；')" /><details class="chip-method"><summary>估算方法与适用范围</summary><p>{{ result.method }}</p><p>历史成交成本估算不等同真实持股清单，上下方参考区不保证价格反弹或受阻。</p></details></template>

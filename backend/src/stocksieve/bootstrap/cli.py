@@ -16,8 +16,12 @@ from stocksieve.infrastructure.persistence.schema import metadata as table_metad
 from stocksieve.interfaces.http.api import API
 from stocksieve.modules.analysis.application.service import Analysis
 from stocksieve.modules.analysis.infrastructure.agent import LangGraphRuntime
+from stocksieve.modules.analysis.infrastructure.exchange_research import SzseSearch
 from stocksieve.modules.analysis.infrastructure.reader import DocumentReader
 from stocksieve.modules.analysis.infrastructure.research import CninfoSearch
+from stocksieve.modules.analysis.infrastructure.research_registry import (
+    ResearchRegistry,
+)
 from stocksieve.modules.ingestion.application.registry import Registry
 from stocksieve.modules.ingestion.application.service import Sync
 from stocksieve.modules.ingestion.infrastructure.http import SourceHTTP
@@ -117,9 +121,12 @@ def main() -> int:
         else:
             async def run_worker() -> None:
                 http = SourceHTTP(policy, settings.state_dir / 'source-cache')
+                research = ResearchRegistry()
+                research.register('szse', SzseSearch(http), frozenset({'SZSE'}))
+                research.register('cninfo', CninfoSearch(http), frozenset({'SSE', 'SZSE', 'BSE'}))
                 try:
                     await Worker(service.tasks, Sync(service.tasks, registry),
-                        Analysis(service.tasks, runtime, http, CninfoSearch(http), DocumentReader())).serve()
+                        Analysis(service.tasks, runtime, http, research, DocumentReader())).serve()
                 finally:
                     await http.close()
             asyncio.run(run_worker())
